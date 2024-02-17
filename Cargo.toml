@@ -1,11 +1,11 @@
 [package]
-name = "simple-ids"
-version = "0.3.0"
+name = "evectl"
+version = "0.1.0-alpha.1"
 authors = ["Jason Ish <jason@codemonkey.net>"]
 edition = "2021"
-description = "Simple-IDS with Suricata and EveBox"
-homepage = "https://evebox.org/simple-ids/"
-repository = "https://github.com/jasonish/simple-ids"
+description = "Controller Suricata and EveBox"
+homepage = "https://evebox.org/"
+repository = "https://github.com/jasonish/evectl"
 license = "MIT"
 
 # Some tweaks to reduce binary size.

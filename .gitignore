@@ -1,7 +1,3 @@
-/target
-/.idea
 *~
-/data
-/simple-ids.yml
-/simple-ids.toml
-/*.conf
+/target
+
