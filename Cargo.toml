@@ -1,9 +1,34 @@
 [package]
 name = "evectl"
 version = "0.1.0-alpha.1"
+authors = ["Jason Ish <jason@codemonkey.net>"]
 edition = "2021"
 license = "MIT"
 homepage = "https://github.com/jasonish/evectl"
 description = "Controller for EveBox and Suricata"
 
+# Some tweaks to reduce binary size.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+
 [dependencies]
+anyhow = "1.0.79"
+clap = { version = "4.5.0", features = ["derive", "color"] }
+colored = "2.1.0"
+crossterm = "0.27.0"
+ctrlc = "3.4.2"
+inquire = "0.7.5"
+libc = "0.2.153"
+regex = "1.10.3"
+reqwest = { version = "0.11.24", default-features = false, features = ["blocking", "rustls-tls"] }
+semver = "1.0.21"
+serde = { version = "1.0.196", default-features = false, features = ["derive"] }
+serde_json = "1.0.113"
+serde_yaml = "0.9.31"
+sha2 = "0.10.8"
+tempfile = "3.10.0"
+toml = "0.8.14"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
