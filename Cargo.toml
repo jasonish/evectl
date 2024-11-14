@@ -1,8 +1,9 @@
 [package]
-name = "omnibox"
+name = "evectl"
 version = "0.1.0-alpha.1"
 edition = "2021"
 license = "MIT"
-description = "Turnkey small IDS system"
+homepage = "https://github.com/jasonish/evectl"
+description = "Controller for EveBox and Suricata"
 
 [dependencies]

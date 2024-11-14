@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "omnibox"
+name = "evectl"
 version = "0.1.0-alpha.1"
