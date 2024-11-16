@@ -15,25 +15,16 @@ jobs:
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install Cross
+        run: |
+          curl -o - -L \
+              https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz |
+              (cd /bin && sudo tar zxvf -)
+      - run: cross test --target ${{ matrix.target }}
+      - run: cross build --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
         with:
-          toolchain: stable
-      - uses: actions-rs/cargo@v1
-        name: Test
-        with:
-          use-cross: true
-          command: test
-          args: --target=${{ matrix.target }}
-        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
-      - uses: actions-rs/cargo@v1
-        name: Build
-        with:
-          use-cross: true
-          command: build
-          args: --release --target=${{ matrix.target }}
-      - run: find target -name easy
-      - uses: actions/upload-artifact@v2
-        with:
-          name: ${{ matrix.target }}-easy
-          path: target/${{ matrix.target }}/release/easy
+          name: ${{ matrix.target }}-evectl
+          path: target/${{ matrix.target }}/release/evectl
