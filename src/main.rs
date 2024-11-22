@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use container::{Container, SuricataContainer};
 use logs::LogArgs;
+use menu::Selections;
 use tracing::{debug, error, info, Level};
 
 use crate::context::Context;
@@ -525,29 +526,27 @@ fn menu_main(mut context: Context) -> Result<()> {
             .map(String::from)
             .unwrap_or_default();
 
-        let mut selections = vec![SelectItem::new("refresh", "Refresh Status")];
+        let mut selections = Selections::with_index();
+        selections.push("restart", "Restart");
 
         if running {
-            selections.push(SelectItem::new("restart", "Restart"));
-            selections.push(SelectItem::new("stop", "Stop"));
+            selections.push("restart", "Restart");
+            selections.push("stop", "Stop");
         } else {
-            selections.push(SelectItem::new("start", "Start"));
+            selections.push("start", "Start");
         }
 
-        selections.push(SelectItem::new(
-            "interface",
-            format!("Select Interface [{interface}]"),
-        ));
-        selections.push(SelectItem::new("update-rules", "Update Rules"));
-        selections.push(SelectItem::new("update", "Update"));
-        selections.push(SelectItem::new("configure", "Configure"));
-        selections.push(SelectItem::new("other", "Other"));
-        selections.push(SelectItem::new("exit", "Exit"));
+        selections.push("interface", format!("Select Interface [{interface}]"));
+        selections.push("update-rules", "Update Rules");
+        selections.push("update", "Update");
+        selections.push("configure", "Configure");
+        selections.push("other", "Other");
+        selections.push("exit", "Exit");
 
-        let selections = add_index(&selections);
-        let response = inquire::Select::new("Select a menu option", selections)
+        let response = inquire::Select::new("Select a menu option", selections.to_vec())
             .with_page_size(12)
             .prompt();
+
         match response {
             Ok(selection) => match selection.tag.as_ref() {
                 "refresh" => {}
@@ -765,22 +764,18 @@ fn select_interface(context: &mut Context) {
         .iter()
         .position(|interface| Some(&interface.name) == current_if)
         .unwrap_or(0);
-    let selections: Vec<SelectItem> = interfaces
-        .iter()
-        .enumerate()
-        .map(|(i, ifname)| {
-            let address = ifname
-                .addr4
-                .first()
-                .map(|s| format!("-- {}", s.green().italic()))
-                .unwrap_or("".to_string());
-            SelectItem::new(
-                ifname.name.to_string(),
-                format!("{}) {} {}", i + 1, ifname.name, address),
-            )
-        })
-        .collect();
-    match inquire::Select::new("Select interface", selections)
+
+    let mut selections = Selections::with_index();
+    for interface in &interfaces {
+        let address = interface
+            .addr4
+            .first()
+            .map(|s| format!("-- {}", s.green().italic()))
+            .unwrap_or("".to_string());
+        selections.push(&interface.name, format!("{} {}", interface.name, address));
+    }
+
+    match inquire::Select::new("Select interface", selections.to_vec())
         .with_starting_cursor(index)
         .with_page_size(12)
         .prompt()
