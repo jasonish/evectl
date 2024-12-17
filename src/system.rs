@@ -2,27 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Result;
-use std::{ffi::CStr, process::Command};
+use std::process::Command;
 
-pub(crate) fn getuid() -> u32 {
+pub fn getuid() -> u32 {
     unsafe { libc::getuid() as u32 }
 }
 
-pub(crate) fn _get_username() -> Option<String> {
-    unsafe {
-        let username = libc::getlogin();
-        if username.is_null() {
-            None
-        } else {
-            let username = CStr::from_ptr(username);
-            let username = username.to_owned().to_string_lossy().into_owned();
-            Some(username.to_string())
-        }
-    }
-}
-
 #[derive(Debug, Default)]
-pub(crate) struct Interface {
+pub struct Interface {
     pub name: String,
     pub status: String,
     pub addr4: Vec<String>,
@@ -35,7 +22,8 @@ pub(crate) struct Interface {
 /// by executing a command in a Docker container.
 ///
 /// Note: Newer versions of "ip" support JSON output.
-pub(crate) fn get_interfaces() -> Result<Vec<Interface>> {
+#[cfg(target_os = "linux")]
+pub fn get_interfaces() -> Result<Vec<Interface>> {
     let output = Command::new("ip")
         .args(["--brief", "address", "show"])
         .output()?;

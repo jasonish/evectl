@@ -29,7 +29,6 @@ mod prelude;
 mod prompt;
 mod ruleindex;
 mod selfupdate;
-mod system;
 mod term;
 
 const SURICATA_CONTAINER_NAME: &str = "simple-ids-suricata";
@@ -152,7 +151,7 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    if manager.is_podman() && system::getuid() != 0 && !args.no_root {
+    if manager.is_podman() && evectl::system::getuid() != 0 && !args.no_root {
         error!("The Podman container manager requires running as root");
         std::process::exit(1);
     }
@@ -437,7 +436,7 @@ fn guess_evebox_url(context: &Context) -> String {
     if !context.config.evebox.allow_remote {
         format!("{}://127.0.0.1:5636", scheme)
     } else {
-        let interfaces = match system::get_interfaces() {
+        let interfaces = match evectl::system::get_interfaces() {
             Ok(interfaces) => interfaces,
             Err(err) => {
                 error!("Failed to get system interfaces: {err}");
@@ -758,7 +757,7 @@ fn start_evebox_detached(context: &Context) -> Result<()> {
 }
 
 fn select_interface(context: &mut Context) {
-    let interfaces = system::get_interfaces().unwrap();
+    let interfaces = evectl::system::get_interfaces().unwrap();
     let current_if = context.config.suricata.interfaces.first();
     let index = interfaces
         .iter()
