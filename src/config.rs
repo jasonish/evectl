@@ -29,12 +29,10 @@ pub(crate) struct SuricataConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) struct EveBoxConfig {
-    #[serde(rename = "allow-remote")]
     pub allow_remote: bool,
-    #[serde(rename = "no-tls", default)]
     pub no_tls: bool,
-    #[serde(rename = "no-auth", default)]
     pub no_auth: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
