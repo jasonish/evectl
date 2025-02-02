@@ -140,7 +140,14 @@ fn main() -> Result<()> {
         tracing_subscriber::fmt().with_max_level(log_level).init();
     }
 
-    let config = config::Config::new();
+    let config_file = dirs::config_dir()
+        .map(|d| d.join("evectl").join("config.toml"))
+        .ok_or_else(|| anyhow::anyhow!("Failed to determine configuration directory"))?;
+    let config = if config_file.exists() {
+        crate::config::Config::from_file(&config_file)?
+    } else {
+        crate::config::Config::default_with_filename(&config_file)
+    };
 
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,

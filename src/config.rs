@@ -1,17 +1,20 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use std::io::{Read, Write};
-
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-
 use crate::prelude::*;
 
-const TOML_FILENAME: &str = "evectl.toml";
+use std::{
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 pub(crate) struct Config {
+    #[serde(skip)]
+    filename: PathBuf,
+
     pub suricata: SuricataConfig,
 
     #[serde(default)]
@@ -50,28 +53,29 @@ impl Default for EveBoxConfig {
 }
 
 impl Config {
-    pub(crate) fn new() -> Self {
-        if let Ok(buf) = Self::read_file(TOML_FILENAME) {
-            match Self::parse_toml(&buf) {
-                Err(err) => {
-                    error!("Failed to parse configuration file: {}", err);
-                }
-                Ok(config) => return config,
-            }
+    pub(crate) fn default_with_filename(filename: &Path) -> Self {
+        Self {
+            filename: filename.to_path_buf(),
+            ..Default::default()
         }
+    }
 
-        Self::default()
+    pub(crate) fn from_file(filename: &PathBuf) -> Result<Self> {
+        let buf = Self::read_file(filename)?;
+        let mut config = Self::parse_toml(&buf)?;
+        config.filename = filename.clone();
+        Ok(config)
     }
 
     pub(crate) fn save(&self) -> Result<()> {
-        let mut file = std::fs::File::create(TOML_FILENAME)?;
+        let mut file = std::fs::File::create(&self.filename)?;
         let config = toml::to_string(self)?;
         file.write_all(config.as_bytes())?;
 
         Ok(())
     }
 
-    fn read_file(filename: &str) -> Result<String> {
+    fn read_file(filename: &PathBuf) -> Result<String> {
         let mut file = std::fs::File::open(filename)?;
         let mut buffer = String::new();
         file.read_to_string(&mut buffer)?;
