@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: (C) 2023 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-pub(crate) fn enter() {
+pub fn enter() {
     let _ = inquire::Text::new("Press ENTER to continue:").prompt();
 }
 
-pub(crate) fn enter_with_prefix(prefix: &str) {
+pub fn enter_with_prefix(prefix: &str) {
     let _ = inquire::Text::new(&format!("{}. Press ENTER to continue:", prefix)).prompt();
 }
 
-pub(crate) fn confirm(prompt: &str, help: Option<&str>) -> bool {
+pub fn confirm(prompt: &str, help: Option<&str>) -> bool {
     let prompt = inquire::Confirm::new(prompt);
     let prompt = if let Some(help) = help {
         prompt.with_help_message(help)
@@ -20,12 +20,12 @@ pub(crate) fn confirm(prompt: &str, help: Option<&str>) -> bool {
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct SelectItem<T>
+pub struct SelectItem<T>
 where
     T: Clone,
 {
-    pub(crate) tag: T,
-    pub(crate) value: String,
+    pub tag: T,
+    pub value: String,
 }
 
 impl<T> std::fmt::Display for SelectItem<T>
@@ -38,7 +38,7 @@ where
 }
 
 #[derive(Debug, Default, Clone)]
-pub(crate) struct Selections<T>
+pub struct Selections<T>
 where
     T: Clone,
 {
@@ -50,21 +50,21 @@ impl<T> Selections<T>
 where
     T: Clone,
 {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             items: vec![],
             index: false,
         }
     }
 
-    pub(crate) fn with_index() -> Self {
+    pub fn with_index() -> Self {
         Self {
             items: vec![],
             index: true,
         }
     }
 
-    pub(crate) fn push(&mut self, key: T, value: impl Into<String>) -> &mut Self {
+    pub fn push(&mut self, key: T, value: impl Into<String>) -> &mut Self {
         let value = if self.index {
             let i = self.items.len() + 1;
             format!("{:2}. {}", i, value.into())
@@ -75,7 +75,7 @@ where
         self
     }
 
-    pub(crate) fn to_vec(&self) -> Vec<SelectItem<T>> {
+    pub fn to_vec(&self) -> Vec<SelectItem<T>> {
         self.items.clone()
     }
 }
