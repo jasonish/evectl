@@ -8,7 +8,7 @@ use crate::{add_index, context::Context, term, SelectItem};
 /// Main configure menu.
 pub(crate) fn main(context: &mut Context) -> Result<()> {
     loop {
-        term::title("Simple-IDS: Configure");
+        term::title("EveCtl: Configure");
 
         let selections = vec![
             SelectItem::new("suricata", "Suricata Configuration"),

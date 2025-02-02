@@ -15,7 +15,7 @@ use tracing::error;
 /// Suricata configure menu.
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
     loop {
-        term::title("Simple-IDS: Configure Suricata-Update");
+        term::title("EveCtl: Configure Suricata-Update");
 
         let selections = vec![
             SelectItem::new("enable-conf", "Edit enable.conf"),

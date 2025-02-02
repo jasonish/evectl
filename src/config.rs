@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
-const YAML_FILENAME: &str = "simple-ids.yml";
-const TOML_FILENAME: &str = "simple-ids.toml";
+const YAML_FILENAME: &str = "evectl.yml";
+const TOML_FILENAME: &str = "evectl.toml";
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 pub(crate) struct Config {

@@ -30,14 +30,14 @@ mod ruleindex;
 mod selfupdate;
 mod term;
 
-const SURICATA_CONTAINER_NAME: &str = "simple-ids-suricata";
-const EVEBOX_CONTAINER_NAME: &str = "simple-ids-evebox";
+const SURICATA_CONTAINER_NAME: &str = "evectl-suricata";
+const EVEBOX_CONTAINER_NAME: &str = "evectl-evebox";
 
-const SURICATA_VOLUME_LOG: &str = "simple-ids-suricata-log";
-const SURICATA_VOLUME_LIB: &str = "simple-ids-suricata-lib";
-const SURICATA_VOLUME_RUN: &str = "simple-ids-suricata-run";
+const SURICATA_VOLUME_LOG: &str = "evectl-suricata-log";
+const SURICATA_VOLUME_LIB: &str = "evectl-suricata-lib";
+const SURICATA_VOLUME_RUN: &str = "evectl-suricata-run";
 
-const EVEBOX_VOLUME_LIB: &str = "simple-ids-evebox-lib";
+const EVEBOX_VOLUME_LIB: &str = "evectl-evebox-lib";
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -282,7 +282,7 @@ fn command_start(context: &Context, debug: bool) -> i32 {
     }
 }
 
-/// Start Simple-IDS in the foreground.
+/// Start EveCtl in the foreground.
 ///
 /// Typically not done from the menus but instead the command line.
 fn start_foreground(context: &Context) -> i32 {
@@ -478,7 +478,7 @@ fn guess_evebox_url(context: &Context) -> String {
 fn menu_main(mut context: Context) -> Result<()> {
     let mut first = true;
     loop {
-        term::title("Simple-IDS: Main Menu");
+        term::title("EveCtl: Main Menu");
 
         if first {
             first = false;
@@ -804,7 +804,7 @@ fn update(context: &Context) -> bool {
         }
     }
     if let Err(err) = selfupdate::self_update() {
-        error!("Failed to update Simple-IDS: {err}");
+        error!("Failed to update EveCtl: {err}");
         ok = false;
     }
     ok

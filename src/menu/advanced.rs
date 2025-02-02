@@ -5,7 +5,7 @@ use crate::{container::Container, context::Context, SelectItem};
 
 pub(crate) fn advanced_menu(context: &mut Context) {
     loop {
-        crate::term::title("Simple-IDS: Advanced Configuration");
+        crate::term::title("EveCtl: Advanced Configuration");
 
         let suricata_image_name = context.image_name(Container::Suricata);
         let evebox_image_name = context.image_name(Container::EveBox);

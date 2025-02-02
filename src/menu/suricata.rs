@@ -5,7 +5,7 @@ use crate::{add_index, context::Context, term, SelectItem};
 
 pub(crate) fn menu(context: &mut Context) {
     loop {
-        term::title("Simple IDS: Configure Suricata");
+        term::title("EveCtl: Configure Suricata");
 
         let current_bpf = if let Some(bpf) = &context.config.suricata.bpf {
             format!(" [{}]", bpf)

@@ -1,6 +1,6 @@
-# Simple-IDS - Suricata/EveBox
+# EveCtl - Suricata/EveBox
 
-Simple-IDS is a tool to easily run Suricata and EveBox Linux systems
+EveCtl is a tool to easily run Suricata and EveBox Linux systems
 using Docker or Podman.
 
 This program is considered experimental and many things may change,
@@ -17,16 +17,16 @@ etc, etc... And I might even force push!
 ## Installation the Easy Way
 
 ```
-mkdir ~/simple-ids
-curl -sSf https://evebox.org/simple-ids.sh | sh
+mkdir ~/evectl
+curl -sSf https://evebox.org/evectl.sh | sh
 ```
 
-Or download directly from https://evebox.org/files/simple-ids/.
+Or download directly from https://evebox.org/files/evectl/.
 
 Once you have the program downloaded, run it:
 
 ```
-./simple-ids
+./evectl
 ```
 
 Under the configure menu select your network interface, then select
@@ -34,8 +34,8 @@ Under the configure menu select your network interface, then select
 
 ## Building
 
-If you just want to use Simple-IDS you can download a pre-compiled
-binary. The following is only for those who wish to compile Simple-IDS
+If you just want to use EveCtl you can download a pre-compiled
+binary. The following is only for those who wish to compile EveCtl
 themselves.
 
 ### For Host OS

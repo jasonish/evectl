@@ -2,6 +2,6 @@
 /.idea
 *~
 /data
-/simple-ids.yml
-/simple-ids.toml
+/evectl.yml
+/evectl.toml
 /*.conf

@@ -26,7 +26,7 @@ pub(crate) fn self_update() -> Result<()> {
     }
 
     let target = env!("TARGET");
-    let url = format!("https://evebox.org/files/simple-ids/{}/simple-ids", target);
+    let url = format!("https://evebox.org/files/evectl/{}/evectl", target);
     let hash_url = format!("{}.sha256", url);
     let current_exe = if let Ok(exe) = env::current_exe() {
         exe
@@ -98,7 +98,7 @@ pub(crate) fn self_update() -> Result<()> {
     let mut final_exec = fs::File::create(&current_exe)?;
     io::copy(&mut download_exe, &mut final_exec)?;
     fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o0755))?;
-    warn!("The Simple-IDS program has been updated. Please restart.");
+    warn!("The EveCtl program has been updated. Please restart.");
     process::exit(0);
 }
 

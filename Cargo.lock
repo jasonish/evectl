@@ -411,6 +411,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "evectl"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "colored",
+ "crossterm 0.27.0",
+ "ctrlc",
+ "evectl 0.1.0-alpha.4",
+ "inquire",
+ "libc",
+ "regex",
+ "reqwest 0.11.27",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1587,31 +1612,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9e9e0b4211b72e7b8b6e85c807d36c212bdb33ea8587f7569562a84df5465b1"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "simple-ids"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "colored",
- "crossterm 0.27.0",
- "ctrlc",
- "evectl",
- "inquire",
- "libc",
- "regex",
- "reqwest 0.11.27",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
