@@ -18,3 +18,64 @@ pub(crate) fn confirm(prompt: &str, help: Option<&str>) -> bool {
     };
     matches!(prompt.prompt(), Ok(true))
 }
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SelectItem<T>
+where
+    T: Clone,
+{
+    pub(crate) tag: T,
+    pub(crate) value: String,
+}
+
+impl<T> std::fmt::Display for SelectItem<T>
+where
+    T: Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Selections<T>
+where
+    T: Clone,
+{
+    items: Vec<SelectItem<T>>,
+    index: bool,
+}
+
+impl<T> Selections<T>
+where
+    T: Clone,
+{
+    pub(crate) fn new() -> Self {
+        Self {
+            items: vec![],
+            index: false,
+        }
+    }
+
+    pub(crate) fn with_index() -> Self {
+        Self {
+            items: vec![],
+            index: true,
+        }
+    }
+
+    pub(crate) fn push(&mut self, key: T, value: impl Into<String>) -> &mut Self {
+        let value = if self.index {
+            let i = self.items.len() + 1;
+            format!("{:2}. {}", i, value.into())
+        } else {
+            value.into()
+        };
+        self.items.push(SelectItem { tag: key, value });
+        self
+    }
+
+    pub(crate) fn to_vec(&self) -> Vec<SelectItem<T>> {
+        self.items.clone()
+    }
+}

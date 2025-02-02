@@ -2,24 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 use crate::{
-    actions, add_index, context::Context, prompt, term, SelectItem, EVEBOX_CONTAINER_NAME,
-    SURICATA_CONTAINER_NAME,
+    actions, context::Context, prompt, term, EVEBOX_CONTAINER_NAME, SURICATA_CONTAINER_NAME,
 };
 
 pub(crate) fn other(context: &Context) {
     loop {
         term::title("EveCtl: Other Menu Items");
 
-        let selections = vec![
-            SelectItem::new("rotate", "Force Log Rotation"),
-            SelectItem::new("suricata-shell", "Suricata Shell"),
-            SelectItem::new("evebox-shell", "EveBox Shell"),
-            SelectItem::new("return", "Return"),
-        ];
-        let selections = add_index(&selections);
+        let selections = crate::prompt::Selections::with_index()
+            .push("rotate", "Force Log Rotation")
+            .push("suricata-shell", "Suricata Shell")
+            .push("evebox-shell", "EveBox Shell")
+            .push("return", "Return")
+            .to_vec();
+
         match inquire::Select::new("Select menu option", selections).prompt() {
             Err(_) => return,
-            Ok(selection) => match selection.tag.as_ref() {
+            Ok(selection) => match selection.tag {
                 "return" => return,
                 "rotate" => {
                     actions::force_suricata_logrotate(context);
