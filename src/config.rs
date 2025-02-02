@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
 
-const YAML_FILENAME: &str = "evectl.yml";
 const TOML_FILENAME: &str = "evectl.toml";
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -63,15 +62,6 @@ impl Config {
             }
         }
 
-        if let Ok(config) = Self::read_file(YAML_FILENAME) {
-            match Self::parse_yaml(&config) {
-                Err(err) => {
-                    error!("Failed to parse configuration file: {}", err);
-                }
-                Ok(config) => return config,
-            }
-        }
-
         Self::default()
     }
 
@@ -79,11 +69,6 @@ impl Config {
         let mut file = std::fs::File::create(TOML_FILENAME)?;
         let config = toml::to_string(self)?;
         file.write_all(config.as_bytes())?;
-
-        // Delete YAML_FILENAME if exists.
-        if std::fs::metadata(YAML_FILENAME).is_ok() {
-            std::fs::remove_file(YAML_FILENAME)?;
-        }
 
         Ok(())
     }
@@ -93,10 +78,6 @@ impl Config {
         let mut buffer = String::new();
         file.read_to_string(&mut buffer)?;
         Ok(buffer)
-    }
-
-    fn parse_yaml(buf: &str) -> Result<Config> {
-        Ok(serde_yaml::from_str(buf)?)
     }
 
     fn parse_toml(buf: &str) -> Result<Config> {
