@@ -11,45 +11,77 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) struct Config {
     #[serde(skip)]
     filename: PathBuf,
 
+    #[serde(default, skip_serializing_if = "is_default")]
     pub suricata: SuricataConfig,
 
-    #[serde(default)]
-    pub evebox: EveBoxConfig,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub evebox_server: EveBoxServerConfig,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub evebox_agent: EveBoxAgentConfig,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub elasticsearch: Elasticsearch,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) struct SuricataConfig {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub interfaces: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub bpf: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) struct EveBoxConfig {
+pub(crate) struct EveBoxServerConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub allow_remote: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub no_tls: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub no_auth: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+
+    #[serde(default, skip_serializing_if = "is_default")]
     pub image: Option<String>,
 }
 
-impl Default for EveBoxConfig {
-    fn default() -> Self {
-        Self {
-            allow_remote: false,
-            no_tls: true,
-            no_auth: true,
-            image: None,
-        }
-    }
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct Elasticsearch {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct EveBoxAgentConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub server: String,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub disable_certificate_validation: bool,
 }
 
 impl Config {
@@ -85,4 +117,8 @@ impl Config {
     fn parse_toml(buf: &str) -> Result<Config> {
         Ok(toml::from_str(buf)?)
     }
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }

@@ -8,7 +8,7 @@ use crate::{
 };
 use anyhow::Result;
 use colored::Colorize;
-use std::{io::Write, path::PathBuf};
+use std::io::Write;
 use tracing::error;
 
 /// Suricata configure menu.
@@ -134,13 +134,14 @@ fn copy_suricata_update_template(context: &Context, filename: &str) -> Result<()
         .args(&["cat", &source])
         .build()
         .status_output()?;
-    let mut target = std::fs::File::create(filename)?;
+    let target_filename = context.config_directory.join(filename);
+    let mut target = std::fs::File::create(target_filename)?;
     target.write_all(&output)?;
     Ok(())
 }
 
 fn edit_file(context: &Context, filename: &str) {
-    let path = PathBuf::from(filename);
+    let path = context.config_directory.join(filename);
     if !path.exists() {
         if let Ok(true) = inquire::Confirm::new(&format!(
             "Would you like to start with a {} template",
@@ -159,7 +160,7 @@ fn edit_file(context: &Context, filename: &str) {
         }
     }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-    if let Err(err) = std::process::Command::new(&editor).arg(filename).status() {
+    if let Err(err) = std::process::Command::new(&editor).arg(path).status() {
         error!("Failed to load {} in editor {}: {}", filename, editor, err);
     }
 }

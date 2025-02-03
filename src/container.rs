@@ -1,15 +1,10 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use anyhow::{bail, Result};
+use crate::prelude::*;
+
 use serde::Deserialize;
 use std::process::Command;
-use tracing::{debug, error, info};
-
-use crate::{
-    context::Context, EVEBOX_VOLUME_LIB, SURICATA_VOLUME_LIB, SURICATA_VOLUME_LOG,
-    SURICATA_VOLUME_RUN,
-};
 
 pub const DEFAULT_SURICATA_IMAGE: &str = "docker.io/jasonish/suricata:latest";
 pub const DEFAULT_EVEBOX_IMAGE: &str = "docker.io/jasonish/evebox:master";
@@ -309,26 +304,9 @@ pub(crate) fn find_manager(podman: bool) -> Option<ContainerManager> {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) enum Container {
     Suricata,
     EveBox,
-}
-
-impl Container {
-    pub(crate) fn volumes(&self) -> Vec<String> {
-        match self {
-            Container::Suricata => {
-                vec![format!("{}:/var/log/suricata", SURICATA_VOLUME_LOG)]
-            }
-            Container::EveBox => {
-                vec![
-                    format!("{}:/var/log/suricata", SURICATA_VOLUME_LOG),
-                    format!("{}:/var/lib/evebox", EVEBOX_VOLUME_LIB),
-                ]
-            }
-        }
-    }
 }
 
 pub(crate) struct SuricataContainer {
@@ -341,11 +319,16 @@ impl SuricataContainer {
     }
 
     pub(crate) fn volumes(&self) -> Vec<String> {
-        vec![
-            format!("{}:/var/log/suricata", SURICATA_VOLUME_LOG),
-            format!("{}:/var/lib/suricata", SURICATA_VOLUME_LIB),
-            format!("{}:/var/run/suricata", SURICATA_VOLUME_RUN),
-        ]
+        let libdir = self.context.config_directory.join("suricata").join("lib");
+        let logdir = self.context.data_directory.join("suricata").join("log");
+        let rundir = self.context.data_directory.join("suricata").join("run");
+
+        let volumes = vec![
+            format!("{}:/var/log/suricata", logdir.display()),
+            format!("{}:/var/lib/suricata", libdir.display()),
+            format!("{}:/var/run/suricata", rundir.display()),
+        ];
+        volumes
     }
 
     pub(crate) fn run(&self) -> RunCommandBuilder {
@@ -366,6 +349,7 @@ pub(crate) struct RunCommandBuilder {
     volumes: Vec<String>,
     name: Option<String>,
     args: Vec<String>,
+    user: Option<String>,
 }
 
 impl RunCommandBuilder {
@@ -378,6 +362,7 @@ impl RunCommandBuilder {
             volumes: vec![],
             name: None,
             args: vec![],
+            user: None,
         }
     }
 
@@ -388,6 +373,11 @@ impl RunCommandBuilder {
 
     pub(crate) fn it(&mut self) -> &mut Self {
         self.it = true;
+        self
+    }
+
+    pub fn user(&mut self, user: impl ToString) -> &mut Self {
+        self.user = Some(user.to_string());
         self
     }
 
@@ -429,6 +419,9 @@ impl RunCommandBuilder {
         }
         for volume in &self.volumes {
             command.arg(format!("--volume={}", volume));
+        }
+        if let Some(user) = &self.user {
+            command.arg(format!("--user={}", user));
         }
         command.arg(&self.image);
         command.args(&self.args);

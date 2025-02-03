@@ -1,45 +1,128 @@
 // SPDX-FileCopyrightText: (C) 2024 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use crate::{context::Context, term};
+use colored::Colorize;
 
-pub(crate) fn menu(context: &mut Context) {
+use crate::context::Context;
+use crate::prelude::*;
+use crate::prompt::Selections;
+use crate::term;
+
+#[derive(Clone)]
+enum Options {
+    Toggle,
+    Interface,
+    Bpf,
+    Exit,
+}
+
+pub(crate) fn menu(context: &mut Context) -> Result<()> {
+    let config = &mut context.config;
+    let original = config.clone();
+
     loop {
-        term::title("EveCtl: Configure Suricata");
+        term::clear();
 
-        let current_bpf = if let Some(bpf) = &context.config.suricata.bpf {
-            format!(" [{}]", bpf)
+        if config != &original {
+            warn!("Suricata configuration updated, restart required.");
+        }
+
+        let mut selections = crate::prompt::Selections::new();
+
+        if config.suricata.enabled {
+            selections.push(Options::Toggle, "Disable Suricata");
         } else {
-            "".to_string()
+            selections.push(Options::Toggle, "Enable Suricata");
+        }
+
+        if config.suricata.interfaces.is_empty() {
+            selections.push(Options::Interface, "Select Interface");
+        } else {
+            selections.push(
+                Options::Interface,
+                format!(
+                    "Select Interface (current: {})",
+                    &config.suricata.interfaces[0]
+                ),
+            );
+        }
+
+        let current_bpf = if let Some(bpf) = &config.suricata.bpf {
+            format!(" (current: \"{}\")", bpf)
+        } else {
+            " (current: none)".to_string()
         };
+        selections.push(Options::Bpf, format!("BPF filter{}", current_bpf));
 
-        let mut selections = crate::prompt::Selections::with_index();
-        selections.push("bpf-filter", format!("BPF filter{}", current_bpf));
-        selections.push("return", "Return");
+        selections.push(Options::Exit, "Return");
 
-        match inquire::Select::new("Select an option", selections.to_vec()).prompt() {
+        match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec()).prompt() {
             Ok(selection) => match selection.tag {
-                "bpf-filter" => set_bpf_filter(context),
-                _ => return,
+                Options::Toggle => {
+                    toggle_enabled(config);
+                }
+                Options::Interface => {
+                    let interface = select_interface("Select Interface")?;
+                    config.suricata.interfaces = vec![interface.clone()];
+                }
+                Options::Bpf => {
+                    set_bpf_filter(config);
+                }
+                Options::Exit => break,
             },
-            Err(_) => return,
+            Err(_) => break,
+        }
+    }
+
+    if config != &original {
+        config.save()?;
+    }
+
+    Ok(())
+}
+
+fn toggle_enabled(config: &mut Config) {
+    config.suricata.enabled = !config.suricata.enabled;
+    if config.suricata.enabled && config.suricata.interfaces.is_empty() {
+        if let Ok(interface) = select_interface("Select Interface") {
+            config.suricata.interfaces = vec![interface];
         }
     }
 }
 
-fn set_bpf_filter(context: &mut Context) {
-    let default = context
-        .config
-        .suricata
-        .bpf
-        .as_ref()
-        .map(|s| s.to_string())
-        .unwrap_or("".to_string());
-    if let Ok(filter) = inquire::Text::new("Enter BPF filter")
-        .with_default(&default)
-        .prompt()
-    {
-        context.config.suricata.bpf = Some(filter);
-        context.config.save().unwrap();
+fn select_interface(prompt: &str) -> Result<String> {
+    let interfaces = evectl::system::get_interfaces().unwrap();
+
+    let mut selections = Selections::with_index();
+    for interface in &interfaces {
+        let address = interface
+            .addr4
+            .first()
+            .map(|s| format!("-- {}", s.green().italic()))
+            .unwrap_or("".to_string());
+        selections.push(&interface.name, format!("{} {}", interface.name, address));
+    }
+
+    let iface = inquire::Select::new(prompt, selections.to_vec()).prompt()?;
+    Ok(iface.tag.to_string())
+}
+
+fn set_bpf_filter(config: &mut Config) {
+    let current = config.suricata.bpf.clone();
+    if let Ok(filter) = inquire::Text::new("Enter BPF filter:").prompt() {
+        if filter.is_empty() {
+            if current.is_none() {
+                return;
+            }
+            if inquire::Confirm::new("Clear BPF filter?")
+                .with_default(true)
+                .prompt()
+                .unwrap_or(false)
+            {
+                config.suricata.bpf = None;
+            }
+        } else {
+            config.suricata.bpf = Some(filter);
+        }
     }
 }

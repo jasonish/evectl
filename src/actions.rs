@@ -1,16 +1,15 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashSet;
+use crate::prelude::*;
 
-use anyhow::{bail, Result};
-use tracing::error;
+use std::collections::HashSet;
 
 use crate::container::{CommandExt, SuricataContainer};
 use crate::context::Context;
 use crate::ruleindex::RuleIndex;
-use crate::SURICATA_CONTAINER_NAME;
-use crate::{build_evebox_command, EVEBOX_CONTAINER_NAME};
+use crate::{build_evebox_agent_command, EVEBOX_AGENT_CONTAINER_NAME, SURICATA_CONTAINER_NAME};
+use crate::{build_evebox_server_command, EVEBOX_SERVER_CONTAINER_NAME};
 
 pub(crate) fn force_suricata_logrotate(context: &Context) {
     let _ = context
@@ -81,16 +80,13 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
 
     let mut volumes = vec![];
 
-    if let Ok(cdir) = std::env::current_dir() {
-        for filename in ["enable.conf", "disable.conf", "modify.conf"] {
-            if cdir.join(filename).exists() {
-                volumes.push(format!(
-                    "{}/{}:/etc/suricata/{}",
-                    cdir.display(),
-                    filename,
-                    filename,
-                ));
-            }
+    let config_filenames = ["enable.conf", "disable.conf", "modify.conf"];
+    for filename in config_filenames {
+        let source = context.config_directory.join(filename);
+        let target = format!("/etc/suricata/{}", filename);
+        if source.exists() {
+            info!("Bind-mounting {} to {}", source.display(), &target);
+            volumes.push(format!("{}:{}", source.display(), target));
         }
     }
 
@@ -98,12 +94,14 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
         .run()
         .rm()
         .it()
+        .user("suricata")
         .args(&["suricata-update", "update-sources"])
         .build()
         .status_ok()
     {
         error!("Rule source update did not complete successfully: {err}");
     }
+
     if let Err(err) = container
         .run()
         .rm()
@@ -118,9 +116,9 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn start_evebox(context: &Context) -> Result<()> {
-    context.manager.quiet_rm(EVEBOX_CONTAINER_NAME);
-    let mut command = build_evebox_command(context, true);
+pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
+    context.manager.quiet_rm(EVEBOX_SERVER_CONTAINER_NAME);
+    let mut command = build_evebox_server_command(context, true);
     let output = command.output()?;
     if !output.status.success() {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());
@@ -128,6 +126,24 @@ pub(crate) fn start_evebox(context: &Context) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn stop_evebox(context: &Context) -> Result<()> {
-    context.manager.stop(EVEBOX_CONTAINER_NAME, Some("SIGINT"))
+pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
+    context.manager.quiet_rm(EVEBOX_AGENT_CONTAINER_NAME);
+    let mut command = build_evebox_agent_command(context, true);
+    let output = command.output()?;
+    if !output.status.success() {
+        bail!(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn stop_evebox_server(context: &Context) -> Result<()> {
+    context
+        .manager
+        .stop(EVEBOX_SERVER_CONTAINER_NAME, Some("SIGINT"))
+}
+
+pub(crate) fn _stop_evebox_agent(context: &Context) -> Result<()> {
+    context
+        .manager
+        .stop(EVEBOX_AGENT_CONTAINER_NAME, Some("SIGINT"))
 }

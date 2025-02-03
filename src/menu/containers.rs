@@ -3,9 +3,9 @@
 
 use crate::{container::Container, context::Context};
 
-pub(crate) fn advanced_menu(context: &mut Context) {
+pub(crate) fn menu(context: &mut Context) {
     loop {
-        crate::term::title("EveCtl: Advanced Configuration");
+        crate::term::clear();
 
         let suricata_image_name = context.image_name(Container::Suricata);
         let evebox_image_name = context.image_name(Container::EveBox);
@@ -13,9 +13,9 @@ pub(crate) fn advanced_menu(context: &mut Context) {
         let selections = crate::prompt::Selections::new()
             .push(
                 "suricata",
-                format!("Suricata Container: {}", suricata_image_name),
+                format!("Suricata Image: {}", suricata_image_name),
             )
-            .push("evebox", format!("EveBox Container: {}", evebox_image_name))
+            .push("evebox", format!("EveBox Image: {}", evebox_image_name))
             .push("return", "Return")
             .to_vec();
 
@@ -58,10 +58,10 @@ fn set_evebox_image(context: &mut Context, default: &str) {
         .prompt()
     {
         Ok(image) => {
-            context.config.evebox.image = Some(image);
+            context.config.evebox_server.image = Some(image);
         }
         Err(_) => {
-            context.config.evebox.image = None;
+            context.config.evebox_server.image = None;
         }
     }
     context.config.save().unwrap();

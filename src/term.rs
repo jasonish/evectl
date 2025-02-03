@@ -7,6 +7,15 @@ use crossterm::{
 };
 use std::io::Write;
 
+pub(crate) fn clear() {
+    let no_clear = std::env::var("NO_CLEAR").map(|_| true).unwrap_or(false);
+    if !no_clear {
+        let mut stdout = std::io::stdout().lock();
+        let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
+        let _ = stdout.flush();
+    }
+}
+
 pub(crate) fn title(title: &str) {
     let no_clear = std::env::var("NO_CLEAR").map(|_| true).unwrap_or(false);
     if no_clear {

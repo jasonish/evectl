@@ -5,26 +5,25 @@ use anyhow::Result;
 
 use crate::{context::Context, term};
 
+#[derive(Clone)]
+enum Options {
+    ContainerImages,
+    Return,
+}
+
 /// Main configure menu.
 pub(crate) fn main(context: &mut Context) -> Result<()> {
     loop {
-        term::title("EveCtl: Configure");
+        term::clear();
 
         let mut selections = crate::prompt::Selections::with_index();
-        selections.push("suricata", "Suricata Configuration");
-        selections.push("suricata-update", "Suricata-Update Configuration");
-        selections.push("evebox", "EveBox Configuration");
-        selections.push("advanced", "Advanced");
-        selections.push("return", "Return");
+        selections.push(Options::ContainerImages, "Containers Images");
+        selections.push(Options::Return, "Return");
 
-        match inquire::Select::new("Select menu option", selections.to_vec()).prompt() {
+        match inquire::Select::new("EveCtl: Configure", selections.to_vec()).prompt() {
             Ok(selection) => match selection.tag {
-                "suricata" => crate::menu::suricata::menu(context),
-                "suricata-update" => crate::menu::suricata_update::menu(context)?,
-                "evebox" => crate::menu::evebox::configure(context),
-                "advanced" => crate::menu::advanced::advanced_menu(context),
-                "return" => return Ok(()),
-                _ => unimplemented!(),
+                Options::ContainerImages => crate::menu::containers::menu(context),
+                Options::Return => return Ok(()),
             },
             Err(_) => break,
         }

@@ -10,7 +10,10 @@ use std::{
 use clap::Parser;
 use regex::Regex;
 
-use crate::{context::Context, EVEBOX_CONTAINER_NAME, SURICATA_CONTAINER_NAME};
+use crate::{
+    context::Context, EVEBOX_AGENT_CONTAINER_NAME, EVEBOX_SERVER_CONTAINER_NAME,
+    SURICATA_CONTAINER_NAME,
+};
 
 #[derive(Parser, Debug)]
 pub(crate) struct LogArgs {
@@ -21,7 +24,12 @@ pub(crate) struct LogArgs {
 }
 
 pub(crate) fn logs(ctx: &Context, args: LogArgs) {
-    let containers = [SURICATA_CONTAINER_NAME, EVEBOX_CONTAINER_NAME];
+    let containers = [
+        SURICATA_CONTAINER_NAME,
+        EVEBOX_SERVER_CONTAINER_NAME,
+        EVEBOX_AGENT_CONTAINER_NAME,
+        crate::elastic::ELASTICSEARCH_CONTAINER_NAME,
+    ];
     let max_container_name_len = containers.iter().map(|s| s.len()).max().unwrap_or(0);
     let mut handles = vec![];
 
@@ -33,7 +41,7 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
                         continue;
                     }
                 }
-                EVEBOX_CONTAINER_NAME => {
+                EVEBOX_SERVER_CONTAINER_NAME => {
                     if !args.services.contains(&"evebox".to_string()) {
                         continue;
                     }

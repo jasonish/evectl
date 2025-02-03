@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use crate::{
-    actions, context::Context, prompt, term, EVEBOX_CONTAINER_NAME, SURICATA_CONTAINER_NAME,
+    actions, context::Context, prompt, term, EVEBOX_SERVER_CONTAINER_NAME, SURICATA_CONTAINER_NAME,
 };
 
-pub(crate) fn other(context: &Context) {
+pub(crate) fn menu(context: &Context) {
     loop {
         term::title("EveCtl: Other Menu Items");
 
@@ -47,7 +47,7 @@ pub(crate) fn other(context: &Context) {
                             "-it",
                             "-e",
                             "PS1=[\\u@evebox \\W]\\$ ",
-                            EVEBOX_CONTAINER_NAME,
+                            EVEBOX_SERVER_CONTAINER_NAME,
                             "/bin/sh",
                         ])
                         .status();
