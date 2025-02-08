@@ -855,7 +855,8 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
         args.add("--detach");
     }
 
-    if let Err(err) = configs::write_af_packet_stub(context) {
+    let path = context.config_directory.join("af-packet.yaml");
+    if let Err(err) = configs::write_af_packet_stub(&path) {
         error!("Failed to write af-packet stub: {err}");
     } else {
         let path = context.config_directory.join("af-packet.yaml");
