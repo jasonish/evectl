@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: (C) 2025 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use crate::prelude::*;
+use std::path::Path;
 
-pub(crate) const AF_PACKET_STUB: &str = "
+// No prelude as this is exported in the library and the prelude isn't
+// for now.
+use anyhow::Result;
+use tracing::info;
+
+pub const AF_PACKET_STUB: &str = "
 %YAML 1.1
 ---
 
@@ -22,9 +27,8 @@ af-packet:
     block-size: 2097152
 ";
 
-pub(crate) fn write_af_packet_stub(context: &Context) -> Result<()> {
-    let path = context.config_directory.join("af-packet.yaml");
+pub fn write_af_packet_stub(path: &Path) -> Result<()> {
     info!("Writing af-packet partial to {}", path.display());
-    std::fs::write(&path, AF_PACKET_STUB)?;
+    std::fs::write(path, AF_PACKET_STUB)?;
     Ok(())
 }
