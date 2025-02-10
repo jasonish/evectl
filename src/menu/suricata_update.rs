@@ -134,14 +134,14 @@ fn copy_suricata_update_template(context: &Context, filename: &str) -> Result<()
         .args(&["cat", &source])
         .build()
         .status_output()?;
-    let target_filename = context.config_directory.join(filename);
+    let target_filename = context.config_dir().join(filename);
     let mut target = std::fs::File::create(target_filename)?;
     target.write_all(&output)?;
     Ok(())
 }
 
 fn edit_file(context: &Context, filename: &str) {
-    let path = context.config_directory.join(filename);
+    let path = context.config_dir().join(filename);
     if !path.exists() {
         if let Ok(true) = inquire::Confirm::new(&format!(
             "Would you like to start with a {} template",

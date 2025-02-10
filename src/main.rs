@@ -24,6 +24,7 @@ mod configs;
 mod container;
 mod context;
 mod elastic;
+mod evebox;
 mod logs;
 mod menu;
 mod prelude;
@@ -32,12 +33,6 @@ mod ruleindex;
 mod selfupdate;
 mod suricata;
 mod term;
-
-const SURICATA_CONTAINER_NAME: &str = "evectl-suricata";
-const EVEBOX_SERVER_CONTAINER_NAME: &str = "evectl-evebox-server";
-const EVEBOX_AGENT_CONTAINER_NAME: &str = "evectl-evebox-agent";
-
-const SURICATA_VOLUME_LOG: &str = "evectl-suricata-log";
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -95,9 +90,7 @@ enum Commands {
     Version,
 
     #[command(hide = true)]
-    Menu {
-        menu: String,
-    },
+    Menu { menu: String },
 }
 
 fn is_interactive(command: &Option<Commands>) -> bool {
@@ -140,22 +133,18 @@ fn main() -> Result<()> {
         tracing_subscriber::fmt().with_max_level(log_level).init();
     }
 
-    let data_directory = dirs::data_dir()
-        .map(|dir| dir.join("evectl"))
-        .ok_or_else(|| anyhow!("Failed to determine data directory"))?;
-    let config_directory = dirs::config_dir()
-        .map(|dir| dir.join("evectl"))
-        .ok_or_else(|| anyhow!("Failed to determine configuration directory"))?;
-    let config_file = config_directory.join("config.toml");
-    let config = if config_file.exists() {
-        crate::config::Config::from_file(&config_file)?
-    } else {
-        crate::config::Config::default_with_filename(&config_file)
-    };
+    let root = std::env::current_dir()?;
 
-    // Make sure config and data directories exist.
-    std::fs::create_dir_all(&config_directory)?;
-    std::fs::create_dir_all(&data_directory)?;
+    // Config file path name. For now we use `evectl.toml` in the
+    // current directory. But the Freedesktop.org way would be
+    // ~/.config/evectl/config.toml.
+    let config_filename = root.join("evectl.toml");
+
+    let config = if config_filename.exists() {
+        crate::config::Config::from_file(&config_filename)?
+    } else {
+        crate::config::Config::default_with_filename(&config_filename)
+    };
 
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,
@@ -171,7 +160,7 @@ fn main() -> Result<()> {
     }
     info!("Found container manager {manager}");
 
-    let mut context = Context::new(config.clone(), config_directory, data_directory, manager);
+    let mut context = Context::new(config.clone(), root, manager);
 
     let prompt_for_update = {
         let mut not_found = false;
@@ -326,14 +315,28 @@ fn command_start(context: &Context, debug: bool) -> i32 {
 ///
 /// Typically not done from the menus but instead the command line.
 fn start_foreground(context: &Context) -> Result<()> {
-    let _ = context.manager.stop(SURICATA_CONTAINER_NAME, None);
-    context.manager.quiet_rm(SURICATA_CONTAINER_NAME);
+    info!("Starting services in the foreground");
 
-    let _ = context.manager.stop(EVEBOX_SERVER_CONTAINER_NAME, None);
-    context.manager.quiet_rm(EVEBOX_SERVER_CONTAINER_NAME);
+    let _ = context
+        .manager
+        .stop(&crate::suricata::container_name(context), None);
+    context
+        .manager
+        .quiet_rm(&crate::suricata::container_name(context));
 
-    let _ = context.manager.stop(EVEBOX_AGENT_CONTAINER_NAME, None);
-    context.manager.quiet_rm(EVEBOX_AGENT_CONTAINER_NAME);
+    let _ = context
+        .manager
+        .stop(&crate::evebox::server::container_name(context), None);
+    context
+        .manager
+        .quiet_rm(&crate::evebox::server::container_name(context));
+
+    let _ = context
+        .manager
+        .stop(&crate::evebox::agent::container_name(context), None);
+    context
+        .manager
+        .quiet_rm(&crate::evebox::agent::container_name(context));
 
     elastic::stop_elasticsearch(context);
 
@@ -373,7 +376,7 @@ fn start_foreground(context: &Context) -> Result<()> {
     }
 
     if context.config.elasticsearch.enabled {
-        let data_directory = context.data_directory.join("elastic");
+        let data_directory = context.data_dir().join("elastic");
         if let Err(err) = std::fs::create_dir_all(&data_directory) {
             error!("Failed to create data directory for Elasticsearch: {}", err);
             return Err(err.into());
@@ -452,7 +455,10 @@ fn start_foreground(context: &Context) -> Result<()> {
     if context.config.suricata.enabled {
         let now = std::time::Instant::now();
         loop {
-            if !context.manager.is_running(SURICATA_CONTAINER_NAME) {
+            if !context
+                .manager
+                .is_running(&crate::suricata::container_name(context))
+            {
                 if now.elapsed().as_secs() > 3 {
                     error!("Timed out waiting for the Suricata container to start running, not starting log rotation");
                     break;
@@ -474,10 +480,13 @@ fn start_foreground(context: &Context) -> Result<()> {
     }
 
     let _ = rx.recv();
-    let _ = context.manager.stop(SURICATA_CONTAINER_NAME, None);
     let _ = context
         .manager
-        .stop(EVEBOX_SERVER_CONTAINER_NAME, Some("SIGINT"));
+        .stop(&crate::suricata::container_name(context), None);
+    let _ = context.manager.stop(
+        &crate::evebox::server::container_name(context),
+        Some("SIGINT"),
+    );
 
     for (process, mut child) in children {
         match child.wait() {
@@ -512,37 +521,53 @@ fn stop_container(context: &Context, name: &str) -> bool {
 fn stop_all(context: &Context) -> bool {
     let mut ok = true;
 
-    if context.manager.container_exists(SURICATA_CONTAINER_NAME) {
-        info!("Stopping {SURICATA_CONTAINER_NAME}");
-        if !stop_container(context, SURICATA_CONTAINER_NAME) {
+    if context
+        .manager
+        .container_exists(&crate::suricata::container_name(context))
+    {
+        info!("Stopping {}", crate::suricata::container_name(context));
+        if !stop_container(context, &crate::suricata::container_name(context)) {
             ok = false;
         }
     } else {
-        info!("Container {SURICATA_CONTAINER_NAME} is not running");
+        info!(
+            "Container {} is not running",
+            crate::suricata::container_name(context)
+        );
     }
 
     if context
         .manager
-        .container_exists(EVEBOX_SERVER_CONTAINER_NAME)
+        .container_exists(&crate::evebox::server::container_name(context))
     {
-        info!("Stopping {EVEBOX_SERVER_CONTAINER_NAME}");
-        if !stop_container(context, EVEBOX_SERVER_CONTAINER_NAME) {
+        info!(
+            "Stopping {}",
+            &crate::evebox::server::container_name(context)
+        );
+        if !stop_container(context, &crate::evebox::server::container_name(context)) {
             ok = false;
         }
     } else {
-        info!("Container {EVEBOX_SERVER_CONTAINER_NAME} is not running");
+        info!(
+            "Container {} is not running",
+            &crate::evebox::server::container_name(context)
+        );
     }
 
+    // Agent.
     if context
         .manager
-        .container_exists(EVEBOX_AGENT_CONTAINER_NAME)
+        .container_exists(&crate::evebox::agent::container_name(context))
     {
-        info!("Stopping {EVEBOX_AGENT_CONTAINER_NAME}");
-        if !stop_container(context, EVEBOX_AGENT_CONTAINER_NAME) {
+        info!("Stopping {}", crate::evebox::agent::container_name(context));
+        if !stop_container(context, &crate::evebox::agent::container_name(context)) {
             ok = false;
         }
     } else {
-        info!("Container {EVEBOX_AGENT_CONTAINER_NAME} is not running");
+        info!(
+            "Container {} is not running",
+            crate::evebox::agent::container_name(context)
+        );
     }
 
     // Stop Elasticsearch
@@ -554,7 +579,10 @@ fn stop_all(context: &Context) -> bool {
 
 fn command_status(context: &Context) -> i32 {
     let mut code = 0;
-    match context.manager.state(SURICATA_CONTAINER_NAME) {
+    match context
+        .manager
+        .state(&crate::suricata::container_name(context))
+    {
         Ok(state) => info!("suricata: {}", state.status),
         Err(err) => {
             let err = format!("{}", err);
@@ -562,7 +590,10 @@ fn command_status(context: &Context) -> i32 {
             code = 1;
         }
     }
-    match context.manager.state(EVEBOX_SERVER_CONTAINER_NAME) {
+    match context
+        .manager
+        .state(&crate::evebox::server::container_name(context))
+    {
         Ok(state) => info!("evebox: {}", state.status),
         Err(err) => {
             let err = format!("{}", err);
@@ -630,7 +661,7 @@ fn menu_main(mut context: Context) -> Result<()> {
         let suricata_state = if context.config.suricata.enabled {
             context
                 .manager
-                .state(SURICATA_CONTAINER_NAME)
+                .state(&crate::suricata::container_name(&context))
                 .map(|state| state.status)
                 .unwrap_or_else(|_| "not running".to_string())
         } else {
@@ -641,7 +672,7 @@ fn menu_main(mut context: Context) -> Result<()> {
             let evebox_url = guess_evebox_url(&context);
             context
                 .manager
-                .state(EVEBOX_SERVER_CONTAINER_NAME)
+                .state(&crate::evebox::server::container_name(&context))
                 .map(|state| {
                     if state.status == "running" {
                         format!("{} {}", state.status, evebox_url,)
@@ -657,7 +688,7 @@ fn menu_main(mut context: Context) -> Result<()> {
         let evebox_agent_state = if context.config.evebox_agent.enabled {
             context
                 .manager
-                .state(EVEBOX_AGENT_CONTAINER_NAME)
+                .state(&crate::evebox::agent::container_name(&context))
                 .map(|state| state.status.to_string())
                 .unwrap_or_else(|_| "not running".to_string())
         } else {
@@ -667,15 +698,19 @@ fn menu_main(mut context: Context) -> Result<()> {
         let elastic_state = if context.config.elasticsearch.enabled {
             context
                 .manager
-                .state(elastic::ELASTICSEARCH_CONTAINER_NAME)
+                .state(&elastic::container_name(&context))
                 .map(|state| state.status)
                 .unwrap_or_else(|_| "not running".to_string())
         } else {
             "not enabled".to_string()
         };
 
-        let running = context.manager.is_running(SURICATA_CONTAINER_NAME)
-            || context.manager.is_running(EVEBOX_SERVER_CONTAINER_NAME);
+        let running = context
+            .manager
+            .is_running(&crate::suricata::container_name(&context))
+            || context
+                .manager
+                .is_running(&crate::evebox::server::container_name(&context));
 
         // TODO: Warn if not running but should be.
         info!("Suricata:      {}", suricata_state);
@@ -853,7 +888,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     let mut args = ArgBuilder::from(&[
         "run",
         "--name",
-        SURICATA_CONTAINER_NAME,
+        &crate::suricata::container_name(context),
         "--net=host",
         "--cap-add=sys_nice",
         "--cap-add=net_admin",
@@ -864,11 +899,11 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
         args.add("--detach");
     }
 
-    let path = context.config_directory.join("af-packet.yaml");
+    let path = context.config_dir().join("af-packet.yaml");
     if let Err(err) = configs::write_af_packet_stub(&path) {
         error!("Failed to write af-packet stub: {err}");
     } else {
-        let path = context.config_directory.join("af-packet.yaml");
+        let path = context.config_dir().join("af-packet.yaml");
         args.add(format!(
             "--volume={}:/config/af-packet.yaml",
             path.display()
@@ -913,7 +948,9 @@ fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
 }
 
 fn start_suricata_detached(context: &Context) -> Result<()> {
-    context.manager.quiet_rm(SURICATA_CONTAINER_NAME);
+    context
+        .manager
+        .quiet_rm(&crate::suricata::container_name(context));
     suricata::mkdirs(context)?;
     let mut command = build_suricata_command(context, true)?;
     let output = command.output()?;
@@ -935,7 +972,7 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
         .args([
             "exec",
             "-d",
-            SURICATA_CONTAINER_NAME,
+            &crate::suricata::container_name(context),
             "bash",
             "-c",
             "while true; do logrotate -v /etc/logrotate.d/suricata > /tmp/last_logrotate 2>&1; sleep 600; done",
@@ -953,7 +990,11 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
 }
 
 fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Command {
-    let mut args = ArgBuilder::from(&["run", "--name", EVEBOX_SERVER_CONTAINER_NAME]);
+    let mut args = ArgBuilder::from(&[
+        "run",
+        "--name",
+        &crate::evebox::server::container_name(context),
+    ]);
     if context.config.evebox_server.allow_remote {
         args.add("--publish=5636:5636");
     } else {
@@ -969,19 +1010,19 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
 
     args.add(format!(
         "--volume={}:/var/log/suricata",
-        context
-            .data_directory
-            .join("suricata")
-            .join("log")
-            .display()
+        context.data_dir().join("suricata").join("log").display()
     ));
 
-    let host_data_directory = context.data_directory.join("evebox").join("server");
-    std::fs::create_dir_all(&host_data_directory).unwrap();
+    let host_config_directory = context.config_dir().join("evebox").join("server");
+    std::fs::create_dir_all(&host_config_directory).unwrap();
     args.add(format!(
-        "--volume={}:/var/lib/evebox",
-        host_data_directory.display(),
+        "--volume={}:/config",
+        host_config_directory.display()
     ));
+
+    let host_data_directory = context.data_dir().join("evebox").join("server");
+    std::fs::create_dir_all(&host_data_directory).unwrap();
+    args.add(format!("--volume={}:/data", host_data_directory.display()));
 
     args.add(context.image_name(Container::EveBox));
     args.extend(&["evebox", "server"]);
@@ -1003,6 +1044,9 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
         args.add("--sqlite");
     }
 
+    args.add("--data-directory=/data");
+    args.add("--config-directory=/config");
+
     args.add("/var/log/suricata/eve.json");
 
     let mut command = context.manager.command();
@@ -1011,15 +1055,20 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
 }
 
 fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Command {
-    let mut args = ArgBuilder::from(&["run", "--name", EVEBOX_AGENT_CONTAINER_NAME]);
+    let mut args = ArgBuilder::from(&[
+        "run",
+        "--name",
+        &crate::evebox::agent::container_name(context),
+    ]);
     if detatched {
         args.add("-d");
     }
 
-    let libdir = context.data_directory.join("evebox").join("agent");
+    let libdir = context.data_dir().join("evebox").join("agent");
+    let logdir = context.data_dir().join("suricata").join("log");
 
     let volumes = vec![
-        format!("{}:/var/log/suricata", SURICATA_VOLUME_LOG),
+        format!("{}:/var/log/suricata", logdir.display()),
         format!("{}:/var/lib/evebox", libdir.display()),
     ];
 

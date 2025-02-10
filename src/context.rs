@@ -10,9 +10,7 @@ use crate::{
 
 #[derive(Clone)]
 pub(crate) struct Context {
-    pub config_directory: PathBuf,
-
-    pub data_directory: PathBuf,
+    pub root: PathBuf,
 
     pub config: Config,
 
@@ -26,15 +24,13 @@ pub(crate) struct Context {
 impl Context {
     pub(crate) fn new(
         config: Config,
-        config_directory: PathBuf,
-        data_directory: PathBuf,
+        root: PathBuf,
         manager: ContainerManager,
     ) -> Self {
         let suricata_image = image_name(&config, Container::Suricata);
         let evebox_image = image_name(&config, Container::EveBox);
         Self {
-            config_directory,
-            data_directory,
+            root,
             config,
             manager,
             suricata_image,
@@ -48,6 +44,14 @@ impl Context {
     /// it to be overridden in the configuration.
     pub(crate) fn image_name(&self, container: Container) -> String {
         image_name(&self.config, container)
+    }
+
+    pub fn config_dir(&self) -> PathBuf {
+        self.root.join("config")
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.join("data")
     }
 }
 

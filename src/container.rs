@@ -319,9 +319,9 @@ impl SuricataContainer {
     }
 
     pub(crate) fn volumes(&self) -> Vec<String> {
-        let libdir = self.context.config_directory.join("suricata").join("lib");
-        let logdir = self.context.data_directory.join("suricata").join("log");
-        let rundir = self.context.data_directory.join("suricata").join("run");
+        let libdir = self.context.config_dir().join("suricata").join("lib");
+        let logdir = self.context.data_dir().join("suricata").join("log");
+        let rundir = self.context.data_dir().join("suricata").join("run");
 
         let volumes = vec![
             format!("{}:/var/log/suricata", logdir.display()),

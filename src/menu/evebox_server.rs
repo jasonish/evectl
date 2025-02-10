@@ -3,10 +3,7 @@
 
 use crate::prelude::*;
 
-use crate::{
-    actions, config::EveBoxServerConfig, container::Container, context::Context, prompt, term,
-    ArgBuilder, EVEBOX_SERVER_CONTAINER_NAME,
-};
+use crate::{actions, config::EveBoxServerConfig, context::Context, prompt, term};
 
 #[derive(Clone)]
 enum Options {
@@ -26,7 +23,9 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
     loop {
         term::clear();
 
-        let is_running = context.manager.is_running(EVEBOX_SERVER_CONTAINER_NAME);
+        let is_running = context
+            .manager
+            .is_running(&crate::evebox::server::container_name(context));
         restart_required = is_running && original_config != context.config;
 
         let mut selections = crate::prompt::Selections::with_index();
@@ -96,7 +95,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 }
                 Options::ToggleTls => toggle_tls(&mut context.config.evebox_server),
                 Options::ToggleAuth => toggle_auth(&mut context.config.evebox_server),
-                Options::ResetPassword => reset_password(context),
+                Options::ResetPassword => crate::evebox::server::reset_password(context),
                 Options::EnableRemote => enable_remote_access(context),
                 Options::DisableRemote => disable_remote_access(context),
                 Options::ToggleElasticsearch => toggle_elasticsearch(context),
@@ -180,10 +179,13 @@ fn enable_remote_access(context: &mut Context) {
         .with_default(true)
         .prompt()
     {
-        reset_password(context);
+        crate::evebox::server::reset_password(context);
     }
 
-    if context.manager.is_running(EVEBOX_SERVER_CONTAINER_NAME) {
+    if context
+        .manager
+        .is_running(&crate::evebox::server::container_name(context))
+    {
         info!("Restarting EveBox");
         let _ = actions::stop_evebox_server(context);
         let _ = actions::start_evebox_server(context);
@@ -193,41 +195,4 @@ fn enable_remote_access(context: &mut Context) {
 
 fn disable_remote_access(context: &mut Context) {
     context.config.evebox_server.allow_remote = false;
-}
-
-fn reset_password(context: &mut Context) {
-    let image = context.image_name(Container::EveBox);
-    let mut args = ArgBuilder::new();
-    args.add("run");
-
-    let host_data_directory = context.data_directory.join("evebox").join("server");
-    std::fs::create_dir_all(&host_data_directory).unwrap();
-    args.add(format!(
-        "--volume={}:/var/lib/evebox",
-        host_data_directory.display(),
-    ));
-
-    args.extend(&[
-        "--rm", "-it", &image, "evebox", "config", "users", "rm", "admin",
-    ]);
-    let _ = context.manager.command().args(&args.args).status();
-
-    let mut args = ArgBuilder::new();
-    args.add("run");
-    args.add(format!(
-        "--volume={}:/var/lib/evebox",
-        host_data_directory.display(),
-    ));
-    args.extend(&[
-        "--rm",
-        "-it",
-        &image,
-        "evebox",
-        "config",
-        "users",
-        "add",
-        "--username",
-        "admin",
-    ]);
-    let _ = context.manager.command().args(&args.args).status();
 }

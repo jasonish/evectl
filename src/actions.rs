@@ -5,11 +5,11 @@ use crate::prelude::*;
 
 use std::collections::HashSet;
 
+use crate::build_evebox_agent_command;
+use crate::build_evebox_server_command;
 use crate::container::{CommandExt, SuricataContainer};
 use crate::context::Context;
 use crate::ruleindex::RuleIndex;
-use crate::{build_evebox_agent_command, EVEBOX_AGENT_CONTAINER_NAME, SURICATA_CONTAINER_NAME};
-use crate::{build_evebox_server_command, EVEBOX_SERVER_CONTAINER_NAME};
 
 pub(crate) fn force_suricata_logrotate(context: &Context) {
     let _ = context
@@ -17,7 +17,7 @@ pub(crate) fn force_suricata_logrotate(context: &Context) {
         .command()
         .args([
             "exec",
-            SURICATA_CONTAINER_NAME,
+            &crate::suricata::container_name(context),
             "logrotate",
             "-fv",
             "/etc/logrotate.d/suricata",
@@ -82,7 +82,7 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
 
     let config_filenames = ["enable.conf", "disable.conf", "modify.conf"];
     for filename in config_filenames {
-        let source = context.config_directory.join(filename);
+        let source = context.config_dir().join(filename);
         let target = format!("/etc/suricata/{}", filename);
         if source.exists() {
             info!("Bind-mounting {} to {}", source.display(), &target);
@@ -117,7 +117,9 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
 }
 
 pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
-    context.manager.quiet_rm(EVEBOX_SERVER_CONTAINER_NAME);
+    context
+        .manager
+        .quiet_rm(&crate::evebox::server::container_name(context));
     let mut command = build_evebox_server_command(context, true);
     let output = command.output()?;
     if !output.status.success() {
@@ -127,7 +129,9 @@ pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
 }
 
 pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
-    context.manager.quiet_rm(EVEBOX_AGENT_CONTAINER_NAME);
+    context
+        .manager
+        .quiet_rm(&crate::evebox::agent::container_name(context));
     let mut command = build_evebox_agent_command(context, true);
     let output = command.output()?;
     if !output.status.success() {
@@ -137,13 +141,15 @@ pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
 }
 
 pub(crate) fn stop_evebox_server(context: &Context) -> Result<()> {
-    context
-        .manager
-        .stop(EVEBOX_SERVER_CONTAINER_NAME, Some("SIGINT"))
+    context.manager.stop(
+        &crate::evebox::server::container_name(context),
+        Some("SIGINT"),
+    )
 }
 
 pub(crate) fn _stop_evebox_agent(context: &Context) -> Result<()> {
-    context
-        .manager
-        .stop(EVEBOX_AGENT_CONTAINER_NAME, Some("SIGINT"))
+    context.manager.stop(
+        &crate::evebox::agent::container_name(context),
+        Some("SIGINT"),
+    )
 }

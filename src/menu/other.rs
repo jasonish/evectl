@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use crate::{
-    actions, context::Context, prompt, term, EVEBOX_SERVER_CONTAINER_NAME, SURICATA_CONTAINER_NAME,
-};
+use crate::{actions, context::Context, prompt, term};
 
 pub(crate) fn menu(context: &Context) {
     loop {
@@ -33,7 +31,7 @@ pub(crate) fn menu(context: &Context) {
                             "-it",
                             "-e",
                             "PS1=[\\u@suricata \\W]\\$ ",
-                            SURICATA_CONTAINER_NAME,
+                            &crate::suricata::container_name(context),
                             "bash",
                         ])
                         .status();
@@ -47,7 +45,7 @@ pub(crate) fn menu(context: &Context) {
                             "-it",
                             "-e",
                             "PS1=[\\u@evebox \\W]\\$ ",
-                            EVEBOX_SERVER_CONTAINER_NAME,
+                            &crate::evebox::server::container_name(context),
                             "/bin/sh",
                         ])
                         .status();

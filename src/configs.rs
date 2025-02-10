@@ -19,7 +19,7 @@ default-packet-size: 65549
 af-packet:
   - interface: default
     threads: auto
-    cluster-id: 99
+    cluster-id: 131
     cluster-type: cluster_flow
     defrag: yes
     use-mmap: yes

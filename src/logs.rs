@@ -10,53 +10,33 @@ use std::{
 use clap::Parser;
 use regex::Regex;
 
-use crate::{
-    context::Context, EVEBOX_AGENT_CONTAINER_NAME, EVEBOX_SERVER_CONTAINER_NAME,
-    SURICATA_CONTAINER_NAME,
-};
+use crate::{context::Context};
 
 #[derive(Parser, Debug)]
 pub(crate) struct LogArgs {
     #[arg(short, long, help = "Follow log output")]
     follow: bool,
-    #[arg(help = "Service to display logs for, default = all")]
-    services: Vec<String>,
 }
 
 pub(crate) fn logs(ctx: &Context, args: LogArgs) {
     let containers = [
-        SURICATA_CONTAINER_NAME,
-        EVEBOX_SERVER_CONTAINER_NAME,
-        EVEBOX_AGENT_CONTAINER_NAME,
-        crate::elastic::ELASTICSEARCH_CONTAINER_NAME,
+        crate::suricata::container_name(ctx),
+        crate::evebox::server::container_name(ctx),
+        crate::evebox::agent::container_name(ctx),
+        crate::elastic::container_name(ctx),
     ];
     let max_container_name_len = containers.iter().map(|s| s.len()).max().unwrap_or(0);
     let mut handles = vec![];
 
     for container in containers {
-        if !args.services.is_empty() {
-            match container {
-                SURICATA_CONTAINER_NAME => {
-                    if !args.services.contains(&"suricata".to_string()) {
-                        continue;
-                    }
-                }
-                EVEBOX_SERVER_CONTAINER_NAME => {
-                    if !args.services.contains(&"evebox".to_string()) {
-                        continue;
-                    }
-                }
-                _ => unimplemented!(),
-            }
-        }
-
+        let container = container.clone();
         let mut command = ctx.manager.command();
         command.arg("logs");
         command.arg("--timestamps");
         if args.follow {
             command.arg("--follow");
         }
-        command.arg(container);
+        command.arg(container.clone());
         let handle = thread::spawn(move || {
             match command
                 .stdout(Stdio::piped())
@@ -68,11 +48,12 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
 
                     let stdout = output.stdout.take().unwrap();
 
+                    let label = container.clone();
                     let handle = thread::spawn(move || {
                         log_line_printer(
                             format!(
                                 "{:width$} | stdout",
-                                container,
+                                &label,
                                 width = max_container_name_len
                             ),
                             stdout,
@@ -81,11 +62,12 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
                     handles.push(handle);
 
                     let stderr = output.stderr.take().unwrap();
+                    let label = container.clone();
                     let handle = thread::spawn(move || {
                         log_line_printer(
                             format!(
                                 "{:width$} | stderr",
-                                container,
+                                label,
                                 width = max_container_name_len
                             ),
                             stderr,
