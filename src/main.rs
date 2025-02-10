@@ -91,6 +91,9 @@ enum Commands {
     /// View the container logs
     Logs(LogArgs),
 
+    /// Display EveCtl version
+    Version,
+
     #[command(hide = true)]
     Menu {
         menu: String,
@@ -108,6 +111,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Update => false,
             Commands::Logs(_) => false,
             Commands::Menu { menu: _ } => true,
+            Commands::Version => false,
         },
         None => true,
     }
@@ -247,6 +251,11 @@ fn main() -> Result<()> {
                 }
                 _ => panic!("Unhandled menu: {}", menu),
             },
+            Commands::Version => {
+                // Display version and exit.
+                println!("{}", env!("CARGO_PKG_VERSION"));
+                0
+            }
         };
         std::process::exit(code);
     } else {
