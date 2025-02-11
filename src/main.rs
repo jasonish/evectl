@@ -16,8 +16,6 @@ use container::{Container, SuricataContainer};
 use logs::LogArgs;
 use tracing::Level;
 
-use crate::context::Context;
-
 mod actions;
 mod config;
 mod configs;

@@ -26,7 +26,14 @@ pub(crate) struct Config {
     pub evebox_agent: EveBoxAgentConfig,
 
     #[serde(default, skip_serializing_if = "is_default")]
-    pub elasticsearch: Elasticsearch,
+    pub elasticsearch: ElasticsearchConfig,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct ContainerConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub runtime: String,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -66,7 +73,7 @@ pub(crate) struct EveBoxServerConfig {
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) struct Elasticsearch {
+pub(crate) struct ElasticsearchConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub enabled: bool,
 }
