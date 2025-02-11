@@ -376,21 +376,6 @@ impl RunCommandBuilder {
         self
     }
 
-    pub fn user(&mut self, user: impl ToString) -> &mut Self {
-        self.user = Some(user.to_string());
-        self
-    }
-
-    pub(crate) fn _name(&mut self, name: impl ToString) -> &mut Self {
-        self.name = Some(name.to_string());
-        self
-    }
-
-    pub(crate) fn _arg(&mut self, arg: impl ToString) -> &mut Self {
-        self.args.push(arg.to_string());
-        self
-    }
-
     pub(crate) fn args(&mut self, args: &[impl ToString]) -> &mut Self {
         for arg in args {
             self.args.push(arg.to_string());

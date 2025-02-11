@@ -21,6 +21,12 @@ pub(crate) fn mkdirs(context: &Context) -> Result<()> {
             .join("suricata")
             .join("lib")
             .join("update"),
+        context
+            .config_dir()
+            .join("suricata")
+            .join("lib")
+            .join("update")
+            .join("cache"),
         context.data_dir().join("suricata").join("log"),
         context.data_dir().join("suricata").join("run"),
     ];

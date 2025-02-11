@@ -90,11 +90,11 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
         }
     }
 
+    info!("Updating Suricata rule sources...");
     if let Err(err) = container
         .run()
         .rm()
         .it()
-        .user("suricata")
         .args(&["suricata-update", "update-sources"])
         .build()
         .status_ok()
@@ -102,6 +102,7 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
         error!("Rule source update did not complete successfully: {err}");
     }
 
+    info!("Updating Suricata rules...");
     if let Err(err) = container
         .run()
         .rm()

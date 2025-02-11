@@ -90,7 +90,7 @@ fn toggle_enabled(config: &mut Config) {
     }
 }
 
-fn select_interface(prompt: &str) -> Result<String> {
+pub(crate) fn select_interface(prompt: &str) -> Result<String> {
     let interfaces = evectl::system::get_interfaces().unwrap();
 
     let mut selections = Selections::with_index();

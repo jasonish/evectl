@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::prelude::*;
 
-const DOCKER_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.17.1";
+pub(crate) const DOCKER_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.17.1";
 
 const BIN: &str = "bin/elasticsearch";
 
@@ -47,6 +47,8 @@ pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command
 /// Start Elasticsearch detached.
 pub(crate) fn start_elasticsearch(context: &Context) -> Result<()> {
     stop_elasticsearch(context);
+    let elastic_data_dir = context.data_dir().join("elastic");
+    std::fs::create_dir_all(&elastic_data_dir)?;
     context.manager.quiet_rm(&container_name(context));
 
     let mut command = build_docker_command(context, &["--detach"]);

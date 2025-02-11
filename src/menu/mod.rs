@@ -8,3 +8,4 @@ pub(crate) mod evebox_server;
 pub(crate) mod other;
 pub(crate) mod suricata;
 pub(crate) mod suricata_update;
+pub(crate) mod wizard;

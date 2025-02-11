@@ -68,6 +68,14 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 }
 
 fn set_server(config: &mut Config) -> Result<()> {
+    if let Some((server, disable_certificate_validation)) = prompt_for_server_url(config)? {
+        config.evebox_agent.server = server;
+        config.evebox_agent.disable_certificate_validation = disable_certificate_validation;
+    }
+    Ok(())
+}
+
+pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, bool)>> {
     'start: loop {
         let current = config.evebox_agent.server.clone();
         let server = match inquire::Text::new("EveBox Server URL:")
@@ -76,11 +84,11 @@ fn set_server(config: &mut Config) -> Result<()> {
             .prompt()
         {
             Ok(url) => url,
-            Err(_) => break,
+            Err(_) => return Ok(None),
         };
 
         if server == current {
-            break;
+            return Ok(None);
         }
 
         // First, validate the URL.
@@ -119,13 +127,8 @@ fn set_server(config: &mut Config) -> Result<()> {
             break;
         }
 
-        config.evebox_agent.server = server;
-        config.evebox_agent.disable_certificate_validation = !with_certificate_validation;
-
-        break;
+        return Ok(Some((server, !with_certificate_validation)));
     }
-
-    Ok(())
 }
 
 fn test_url(url: reqwest::Url, with_certificate_validation: bool) -> Result<()> {

@@ -131,26 +131,6 @@ fn main() -> Result<()> {
         tracing_subscriber::fmt().with_max_level(log_level).init();
     }
 
-    let root = std::env::current_dir()?;
-
-    // Config file path name. For now we use `evectl.toml` in the
-    // current directory. But the Freedesktop.org way would be
-    // ~/.config/evectl/config.toml.
-    let config_filename = root.join("evectl.toml");
-
-    let config = if config_filename.exists() {
-        crate::config::Config::from_file(&config_filename)?
-    } else {
-        let prompt = format!(
-            "Would you like to initialize a new instance in directory\n    {}",
-            root.display()
-        );
-        if !inquire::Confirm::new(&prompt).with_default(true).prompt()? {
-            std::process::exit(0);
-        }
-        crate::config::Config::default_with_filename(&config_filename)
-    };
-
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,
         None => {
@@ -165,7 +145,29 @@ fn main() -> Result<()> {
     }
     info!("Found container manager {manager}");
 
-    let mut context = Context::new(config.clone(), root, manager);
+    let root = std::env::current_dir()?;
+
+    // Config file path name. For now we use `evectl.toml` in the
+    // current directory. But the Freedesktop.org way would be
+    // ~/.config/evectl/config.toml.
+    let config_filename = root.join("evectl.toml");
+
+    let mut context = if config_filename.exists() {
+        let config = crate::config::Config::from_file(&config_filename)?;
+        Context::new(config, root, manager)
+    } else {
+        let prompt = format!(
+            "Would you like to initialize a new instance in directory\n    {}",
+            root.display()
+        );
+        if !inquire::Confirm::new(&prompt).with_default(true).prompt()? {
+            std::process::exit(0);
+        }
+        let config = crate::config::Config::default_with_filename(&config_filename);
+        let mut context = Context::new(config, root, manager);
+        menu::wizard::wizard(&mut context)?;
+        context
+    };
 
     let prompt_for_update = {
         let mut not_found = false;
@@ -1010,7 +1012,10 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
     }
 
     if context.config.elasticsearch.enabled {
-        args.add("--link=evectl-elastic");
+        args.add(format!(
+            "--link={}",
+            crate::elastic::container_name(context)
+        ));
     }
 
     args.add(format!(
@@ -1044,7 +1049,10 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
 
     if context.config.elasticsearch.enabled {
         args.add("--elasticsearch");
-        args.add("http://evectl-elastic:9200");
+        args.add(format!(
+            "http://{}:9200",
+            crate::elastic::container_name(context)
+        ));
     } else {
         args.add("--sqlite");
     }

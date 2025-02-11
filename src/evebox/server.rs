@@ -21,21 +21,24 @@ pub(crate) fn reset_password(context: &mut Context) {
     ));
 
     args.extend(&[
-        "--rm", "-it", &image, "evebox", "config", "users", "rm", "admin",
+        "--rm", "-it", &image, "evebox", "-D", "/config", "config", "users", "rm", "admin",
     ]);
+    info!("Executing {:?}", args.args);
     let _ = context.manager.command().args(&args.args).status();
 
     let mut args = ArgBuilder::new();
     args.add("run");
     args.add(format!(
-        "--volume={}:/var/lib/evebox",
-        host_config_directory.display(),
+        "--volume={}:/config",
+        host_config_directory.display()
     ));
     args.extend(&[
         "--rm",
         "-it",
         &image,
         "evebox",
+        "-D",
+        "/config",
         "config",
         "users",
         "add",
