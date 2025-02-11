@@ -141,6 +141,13 @@ fn main() -> Result<()> {
     let config = if config_filename.exists() {
         crate::config::Config::from_file(&config_filename)?
     } else {
+        let prompt = format!(
+            "Would you like to initialize a new instance in directory\n    {}",
+            root.display()
+        );
+        if !inquire::Confirm::new(&prompt).with_default(true).prompt()? {
+            std::process::exit(0);
+        }
         crate::config::Config::default_with_filename(&config_filename)
     };
 
