@@ -5,7 +5,6 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Seek, SeekFrom},
-    os::unix::prelude::PermissionsExt,
     path::Path,
     process,
 };
@@ -97,7 +96,7 @@ pub(crate) fn self_update() -> Result<()> {
     }
     let mut final_exec = fs::File::create(&current_exe)?;
     io::copy(&mut download_exe, &mut final_exec)?;
-    fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o0755))?;
+    make_executable(&current_exe)?;
     warn!("The EveCtl program has been updated. Please restart.");
     process::exit(0);
 }
@@ -120,4 +119,16 @@ fn file_checksum(file: &mut File) -> Result<String> {
 fn current_checksum(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     file_checksum(&mut file)
+}
+
+#[cfg(target_os = "linux")]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::prelude::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o0755))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }

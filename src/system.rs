@@ -2,10 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 use anyhow::Result;
-use std::process::Command;
 
 pub fn getuid() -> u32 {
-    unsafe { libc::getuid() as u32 }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::getuid() as u32
+    }
+    #[cfg(not(target_os = "linux"))]
+    0
 }
 
 #[derive(Debug, Default)]
@@ -24,6 +28,8 @@ pub struct Interface {
 /// Note: Newer versions of "ip" support JSON output.
 #[cfg(target_os = "linux")]
 pub fn get_interfaces() -> Result<Vec<Interface>> {
+    use std::process::Command;
+
     let output = Command::new("ip")
         .args(["--brief", "address", "show"])
         .output()?;
@@ -52,4 +58,9 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
         interfaces.push(interface);
     }
     Ok(interfaces)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_interfaces() -> Result<Vec<Interface>> {
+    Ok(vec![])
 }
