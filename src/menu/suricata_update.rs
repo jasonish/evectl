@@ -11,33 +11,54 @@ use colored::Colorize;
 use std::io::Write;
 use tracing::error;
 
+#[derive(Debug, Clone)]
+enum Options {
+    EnableConf,
+    DisableConf,
+    ModifyConf,
+    EnableRuleset,
+    DisableRuleset,
+    UpdateRules,
+    Return,
+}
+
 /// Suricata configure menu.
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
     loop {
-        term::title("EveCtl: Configure Suricata-Update");
+        term::title("EveCtl: Manager Suricata-Update");
 
         let selections = crate::prompt::Selections::with_index()
-            .push("enable-conf", "Edit enable.conf")
-            .push("disable-conf", "Edit disable.conf")
-            .push("modify-conf", "Edit modify.conf")
-            .push("enable-ruleset", "Enable a Ruleset")
-            .push("disable-ruleset", "Disable a Ruleset")
-            .push("return", "Return")
+            .push(Options::EnableConf, "Edit enable.conf")
+            .push(Options::DisableConf, "Edit disable.conf")
+            .push(Options::ModifyConf, "Edit modify.conf")
+            .push(Options::EnableRuleset, "Enable a Ruleset")
+            .push(Options::DisableRuleset, "Disable a Ruleset")
+            .push(Options::UpdateRules, "Update Rules")
+            .push(Options::Return, "Return")
             .to_vec();
 
-        match inquire::Select::new("Select menu option", selections).prompt() {
-            Ok(selection) => match selection.tag {
-                "disable-conf" => edit_file(context, "disable.conf"),
-                "enable-conf" => edit_file(context, "enable.conf"),
-                "modify-conf" => edit_file(context, "modify.conf"),
-                "enable-ruleset" => enable_ruleset(context).unwrap(),
-                "disable-ruleset" => disable_ruleset(context).unwrap(),
-                _ => break,
+        match inquire::Select::new("Select menu option", selections).prompt_skippable()? {
+            Some(selection) => match selection.tag {
+                Options::DisableConf => edit_file(context, "disable.conf"),
+                Options::EnableConf => edit_file(context, "enable.conf"),
+                Options::ModifyConf => edit_file(context, "modify.conf"),
+                Options::EnableRuleset => enable_ruleset(context).unwrap(),
+                Options::DisableRuleset => disable_ruleset(context).unwrap(),
+                Options::UpdateRules => update_rules(context)?,
+                Options::Return => break,
             },
-            Err(_) => break,
+            _ => break,
         }
     }
 
+    Ok(())
+}
+
+fn update_rules(context: &Context) -> Result<()> {
+    if let Err(err) = crate::actions::update_rules(context) {
+        error!("{}", err);
+    }
+    prompt::enter();
     Ok(())
 }
 

@@ -229,6 +229,14 @@ fn main() -> Result<()> {
                 0
             }
             Commands::Menu { menu } => match menu.as_str() {
+                "configure" => {
+                    menu::configure::main(&mut context)?;
+                    0
+                }
+                "suricata-update" => {
+                    menu::suricata_update::menu(&mut context)?;
+                    0
+                }
                 "configure.containers" => {
                     menu::containers::menu(&mut context);
                     0
@@ -661,6 +669,20 @@ fn guess_evebox_url(context: &Context) -> String {
     }
 }
 
+#[derive(Debug, Clone)]
+enum Main {
+    Refresh,
+    Restart,
+    Stop,
+    SuricataUpdate,
+    Start,
+    UpdateRules,
+    Update,
+    Configure,
+    Other,
+    Exit,
+}
+
 fn menu_main(mut context: Context) -> Result<()> {
     loop {
         term::title("EveCtl: Main Menu");
@@ -727,100 +749,60 @@ fn menu_main(mut context: Context) -> Result<()> {
 
         println!();
 
-        let interface = context
-            .config
-            .suricata
-            .interfaces
-            .first()
-            .map(String::from)
-            .unwrap_or_default();
-
         let mut selections = prompt::Selections::with_index();
-        selections.push("refresh", "Refresh Status");
+        selections.push(Main::Refresh, "Refresh Status");
         if running {
-            selections.push("restart", "Restart");
-            selections.push("stop", "Stop");
+            selections.push(Main::Restart, "Restart");
+            selections.push(Main::Stop, "Stop");
         } else {
-            selections.push("start", "Start");
+            selections.push(Main::Start, "Start");
         }
-        selections.push(
-            "configure-suricata",
-            format!(
-                "Configure Suricata [enabled={}, interface={}]",
-                context.config.suricata.enabled,
-                if interface.is_empty() {
-                    "None"
-                } else {
-                    &interface
-                }
-            ),
-        );
-        selections.push(
-            "configure-evebox-agent",
-            format!(
-                "Configure EveBox Agent [enabled={}]",
-                context.config.evebox_agent.enabled
-            ),
-        );
-        selections.push(
-            "configure-evebox-server",
-            format!(
-                "Configure EveBox Server [enabled={}]",
-                context.config.evebox_server.enabled
-            ),
-        );
-
         if context.config.suricata.enabled {
-            selections.push("suricata-update", "Configure Suricata-Update (Rules)");
+            selections.push(Main::UpdateRules, "Update Rules");
+            selections.push(Main::SuricataUpdate, "Manage Rules");
         }
 
-        selections.push("update-rules", "Update Rules");
-        selections.push("update", "Update");
-        selections.push("configure", "Configure");
-        selections.push("other", "Other");
-        selections.push("exit", "Exit");
+        selections.push(Main::Update, "Update");
+        selections.push(Main::Configure, "Configure");
+        selections.push(Main::Other, "Other");
+        selections.push(Main::Exit, "Exit");
 
         let response = inquire::Select::new("Select a menu option", selections.to_vec())
             .with_page_size(12)
             .prompt();
         match response {
             Ok(selection) => match selection.tag {
-                "refresh" => {}
-                "start" => {
+                Main::Refresh => {}
+                Main::Start => {
                     if !start(&context) {
                         prompt::enter();
                     }
                 }
-                "stop" => {
+                Main::Stop => {
                     if !stop_all(&context) {
                         prompt::enter();
                     }
                 }
-                "restart" => {
+                Main::Restart => {
                     stop_all(&context);
                     if !start(&context) {
                         prompt::enter();
                     }
                 }
-                "interface" => select_interface(&mut context),
-                "update" => {
+                Main::Update => {
                     update(&context);
                     prompt::enter();
                 }
-                "other" => menu::other::menu(&context),
-                "configure" => menu::configure::main(&mut context)?,
-                "update-rules" => {
+                Main::Other => menu::other::menu(&context),
+                Main::Configure => menu::configure::main(&mut context)?,
+                Main::UpdateRules => {
                     if let Err(err) = actions::update_rules(&context) {
                         error!("{}", err);
                     }
                     prompt::enter();
                 }
-                "configure-suricata" => menu::suricata::menu(&mut context)?,
-                "configure-evebox-agent" => menu::evebox_agent::menu(&mut context)?,
-                "configure-evebox-server" => menu::evebox_server::menu(&mut context)?,
-                "suricata-update" => menu::suricata_update::menu(&mut context)?,
-                "exit" => break,
-                _ => panic!("Unhandled selection: {}", selection.tag),
+                Main::SuricataUpdate => menu::suricata_update::menu(&mut context)?,
+                Main::Exit => break,
             },
             Err(_) => break,
         }
@@ -1116,41 +1098,6 @@ fn start_evebox_server_detached(context: &Context) -> Result<()> {
 
 fn start_evebox_agent_detached(context: &Context) -> Result<()> {
     actions::start_evebox_agent(context)
-}
-
-fn select_interface(context: &mut Context) {
-    let interfaces = evectl::system::get_interfaces().unwrap();
-    let current_if = context.config.suricata.interfaces.first();
-    let index = interfaces
-        .iter()
-        .position(|interface| Some(&interface.name) == current_if)
-        .unwrap_or(0);
-
-    let mut selections = prompt::Selections::with_index();
-
-    for interface in &interfaces {
-        let address = interface
-            .addr4
-            .first()
-            .map(|s| format!("-- {}", s.green().italic()))
-            .unwrap_or("".to_string());
-        selections.push(
-            interface.name.to_string(),
-            format!("{} {}", &interface.name, address),
-        );
-    }
-
-    match inquire::Select::new("Select interface", selections.to_vec())
-        .with_starting_cursor(index)
-        .with_page_size(12)
-        .prompt()
-    {
-        Err(_) => {}
-        Ok(selection) => {
-            context.config.suricata.interfaces = vec![selection.tag.to_string()];
-            let _ = context.config.save();
-        }
-    }
 }
 
 fn update(context: &Context) -> bool {
