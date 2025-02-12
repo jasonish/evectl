@@ -12,6 +12,7 @@ use crate::term;
 enum Options {
     Toggle,
     Interface,
+    SensorName,
     Bpf,
     Exit,
 }
@@ -47,6 +48,17 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             );
         }
 
+        //selections.push(Options::SensorName, "Set Sensor Name");
+
+        selections.push(Options::SensorName, {
+            if let Some(sensor_name) = &config.suricata.sensor_name {
+                format!("Sensor Name (current: {})", sensor_name)
+            } else {
+                "Sensor Name (current: none)".to_string()
+            }
+        });
+
+
         let current_bpf = if let Some(bpf) = &config.suricata.bpf {
             format!(" (current: \"{}\")", bpf)
         } else {
@@ -65,6 +77,9 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                     let interface = select_interface("Select Interface")?;
                     config.suricata.interfaces = vec![interface.clone()];
                 }
+                Options::SensorName => {
+                    set_sensor_name(config);
+                }
                 Options::Bpf => {
                     set_bpf_filter(config);
                 }
@@ -79,6 +94,26 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn set_sensor_name(config: &mut Config) {
+    let current = config.suricata.sensor_name.clone();
+    if let Ok(sensor_name) = inquire::Text::new("Enter Sensor Name:").prompt() {
+        if sensor_name.trim().is_empty() {
+            if current.is_none() {
+                return;
+            }
+            if inquire::Confirm::new("Clear Sensor Name?")
+                .with_default(true)
+                .prompt()
+                .unwrap_or(false)
+            {
+                config.suricata.sensor_name = None;
+            }
+        } else {
+            config.suricata.sensor_name = Some(sensor_name);
+        }
+    }
 }
 
 fn toggle_enabled(config: &mut Config) {

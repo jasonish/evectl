@@ -50,6 +50,9 @@ pub(crate) struct SuricataConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub bpf: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub sensor_name: Option<String>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]

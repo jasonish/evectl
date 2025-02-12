@@ -908,8 +908,10 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     args.add("--include");
     args.add("/config/af-packet.yaml");
 
-    args.add("--set");
-    args.add("sensor-name=evectl");
+    if let Some(sensor_name) = &context.config.suricata.sensor_name {
+        args.add("--set");
+        args.add(format!("sensor-name={sensor_name}"));
+    }
 
     if let Some(bpf) = &context.config.suricata.bpf {
         args.add(bpf);
