@@ -562,7 +562,7 @@ fn stop_all(context: &Context) -> bool {
             "Stopping {}",
             &crate::evebox::server::container_name(context)
         );
-        if !stop_container(context, &crate::evebox::server::container_name(context)) {
+        if actions::stop_evebox_server(context).is_err() {
             ok = false;
         }
     } else {
@@ -726,9 +726,9 @@ fn log_status(context: &Context) {
 }
 
 fn menu_main(mut context: Context) -> Result<()> {
-    loop {
-        term::title("EveCtl: Main Menu");
+    let mut original_config = context.config.clone();
 
+    'outer: loop {
         let running = context
             .manager
             .is_running(&crate::suricata::container_name(&context))
@@ -736,70 +736,98 @@ fn menu_main(mut context: Context) -> Result<()> {
                 .manager
                 .is_running(&crate::evebox::server::container_name(&context));
 
-        log_status(&context);
+        if context.config != original_config {
+            context.config.save()?;
 
-        println!();
-
-        let mut selections = prompt::Selections::with_index();
-        selections.push(Main::Refresh, "Refresh Status");
-        if running {
-            selections.push(Main::Restart, "Restart");
-            selections.push(Main::Stop, "Stop");
-        } else {
-            selections.push(Main::Start, "Start");
-        }
-        if context.config.suricata.enabled {
-            selections.push(Main::UpdateRules, "Update Rules");
-            selections.push(Main::SuricataUpdate, "Manage Rules");
+            if let Some(true) = inquire::Confirm::new("Configuration has changed, restart?")
+                .with_default(true)
+                .prompt_skippable()?
+            {
+                restart(&context);
+                original_config = context.config.clone();
+            }
         }
 
-        selections.push(Main::Update, "Update");
-        selections.push(Main::Configure, "Configure");
-        selections.push(Main::Other, "Other");
-        selections.push(Main::Exit, "Exit");
+        'inner: loop {
+            term::title("EveCtl: Main Menu");
 
-        let response = inquire::Select::new("Select a menu option", selections.to_vec())
-            .with_page_size(12)
-            .prompt();
-        match response {
-            Ok(selection) => match selection.tag {
-                Main::Refresh => {}
-                Main::Start => {
-                    if !start(&context) {
+            log_status(&context);
+
+            if original_config != context.config {
+                warn!("Configuration has changed, restart required");
+            }
+
+            println!();
+
+            let mut selections = prompt::Selections::with_index();
+            selections.push(Main::Refresh, "Refresh Status");
+            if running {
+                selections.push(Main::Restart, "Restart");
+                selections.push(Main::Stop, "Stop");
+            } else {
+                selections.push(Main::Start, "Start");
+            }
+            if context.config.suricata.enabled {
+                selections.push(Main::UpdateRules, "Update Rules");
+                selections.push(Main::SuricataUpdate, "Manage Rules");
+            }
+
+            selections.push(Main::Update, "Update");
+            selections.push(Main::Configure, "Configure");
+            selections.push(Main::Other, "Other");
+            selections.push(Main::Exit, "Exit");
+
+            let response = inquire::Select::new("Select a menu option", selections.to_vec())
+                .with_page_size(12)
+                .prompt();
+            match response {
+                Ok(selection) => match selection.tag {
+                    Main::Refresh => {
+                        continue 'inner;
+                    }
+                    Main::Start => {
+                        if !start(&context) {
+                            prompt::enter();
+                        }
+                    }
+                    Main::Stop => {
+                        if !stop_all(&context) {
+                            prompt::enter();
+                        }
+                    }
+                    Main::Restart => {
+                        restart(&context);
+                        original_config = context.config.clone();
+                    }
+                    Main::Update => {
+                        update(&context);
                         prompt::enter();
                     }
-                }
-                Main::Stop => {
-                    if !stop_all(&context) {
+                    Main::Other => menu::other::menu(&context),
+                    Main::Configure => menu::configure::main(&mut context)?,
+                    Main::UpdateRules => {
+                        if let Err(err) = actions::update_rules(&context) {
+                            error!("{}", err);
+                        }
                         prompt::enter();
                     }
-                }
-                Main::Restart => {
-                    stop_all(&context);
-                    if !start(&context) {
-                        prompt::enter();
-                    }
-                }
-                Main::Update => {
-                    update(&context);
-                    prompt::enter();
-                }
-                Main::Other => menu::other::menu(&context),
-                Main::Configure => menu::configure::main(&mut context)?,
-                Main::UpdateRules => {
-                    if let Err(err) = actions::update_rules(&context) {
-                        error!("{}", err);
-                    }
-                    prompt::enter();
-                }
-                Main::SuricataUpdate => menu::suricata_update::menu(&mut context)?,
-                Main::Exit => break,
-            },
-            Err(_) => break,
+                    Main::SuricataUpdate => menu::suricata_update::menu(&mut context)?,
+                    Main::Exit => break,
+                },
+                Err(_) => break 'outer,
+            }
+            continue 'outer;
         }
     }
 
     Ok(())
+}
+
+fn restart(context: &Context) {
+    stop_all(context);
+    if !start(context) {
+        prompt::enter();
+    }
 }
 
 /// Returns true if everything started successfully, otherwise false

@@ -3,7 +3,7 @@
 
 use crate::prelude::*;
 
-use crate::{actions, config::EveBoxServerConfig, context::Context, prompt, term};
+use crate::{config::EveBoxServerConfig, context::Context, term};
 
 #[derive(Clone)]
 enum Options {
@@ -18,15 +18,8 @@ enum Options {
 }
 
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
-    let original_config = context.config.clone();
-    let mut restart_required;
     loop {
         term::clear();
-
-        let is_running = context
-            .manager
-            .is_running(&crate::evebox::server::container_name(context));
-        restart_required = is_running && original_config != context.config;
 
         let mut selections = crate::prompt::Selections::with_index();
 
@@ -77,14 +70,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         );
 
         selections.push(Options::ResetPassword, "Reset Admin Password");
-        selections.push(
-            Options::Return,
-            if restart_required {
-                "Restart and Return"
-            } else {
-                "Return"
-            },
-        );
+        selections.push(Options::Return, "Return");
 
         if let Ok(selection) =
             inquire::Select::new("EveCtl: Configure EveBox Server", selections.to_vec()).prompt()
@@ -104,19 +90,6 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         } else {
             break;
         }
-    }
-
-    if original_config != context.config {
-        info!("Saving configuration changes");
-        if let Err(err) = context.config.save() {
-            error!("Failed to save configuration changes: {err}");
-            prompt::enter();
-        }
-    }
-    if restart_required {
-        info!("Restarting Evebox");
-        let _ = actions::stop_evebox_server(context);
-        let _ = actions::start_evebox_server(context);
     }
 
     Ok(())
@@ -181,16 +154,6 @@ fn enable_remote_access(context: &mut Context) {
     {
         crate::evebox::server::reset_password(context);
     }
-
-    if context
-        .manager
-        .is_running(&crate::evebox::server::container_name(context))
-    {
-        info!("Restarting EveBox");
-        let _ = actions::stop_evebox_server(context);
-        let _ = actions::start_evebox_server(context);
-    }
-    prompt::enter_with_prefix("EveBox remote access has been enabled");
 }
 
 fn disable_remote_access(context: &mut Context) {

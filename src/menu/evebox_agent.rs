@@ -15,14 +15,9 @@ enum Options {
 
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
     let config = &mut context.config;
-    let original = config.clone();
 
     loop {
         term::clear();
-
-        if config != &original {
-            warn!("EveBox Agent configuration updated, restart required.");
-        }
 
         let mut selections = crate::prompt::Selections::new();
 
@@ -58,10 +53,6 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 break;
             }
         }
-    }
-
-    if config != &original {
-        config.save()?;
     }
 
     Ok(())

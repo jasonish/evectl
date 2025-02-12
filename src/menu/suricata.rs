@@ -19,14 +19,9 @@ enum Options {
 
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
     let config = &mut context.config;
-    let original = config.clone();
 
     loop {
         term::clear();
-
-        if config != &original {
-            warn!("Suricata configuration updated, restart required.");
-        }
 
         let mut selections = crate::prompt::Selections::new();
 
@@ -86,10 +81,6 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             },
             Err(_) => break,
         }
-    }
-
-    if config != &original {
-        config.save()?;
     }
 
     Ok(())
