@@ -14,10 +14,6 @@ update:
 update-breaking:
 	cargo +nightly -Z unstable-options update --breaking
 
-dev-clean:
-	rm -rf ~/.config/evectl
-	rm -rf ~/.local/share/evectl
-
 clean:
 	find . -name \*~ -delete
 	cargo clean
