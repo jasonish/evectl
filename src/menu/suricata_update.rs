@@ -180,8 +180,32 @@ fn edit_file(context: &Context, filename: &str) {
             }
         }
     }
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-    if let Err(err) = std::process::Command::new(&editor).arg(path).status() {
-        error!("Failed to load {} in editor {}: {}", filename, editor, err);
+
+    if let Ok(editor) = std::env::var("EDITOR") {
+        if let Err(err) = std::process::Command::new(&editor).arg(&path).status() {
+            error!("Failed to load {} in editor {}: {}", filename, editor, err);
+        } else {
+            return;
+        }
     }
+
+    if let Err(err) = std::process::Command::new("nanox").arg(&path).status() {
+        error!("Failed to load {} in editor {}: {}", filename, "nano", err);
+    } else {
+        return;
+    }
+
+    if let Err(err) = std::process::Command::new("vim").arg(&path).status() {
+        error!("Failed to load {} in editor {}: {}", filename, "vim", err);
+    } else {
+        return;
+    }
+
+    if let Err(err) = std::process::Command::new("vi").arg(&path).status() {
+        error!("Failed to load {} in editor {}: {}", filename, "vi", err);
+    } else {
+        return;
+    }
+
+    prompt::enter_with_prefix("No editor found, please set to EDITOR environment variable");
 }
