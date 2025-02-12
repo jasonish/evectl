@@ -233,7 +233,7 @@ pub(crate) struct InspectEntry {
 #[derive(Debug, Deserialize)]
 pub(crate) struct InspectState {
     #[serde(rename = "Status")]
-    pub status: String,
+    pub _status: String,
 
     #[serde(rename = "Running")]
     pub running: bool,

@@ -10,7 +10,7 @@ use std::{
 use clap::Parser;
 use regex::Regex;
 
-use crate::{context::Context};
+use crate::context::Context;
 
 #[derive(Parser, Debug)]
 pub(crate) struct LogArgs {
@@ -51,11 +51,7 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
                     let label = container.clone();
                     let handle = thread::spawn(move || {
                         log_line_printer(
-                            format!(
-                                "{:width$} | stdout",
-                                &label,
-                                width = max_container_name_len
-                            ),
+                            format!("{:width$} | stdout", &label, width = max_container_name_len),
                             stdout,
                         );
                     });
@@ -65,11 +61,7 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
                     let label = container.clone();
                     let handle = thread::spawn(move || {
                         log_line_printer(
-                            format!(
-                                "{:width$} | stderr",
-                                label,
-                                width = max_container_name_len
-                            ),
+                            format!("{:width$} | stderr", label, width = max_container_name_len),
                             stderr,
                         );
                     });

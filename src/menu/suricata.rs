@@ -58,7 +58,6 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             }
         });
 
-
         let current_bpf = if let Some(bpf) = &config.suricata.bpf {
             format!(" (current: \"{}\")", bpf)
         } else {

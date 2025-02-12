@@ -209,7 +209,10 @@ fn main() -> Result<()> {
                 stop_all(&context);
                 command_start(&context, true)
             }
-            Commands::Status => command_status(&context),
+            Commands::Status => {
+                log_status(&context);
+                0
+            }
             Commands::UpdateRules => {
                 if actions::update_rules(&context).is_ok() {
                     0
@@ -592,33 +595,6 @@ fn stop_all(context: &Context) -> bool {
     ok
 }
 
-fn command_status(context: &Context) -> i32 {
-    let mut code = 0;
-    match context
-        .manager
-        .state(&crate::suricata::container_name(context))
-    {
-        Ok(state) => info!("suricata: {}", state.status),
-        Err(err) => {
-            let err = format!("{}", err);
-            error!("suricata: {}", err.trim_end());
-            code = 1;
-        }
-    }
-    match context
-        .manager
-        .state(&crate::evebox::server::container_name(context))
-    {
-        Ok(state) => info!("evebox: {}", state.status),
-        Err(err) => {
-            let err = format!("{}", err);
-            error!("evebox: {}", err.trim_end());
-            code = 1;
-        }
-    }
-    code
-}
-
 fn guess_evebox_url(context: &Context) -> String {
     let scheme = if context.config.evebox_server.no_tls {
         "http"
@@ -683,56 +659,75 @@ enum Main {
     Exit,
 }
 
+fn log_status(context: &Context) {
+    let mut status = vec![];
+
+    if context.config.suricata.enabled {
+        if context
+            .manager
+            .is_running(&crate::suricata::container_name(context))
+        {
+            status.push(("info", "Suricata", "running".to_string()));
+        } else {
+            status.push(("warn", "Suricata", "not running".to_string()));
+        }
+    } else {
+        status.push(("debug", "Suricata", "not enabled".to_string()));
+    }
+
+    if context.config.evebox_server.enabled {
+        if context
+            .manager
+            .is_running(&crate::evebox::server::container_name(context))
+        {
+            let url = guess_evebox_url(context);
+            status.push(("info", "EveBox Server", format!("running {}", url)));
+        } else {
+            status.push(("warn", "EveBox Server", "not running".to_string()));
+        }
+    } else {
+        status.push(("debug", "EveBox Server", "not enabled".to_string()));
+    }
+
+    if context.config.evebox_agent.enabled {
+        if context
+            .manager
+            .is_running(&crate::evebox::agent::container_name(context))
+        {
+            status.push(("info", "EveBox Agent", "running".to_string()));
+        } else {
+            status.push(("warn", "EveBox Agent", "not running".to_string()));
+        }
+    } else {
+        status.push(("debug", "EveBox Agent", "not enabled".to_string()));
+    }
+
+    if context.config.elasticsearch.enabled {
+        if context
+            .manager
+            .is_running(&elastic::container_name(context))
+        {
+            status.push(("info", "Elasticsearch", "running".to_string()));
+        } else {
+            status.push(("warn", "Elasticsearch", "not running".to_string()));
+        }
+    } else {
+        status.push(("debug", "Elasticsearch", "not enabled".to_string()));
+    }
+
+    for (level, label, state) in status {
+        match level {
+            "info" => info!("{label:-13}: {state}"),
+            "warn" => warn!("{label:-13}: {state}"),
+            "debug" => debug!("{label:-13}: {state}"),
+            _ => {}
+        }
+    }
+}
+
 fn menu_main(mut context: Context) -> Result<()> {
     loop {
         term::title("EveCtl: Main Menu");
-
-        let suricata_state = if context.config.suricata.enabled {
-            context
-                .manager
-                .state(&crate::suricata::container_name(&context))
-                .map(|state| state.status)
-                .unwrap_or_else(|_| "not running".to_string())
-        } else {
-            "not enabled".to_string()
-        };
-
-        let evebox_server_state = if context.config.evebox_server.enabled {
-            let evebox_url = guess_evebox_url(&context);
-            context
-                .manager
-                .state(&crate::evebox::server::container_name(&context))
-                .map(|state| {
-                    if state.status == "running" {
-                        format!("{} {}", state.status, evebox_url,)
-                    } else {
-                        state.status
-                    }
-                })
-                .unwrap_or_else(|_| "not running".to_string())
-        } else {
-            "not enabled".to_string()
-        };
-
-        let evebox_agent_state = if context.config.evebox_agent.enabled {
-            context
-                .manager
-                .state(&crate::evebox::agent::container_name(&context))
-                .map(|state| state.status.to_string())
-                .unwrap_or_else(|_| "not running".to_string())
-        } else {
-            "not enabled".to_string()
-        };
-
-        let elastic_state = if context.config.elasticsearch.enabled {
-            context
-                .manager
-                .state(&elastic::container_name(&context))
-                .map(|state| state.status)
-                .unwrap_or_else(|_| "not running".to_string())
-        } else {
-            "not enabled".to_string()
-        };
 
         let running = context
             .manager
@@ -741,11 +736,7 @@ fn menu_main(mut context: Context) -> Result<()> {
                 .manager
                 .is_running(&crate::evebox::server::container_name(&context));
 
-        // TODO: Warn if not running but should be.
-        info!("Suricata:      {}", suricata_state);
-        info!("EveBox Server: {}", evebox_server_state);
-        info!("EveBox Agent:  {}", evebox_agent_state);
-        info!("Elasticsearch: {}", elastic_state);
+        log_status(&context);
 
         println!();
 

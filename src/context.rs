@@ -22,11 +22,7 @@ pub(crate) struct Context {
 }
 
 impl Context {
-    pub(crate) fn new(
-        config: Config,
-        root: PathBuf,
-        manager: ContainerManager,
-    ) -> Self {
+    pub(crate) fn new(config: Config, root: PathBuf, manager: ContainerManager) -> Self {
         let suricata_image = image_name(&config, Container::Suricata);
         let evebox_image = image_name(&config, Container::EveBox);
         Self {

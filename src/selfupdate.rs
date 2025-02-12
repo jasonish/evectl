@@ -98,6 +98,9 @@ pub(crate) fn self_update() -> Result<()> {
     io::copy(&mut download_exe, &mut final_exec)?;
     make_executable(&current_exe)?;
     warn!("The EveCtl program has been updated. Please restart.");
+
+    // Re-execute self.
+
     process::exit(0);
 }
 
