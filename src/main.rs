@@ -14,7 +14,6 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use container::{Container, SuricataContainer};
 use logs::LogArgs;
-use tracing::Level;
 
 mod actions;
 mod config;
@@ -114,22 +113,7 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     let is_interactive = is_interactive(&args.command);
-
-    let log_level = if args.verbose > 0 {
-        Level::DEBUG
-    } else {
-        Level::INFO
-    };
-
-    if is_interactive {
-        tracing_subscriber::fmt()
-            .with_max_level(log_level)
-            .without_time()
-            .with_target(false)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_max_level(log_level).init();
-    }
+    init_logging(is_interactive, args.verbose);
 
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,
@@ -1166,5 +1150,42 @@ impl ArgBuilder {
             self.args.push(arg.as_ref().to_string());
         }
         self
+    }
+}
+
+fn init_logging(is_interactive: bool, verbose: u8) {
+    let log_level = if verbose > 0 {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
+
+    if is_interactive {
+        tracing_subscriber::fmt()
+            .with_max_level(log_level)
+            .without_time()
+            .with_target(false)
+            .init();
+    } else {
+        use time::macros::format_description;
+
+        let is_utc = if let Ok(offset) = time::UtcOffset::current_local_offset() {
+            offset == time::UtcOffset::UTC
+        } else {
+            false
+        };
+
+        let format = if is_utc {
+            format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z")
+        } else {
+            format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]")
+        };
+
+        let timer = tracing_subscriber::fmt::time::LocalTime::new(format);
+        tracing_subscriber::fmt()
+            .with_timer(timer)
+            .with_max_level(log_level)
+            .init();
     }
 }
