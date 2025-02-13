@@ -11,29 +11,18 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - arm-unknown-linux-musleabihf
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - uses: actions-rs/cargo@v1
-        name: Test
-        with:
-          use-cross: true
-          command: test
-          args: --target=${{ matrix.target }}
-        if: ${{ matrix.target == 'x86_64-unknown-linux-musl' }}
-      - uses: actions-rs/cargo@v1
-        name: Build
-        with:
-          use-cross: true
-          command: build
-          args: --release --target=${{ matrix.target }}
-      - run: find target -name easy
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}-easy
-          path: target/${{ matrix.target }}/release/easy
+      - run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y
+      - run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - run: |
+          echo "$HOME/.cargo/bin"
+          ls "$HOME/.cargo/bin"
+      - run: |
+          curl -OL https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz
+          tar xvf cross-x86_64-unknown-linux-musl.tar.gz
+          mv cross $HOME/.cargo/bin
+      - uses: actions/checkout@v4
+      - run: cross build --target ${{ matrix.target }}
