@@ -113,7 +113,14 @@ impl Config {
     }
 
     pub(crate) fn save(&self) -> Result<()> {
-        let mut file = std::fs::File::create(&self.filename)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o640);
+        }
+        let mut file = options.open(&self.filename)?;
         let config = toml::to_string(self)?;
         file.write_all(config.as_bytes())?;
 
