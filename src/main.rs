@@ -405,7 +405,7 @@ fn start_foreground(context: &Context) -> Result<()> {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     if context.config.evebox_server.enabled {
-        let mut command = build_evebox_server_command(context, false);
+        let mut command = build_evebox_server_command(context, false)?;
         let mut child = match command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -991,84 +991,104 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
     Ok(())
 }
 
-fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Command {
-    let mut args = ArgBuilder::from(&[
-        "run",
-        "--name",
-        &crate::evebox::server::container_name(context),
-    ]);
+fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<process::Command> {
+    let config = &context.config.evebox_server;
+    let mut command = context.manager.command();
+    command.arg("run");
+    command.arg("--name");
+    command.arg(crate::evebox::server::container_name(context));
     if context.config.evebox_server.allow_remote {
-        args.add("--publish=5636:5636");
+        command.arg("--publish=5636:5636");
     } else {
-        args.add("--publish=127.0.0.1:5636:5636");
+        command.arg("--publish=127.0.0.1:5636:5636");
     }
     if daemon {
-        args.add("-d");
+        command.arg("--detach");
     }
 
     if context.config.elasticsearch.enabled {
-        args.add(format!(
+        command.arg(format!(
             "--link={}",
             crate::elastic::container_name(context)
         ));
     }
 
-    args.add(format!(
+    command.arg(format!(
         "--volume={}:/var/log/suricata",
         context.data_dir().join("suricata").join("log").display()
     ));
 
     let host_config_directory = context.config_dir().join("evebox").join("server");
     std::fs::create_dir_all(&host_config_directory).unwrap();
-    args.add(format!(
+    command.arg(format!(
         "--volume={}:/config",
         host_config_directory.display()
     ));
 
     let host_data_directory = context.data_dir().join("evebox").join("server");
     std::fs::create_dir_all(&host_data_directory).unwrap();
-    args.add(format!("--volume={}:/data", host_data_directory.display()));
+    command.arg(format!("--volume={}:/data", host_data_directory.display()));
 
-    if context.config.elasticsearch.enabled {
-        args.add("--env");
-        args.add(format!(
+    if config.use_external_elasticsearch {
+        if let Some(username) = &config.elasticsearch_client.username {
+            command.arg("--env");
+            command.arg(format!("EVEBOX_ELASTICSEARCH_USERNAME={}", username));
+        }
+        if let Some(password) = &config.elasticsearch_client.password {
+            command.arg("--env");
+            command.arg(format!("EVEBOX_ELASTICSEARCH_PASSWORD={}", password));
+        }
+        command.arg("--env");
+        command.arg(format!(
             "EVEBOX_ELASTICSEARCH_INDEX={}",
-            crate::evebox::server::elastic_index(context)
+            config
+                .elasticsearch_client
+                .index
+                .as_deref()
+                .unwrap_or("evebox")
         ));
+    } else if context.config.elasticsearch.enabled {
+        // Internal Elasticsearch server.
+        command.arg("--env");
+        command.arg("EVEBOX_ELASTICSEARCH_INDEX=evebox");
     }
 
-    args.add(context.image_name(Container::EveBox));
-    args.extend(&["evebox", "server"]);
+    command.arg(context.image_name(Container::EveBox));
+    command.args(["evebox", "server"]);
 
     if context.config.evebox_server.no_tls {
-        args.add("--no-tls");
+        command.arg("--no-tls");
     }
 
     if context.config.evebox_server.no_auth {
-        args.add("--no-auth");
+        command.arg("--no-auth");
     }
 
-    args.add("--host=[::0]");
+    command.arg("--host=[::0]");
 
-    if context.config.elasticsearch.enabled {
-        args.add("--elasticsearch");
-        args.add(format!(
+    if config.use_external_elasticsearch {
+        command.arg("--elasticsearch");
+        command.arg(config.elasticsearch_client.url.clone().ok_or_else(|| {
+            anyhow::anyhow!("External Elasticsearch URL not set in configuration")
+        })?);
+        if config.elasticsearch_client.disable_certificate_validation {
+            command.arg("--no-check-certificate");
+        }
+    } else if context.config.elasticsearch.enabled {
+        command.arg("--elasticsearch");
+        command.arg(format!(
             "http://{}:9200",
             crate::elastic::container_name(context)
         ));
     } else {
-        args.add("--sqlite");
+        command.arg("--sqlite");
     }
 
-    args.add("--data-directory=/data");
-    args.add("--config-directory=/config");
+    command.arg("--data-directory=/data");
+    command.arg("--config-directory=/config");
+    command.arg("/var/log/suricata/eve.json");
 
-    args.add("/var/log/suricata/eve.json");
-
-    let mut command = context.manager.command();
-
-    command.args(&args.args);
-    command
+    Ok(command)
 }
 
 fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Command {

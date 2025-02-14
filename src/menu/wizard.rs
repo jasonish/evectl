@@ -94,10 +94,12 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
     // EveBox server.
     match install_type {
         InstallType::Standalone | InstallType::Server => {
-            let use_elasticsearch = inquire::Confirm::new("EveBox Server: Use Elasticsearch?")
-                .with_default(false)
-                .with_help_message("Recommended for larger systems, avoid if memory is limited")
-                .prompt()?;
+            let use_elasticsearch =
+                inquire::Confirm::new("EveBox Server: Use bundled Elasticsearch server?")
+                    .with_default(false)
+                    .with_help_message("Recommended for larger systems, avoid if memory is limited")
+                    .prompt()?;
+
             let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
                 .with_default(false)
                 .with_help_message("Enable to allow access from hosts other than localhost")

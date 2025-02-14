@@ -74,7 +74,29 @@ pub(crate) struct EveBoxServerConfig {
     pub image: Option<String>,
 
     #[serde(default, skip_serializing_if = "is_default")]
-    pub elastic_index: Option<String>,
+    pub use_external_elasticsearch: bool,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub elasticsearch_client: ElasticsearchClientConfig,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct ElasticsearchClientConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub url: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub index: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub username: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub password: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub disable_certificate_validation: bool,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]

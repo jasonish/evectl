@@ -121,7 +121,7 @@ pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
     context
         .manager
         .quiet_rm(&crate::evebox::server::container_name(context));
-    let mut command = build_evebox_server_command(context, true);
+    let mut command = build_evebox_server_command(context, true)?;
     let output = command.output()?;
     if !output.status.success() {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());
