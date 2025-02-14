@@ -3,9 +3,20 @@
 
 use crate::{container::Container, prelude::*, ArgBuilder};
 
+const DEFAULT_ELASTIC_INDEX: &str = "evebox";
+
 pub(crate) fn container_name(context: &Context) -> String {
     let prefix = context.root.file_name().unwrap().to_string_lossy();
     format!("{}-evectl-evebox-server", prefix)
+}
+
+pub(crate) fn elastic_index(context: &Context) -> &str {
+    context
+        .config
+        .evebox_server
+        .elastic_index
+        .as_deref()
+        .unwrap_or(DEFAULT_ELASTIC_INDEX)
 }
 
 pub(crate) fn reset_password(context: &mut Context) {

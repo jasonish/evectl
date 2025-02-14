@@ -1021,6 +1021,14 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
     std::fs::create_dir_all(&host_data_directory).unwrap();
     args.add(format!("--volume={}:/data", host_data_directory.display()));
 
+    if context.config.elasticsearch.enabled {
+        args.add("--env");
+        args.add(format!(
+            "EVEBOX_ELASTICSEARCH_INDEX={}",
+            crate::evebox::server::elastic_index(context)
+        ));
+    }
+
     args.add(context.image_name(Container::EveBox));
     args.extend(&["evebox", "server"]);
 
@@ -1050,6 +1058,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> process::Comm
     args.add("/var/log/suricata/eve.json");
 
     let mut command = context.manager.command();
+
     command.args(&args.args);
     command
 }

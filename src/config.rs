@@ -72,6 +72,9 @@ pub(crate) struct EveBoxServerConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub image: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub elastic_index: Option<String>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
