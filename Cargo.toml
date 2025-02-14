@@ -1,6 +1,6 @@
 [package]
 name = "evectl"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 authors = ["Jason Ish <jason@codemonkey.net>"]
 edition = "2021"
 description = "EveCtl with Suricata and EveBox"
