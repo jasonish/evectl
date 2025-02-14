@@ -645,8 +645,10 @@ enum Main {
 
 fn log_status(context: &Context) {
     let mut status = vec![];
+    let mut enabled = 0;
 
     if context.config.suricata.enabled {
+        enabled += 1;
         if context
             .manager
             .is_running(&crate::suricata::container_name(context))
@@ -660,6 +662,7 @@ fn log_status(context: &Context) {
     }
 
     if context.config.evebox_server.enabled {
+        enabled += 1;
         if context
             .manager
             .is_running(&crate::evebox::server::container_name(context))
@@ -674,6 +677,7 @@ fn log_status(context: &Context) {
     }
 
     if context.config.evebox_agent.enabled {
+        enabled += 1;
         if context
             .manager
             .is_running(&crate::evebox::agent::container_name(context))
@@ -687,6 +691,7 @@ fn log_status(context: &Context) {
     }
 
     if context.config.elasticsearch.enabled {
+        enabled += 1;
         if context
             .manager
             .is_running(&elastic::container_name(context))
@@ -699,13 +704,17 @@ fn log_status(context: &Context) {
         status.push(("debug", "Elasticsearch", "not enabled".to_string()));
     }
 
-    for (level, label, state) in status {
-        match level {
+    for (level, label, state) in &status {
+        match *level {
             "info" => info!("{label:-13}: {state}"),
             "warn" => warn!("{label:-13}: {state}"),
             "debug" => debug!("{label:-13}: {state}"),
             _ => {}
         }
+    }
+
+    if enabled == 0 {
+        info!("No services enabled");
     }
 }
 
@@ -736,12 +745,11 @@ fn menu_main(mut context: Context) -> Result<()> {
             term::title("EveCtl: Main Menu");
 
             log_status(&context);
+            println!();
 
             if original_config != context.config {
                 warn!("Configuration has changed, restart required");
             }
-
-            println!();
 
             let mut selections = prompt::Selections::with_index();
             selections.push(Main::Refresh, "Refresh Status");
