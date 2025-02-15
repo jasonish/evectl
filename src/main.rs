@@ -198,7 +198,8 @@ fn main() -> Result<()> {
                 0
             }
             Commands::UpdateRules => {
-                if actions::update_rules(&context).is_ok() {
+                if let Err(err) = actions::update_rules(&context) {
+                    error!("Failed to update rules: {}", err);
                     0
                 } else {
                     1

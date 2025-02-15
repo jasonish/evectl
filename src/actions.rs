@@ -76,6 +76,9 @@ pub(crate) fn disable_ruleset(context: &Context, ruleset: &str) -> Result<()> {
 }
 
 pub(crate) fn update_rules(context: &Context) -> Result<()> {
+    if !context.config.suricata.enabled {
+        bail!("Suricata is not enabled.");
+    }
     let container = SuricataContainer::new(context.clone());
 
     let mut volumes = vec![];
