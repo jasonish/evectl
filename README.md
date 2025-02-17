@@ -18,6 +18,7 @@ etc, etc... And I might even force push!
 
 ```
 mkdir ~/evectl
+cd ~/evectl
 curl -sSf https://evebox.org/evectl.sh | sh
 ```
 
