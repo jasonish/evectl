@@ -29,6 +29,7 @@ mod prompt;
 mod ruleindex;
 mod selfupdate;
 mod suricata;
+mod systemd;
 mod term;
 
 fn get_clap_style() -> clap::builder::Styles {
@@ -89,8 +90,23 @@ enum Commands {
     /// Print details.
     Print { what: String },
 
+    /// Systemd commands.
+    Systemd {
+        #[command(subcommand)]
+        command: SystemdCommands,
+    },
+
     #[command(hide = true)]
     Menu { menu: String },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum SystemdCommands {
+    /// Install and enable systemd service.
+    Install,
+
+    /// Remove and de-activate systemd service.
+    Remove,
 }
 
 fn is_interactive(command: &Option<Commands>) -> bool {
@@ -106,6 +122,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Menu { menu: _ } => true,
             Commands::Version => false,
             Commands::Print { what: _ } => false,
+            Commands::Systemd { command: _ } => false,
         },
         None => true,
     }
@@ -254,6 +271,13 @@ fn main() -> Result<()> {
             }
             Commands::Print { what } => {
                 print(what)?;
+                0
+            }
+            Commands::Systemd { command } => {
+                match command {
+                    SystemdCommands::Install => systemd::install()?,
+                    SystemdCommands::Remove => systemd::remove(),
+                }
                 0
             }
         };
@@ -1246,6 +1270,9 @@ fn print(what: String) -> Result<()> {
                 let addrs = addrs.join(", ");
                 println!("{} {} {}", interface.name, interface.status, &addrs);
             }
+        }
+        "systemd" => {
+            println!("{}", systemd::format_template()?);
         }
         _ => {
             error!("Unknown print target: {}", what);

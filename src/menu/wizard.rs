@@ -151,10 +151,22 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         .prompt()?
     {
         context.config.save()?;
-        Ok(())
     } else {
         bail!("Aborting configuration wizard. Bye!");
     }
+
+    if inquire::Confirm::new("Would you like EveCtl to be started on boot?")
+        .with_default(true)
+        .prompt_skippable()?
+        .unwrap_or(false)
+    {
+        if let Err(err) = crate::systemd::install() {
+            error!("Failed to install EveCtl as a systemd service: {}", err);
+            crate::prompt::enter();
+        }
+    }
+
+    Ok(())
 }
 
 fn install_type_help() {
