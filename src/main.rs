@@ -86,6 +86,9 @@ enum Commands {
     /// Display EveCtl version
     Version,
 
+    /// Print details.
+    Print { what: String },
+
     #[command(hide = true)]
     Menu { menu: String },
 }
@@ -102,6 +105,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Logs(_) => false,
             Commands::Menu { menu: _ } => true,
             Commands::Version => false,
+            Commands::Print { what: _ } => false,
         },
         None => true,
     }
@@ -246,6 +250,10 @@ fn main() -> Result<()> {
             Commands::Version => {
                 // Display version and exit.
                 println!("{}", env!("CARGO_PKG_VERSION"));
+                0
+            }
+            Commands::Print { what } => {
+                print(what)?;
                 0
             }
         };
@@ -1226,4 +1234,22 @@ fn init_logging(is_interactive: bool, verbose: u8) {
             .with_max_level(log_level)
             .init();
     }
+}
+
+fn print(what: String) -> Result<()> {
+    match what.as_str() {
+        "interfaces" => {
+            let interfaces = evectl::system::get_interfaces()?;
+            for interface in &interfaces {
+                let mut addrs = interface.addr4.clone();
+                addrs.extend(interface.addr6.clone());
+                let addrs = addrs.join(", ");
+                println!("{} {} {}", interface.name, interface.status, &addrs);
+            }
+        }
+        _ => {
+            error!("Unknown print target: {}", what);
+        }
+    }
+    Ok(())
 }

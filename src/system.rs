@@ -40,7 +40,10 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
             continue;
         }
         let parts: Vec<&str> = line.split(' ').filter(|part| !part.is_empty()).collect();
-        let name = &parts[0];
+
+        // Get the name minus the @suffix which isn't supported by
+        // Suricata.
+        let name = parts[0].split('@').next().unwrap();
         let status = &parts[1];
         let mut interface = Interface {
             name: name.to_string(),
