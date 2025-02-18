@@ -75,11 +75,9 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
         .output()?;
     let stdout = String::from_utf8(output.stdout)?;
     let mut interfaces = vec![];
-    
+
     for line in stdout.lines().skip(1) {
-        let parts: Vec<&str> = line.split(",")
-        .map(|s| s.trim_matches('"'))  
-        .collect();
+        let parts: Vec<&str> = line.split(",").map(|s| s.trim_matches('"')).collect();
 
         let description = format!("{} {} {}", parts[1], parts[2], parts[3]);
         let name = parts[3].replace("\\Device\\Tcpip_", "NPF_");

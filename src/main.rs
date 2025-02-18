@@ -89,7 +89,9 @@ enum Commands {
     Version,
 
     /// Print details.
-    Print { what: String },
+    Print {
+        what: String,
+    },
 
     /// Systemd commands.
     Systemd {
@@ -98,7 +100,9 @@ enum Commands {
     },
 
     #[command(hide = true)]
-    Menu { menu: String },
+    Menu {
+        menu: String,
+    },
 
     Windows,
 }
