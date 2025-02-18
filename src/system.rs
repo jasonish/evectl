@@ -12,6 +12,16 @@ pub fn getuid() -> u32 {
     0
 }
 
+#[cfg(target_os = "linux")]
+pub fn is_admin() -> bool {
+    getuid() == 0
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_admin() -> bool {
+    unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() == 1 }
+}
+
 #[derive(Debug, Default)]
 pub struct Interface {
     pub name: String,

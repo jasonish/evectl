@@ -7,38 +7,44 @@ use std::io::Write;
 
 const SURICATA_URL: &str =
     "https://www.openinfosecfoundation.org/download/windows/Suricata-7.0.8-1-64bit.msi";
+const SURICATA_PATH: &str = "C:\\Program Files\\Suricata\\suricata.exe";
 
 const NPCAP_URL: &str = "https://npcap.com/dist/npcap-1.80.exe";
 
+const NPCAP_TEST_PATH: &str = "C:\\Program Files\\Npcap\\Uninstall.exe";
+
 pub(crate) fn main() -> Result<()> {
-    unsafe {
-        let is_admin = windows_sys::Win32::UI::Shell::IsUserAnAdmin() == 1;
-        if !is_admin {
-            bail!("This command must be run as an administrator.");
-        }
+    if !evectl::system::is_admin() {
+        bail!("This command must be run as an administrator.");
     }
 
-    let path = "C:\\Program Files\\Suricata\\suricata.exe";
-    if std::path::Path::new(path).exists() {
-        let output = std::process::Command::new(path).arg("-V").output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let re = regex::Regex::new(r"(\d+\.\d+\.\d+)")?;
-        let version = re.captures(&stdout).unwrap();
-        let version = version.get(1).unwrap().as_str();
+    let mut require_npcap_intall = true;
+    if std::path::Path::new(NPCAP_TEST_PATH).exists() {
+        info!("Npcap already installed.");
+        require_npcap_intall = false;
+    }
+    if require_npcap_intall {
+        fetch_install_npcap()?;
+    }
+
+    let mut require_suricata_install = true;
+    if let Some(version) = get_suricata_version() {
         info!("Found Suricata version: {}", version);
-        info!("Suricata already installed.");
-        return Ok(());
+        require_suricata_install = false;
+    }
+    if require_suricata_install {
+        fetch_install_suricata()?;
     }
 
-    //fetch_install_npcap()?;
-    fetch_install_suricata()?;
     Ok(())
 }
 
 fn get_suricata_version() -> Option<String> {
-    let path = "C:\\Program Files\\Suricata\\suricata.exe";
-    if std::path::Path::new(path).exists() {
-        let output = std::process::Command::new(path).arg("-V").output().ok()?;
+    if std::path::Path::new(SURICATA_PATH).exists() {
+        let output = std::process::Command::new(SURICATA_PATH)
+            .arg("-V")
+            .output()
+            .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let re = regex::Regex::new(r"(\d+\.\d+\.\d+)").ok()?;
         let version = re.captures(&stdout).unwrap();
@@ -58,19 +64,13 @@ fn fetch_install_suricata() -> Result<()> {
     file.flush()?;
     std::mem::drop(file);
     std::process::Command::new("msiexec")
-        .args(&["/i", "suricata.msi"])
+        .args(["/i", "suricata.msi"])
         .status()?;
-
+    let _ = std::fs::remove_file(".\\suricata.msi");
     Ok(())
 }
 
 fn fetch_install_npcap() -> Result<()> {
-    // Check if C:\Program Files\Npcap\Uninstall.exe exists.
-    if std::path::Path::new("C:\\Program Files\\Npcap\\Uninstall.exe").exists() {
-        info!("npcap already installed.");
-        return Ok(());
-    }
-
     let mut file = std::fs::File::create("npcap.exe")?;
     reqwest::blocking::get(NPCAP_URL)?
         .error_for_status()?
@@ -79,11 +79,11 @@ fn fetch_install_npcap() -> Result<()> {
     std::mem::drop(file);
     info!("npcap downloaded, installing...");
     std::process::Command::new(".\\npcap.exe").status()?;
-
+    let _ = std::fs::remove_file(".\\npcap.exe");
     Ok(())
 }
 
-fn print_directories() {
+fn _print_directories() {
     let pd = directories::ProjectDirs::from("org", "evebox", "evectl");
     dbg!(&pd);
 
