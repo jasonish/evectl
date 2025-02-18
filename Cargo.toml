@@ -39,3 +39,5 @@ tracing-subscriber = { version = "0.3.19", features = ["time", "local-time"] }
 # Only used for logging in local time.
 time = { version = "0.3.37", features = ["macros"] }
 directories = "6.0.0"
+windows = "0.59.0"
+windows-sys = "0.59.0"

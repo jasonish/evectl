@@ -11,6 +11,13 @@ const SURICATA_URL: &str =
 const NPCAP_URL: &str = "https://npcap.com/dist/npcap-1.80.exe";
 
 pub(crate) fn main() -> Result<()> {
+    unsafe {
+        let is_admin = windows_sys::Win32::UI::Shell::IsUserAnAdmin() == 1;
+        if !is_admin {
+            bail!("This command must be run as an administrator.");
+        }
+    }
+
     fetch_install_npcap()?;
     Ok(())
 }
@@ -36,7 +43,8 @@ fn fetch_install_npcap() -> Result<()> {
         .copy_to(&mut file)?;
     file.flush()?;
     std::mem::drop(file);
-    std::process::Command::new("npcap.exe").status()?;
+    info!("npcap downloaded, installing...");
+    std::process::Command::new(".\\npcap.exe").status()?;
 
     Ok(())
 }
