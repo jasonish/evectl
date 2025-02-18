@@ -18,6 +18,7 @@ pub struct Interface {
     pub status: String,
     pub addr4: Vec<String>,
     pub addr6: Vec<String>,
+    pub description: Option<String>,
 }
 
 /// Get the network interfaces and their addresses.
@@ -63,7 +64,32 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
     Ok(interfaces)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 pub fn get_interfaces() -> Result<Vec<Interface>> {
-    Ok(vec![])
+    use std::process::Command;
+
+    let output = Command::new("getmac")
+        .arg("/fo")
+        .arg("csv")
+        .arg("/v")
+        .output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let mut interfaces = vec![];
+    
+    for line in stdout.lines().skip(1) {
+        let parts: Vec<&str> = line.split(",")
+        .map(|s| s.trim_matches('"'))  
+        .collect();
+
+        let description = format!("{} {} {}", parts[1], parts[2], parts[3]);
+        let name = parts[3].replace("\\Device\\Tcpip_", "NPF_");
+        let interface = Interface {
+            name,
+            description: Some(description),
+            ..Default::default()
+        };
+        interfaces.push(interface);
+    }
+
+    Ok(interfaces)
 }

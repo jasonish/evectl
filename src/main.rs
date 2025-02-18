@@ -31,6 +31,7 @@ mod selfupdate;
 mod suricata;
 mod systemd;
 mod term;
+mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -98,6 +99,8 @@ enum Commands {
 
     #[command(hide = true)]
     Menu { menu: String },
+
+    Windows,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -123,6 +126,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Windows => false,
         },
         None => true,
     }
@@ -278,6 +282,10 @@ fn main() -> Result<()> {
                     SystemdCommands::Install => systemd::install()?,
                     SystemdCommands::Remove => systemd::remove(),
                 }
+                0
+            }
+            Commands::Windows => {
+                crate::windows::main()?;
                 0
             }
         };

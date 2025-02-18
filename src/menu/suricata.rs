@@ -120,12 +120,17 @@ pub(crate) fn select_interface(prompt: &str) -> Result<String> {
 
     let mut selections = Selections::with_index();
     for interface in &interfaces {
-        let address = interface
-            .addr4
-            .first()
-            .map(|s| format!("-- {}", s.green().italic()))
-            .unwrap_or("".to_string());
-        selections.push(&interface.name, format!("{} {}", interface.name, address));
+        let info = if let Some(description) = &interface.description {
+            description.clone()
+        } else {
+            let address = interface
+                .addr4
+                .first()
+                .map(|s| format!("-- {}", s.green().italic()))
+                .unwrap_or("".to_string());
+            address
+        };
+        selections.push(&interface.name, format!("{} {}", interface.name, info));
     }
 
     let iface = inquire::Select::new(prompt, selections.to_vec()).prompt()?;
