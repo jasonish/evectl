@@ -18,8 +18,26 @@ pub(crate) fn main() -> Result<()> {
         }
     }
 
-    fetch_install_npcap()?;
+    let path = "C:\\Program Files\\Suricata\\suricata.exe";
+    if std::path::Path::new(path).exists() {
+        let output = std::process::Command::new(path).arg("-V").output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let re = regex::Regex::new(r"(\d+\.\d+\.\d+)")?;
+        let version = re.captures(&stdout).unwrap();
+        let version = version.get(1).unwrap().as_str();
+        info!("Found Suricata version: {}", version);
+        info!("Suricata already installed.");
+        return Ok(());
+    }
+
+    //fetch_install_npcap()?;
+    fetch_install_suricata()?;
     Ok(())
+}
+
+fn get_suricata_version() -> Option<String> {
+    let path = "C:\\Program Files\\Suricata\\suricata.exe";
+    None
 }
 
 fn fetch_install_suricata() -> Result<()> {
@@ -37,6 +55,12 @@ fn fetch_install_suricata() -> Result<()> {
 }
 
 fn fetch_install_npcap() -> Result<()> {
+    // Check if C:\Program Files\Npcap\Uninstall.exe exists.
+    if std::path::Path::new("C:\\Program Files\\Npcap\\Uninstall.exe").exists() {
+        info!("npcap already installed.");
+        return Ok(());
+    }
+
     let mut file = std::fs::File::create("npcap.exe")?;
     reqwest::blocking::get(NPCAP_URL)?
         .error_for_status()?
