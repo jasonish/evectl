@@ -37,6 +37,16 @@ pub(crate) fn main() -> Result<()> {
 
 fn get_suricata_version() -> Option<String> {
     let path = "C:\\Program Files\\Suricata\\suricata.exe";
+    if std::path::Path::new(path).exists() {
+        let output = std::process::Command::new(path).arg("-V").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let re = regex::Regex::new(r"(\d+\.\d+\.\d+)").ok()?;
+        let version = re.captures(&stdout).unwrap();
+        let version = version.get(1).unwrap().as_str();
+        info!("Found Suricata version: {}", version);
+        info!("Suricata already installed.");
+        return Some(version.to_string());
+    }
     None
 }
 
