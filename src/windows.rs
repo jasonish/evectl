@@ -49,8 +49,6 @@ fn get_suricata_version() -> Option<String> {
         let re = regex::Regex::new(r"(\d+\.\d+\.\d+)").ok()?;
         let version = re.captures(&stdout).unwrap();
         let version = version.get(1).unwrap().as_str();
-        info!("Found Suricata version: {}", version);
-        info!("Suricata already installed.");
         return Some(version.to_string());
     }
     None
