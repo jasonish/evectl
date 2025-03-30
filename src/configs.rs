@@ -14,17 +14,11 @@ pub const AF_PACKET_STUB: &str = "
 
 # Do not edit, automatically generated on every restart.
 
-default-packet-size: 65549
-
 af-packet:
   - interface: default
     threads: auto
     cluster-id: 131
-    cluster-type: cluster_flow
-    defrag: yes
-    use-mmap: yes
     tpacket-v3: yes
-    block-size: 2097152
 ";
 
 pub fn write_af_packet_stub(path: &Path) -> Result<()> {
