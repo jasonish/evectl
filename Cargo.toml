@@ -1,13 +1,13 @@
 [package]
 name = "evectl"
-version = "0.1.1"
+version = "0.2.0-alpha.1"
 authors = ["Jason Ish <jason@codemonkey.net>"]
 edition = "2021"
 description = "EveCtl with Suricata and EveBox"
 homepage = "https://evebox.org/evectl/"
 repository = "https://github.com/jasonish/evectl"
 license = "MIT"
-rust-version = "1.80.1"
+rust-version = "1.82.0"
 
 # Some tweaks to reduce binary size.
 [profile.release]
@@ -17,24 +17,24 @@ codegen-units = 1
 strip = true
 
 [dependencies]
-anyhow = "1.0.95"
-clap = { version = "4.5.29", features = ["derive", "color"] }
+anyhow = "1.0.98"
+clap = { version = "4.5.40", features = ["derive", "color"] }
 colored = "3.0.0"
-crossterm = "0.28.1"
-ctrlc = "3.4.5"
+crossterm = "0.29.0"
+ctrlc = "3.4.7"
 inquire = "0.7.5"
-libc = "0.2.169"
+libc = "0.2.173"
 regex = "1.11.1"
-reqwest = { version = "0.12.12", default-features = false, features = ["blocking", "rustls-tls"] }
-semver = "1.0.25"
-serde = { version = "1.0.217", default-features = false, features = ["derive"] }
-serde_json = "1.0.138"
+reqwest = { version = "0.12.20", default-features = false, features = ["blocking", "rustls-tls"] }
+semver = "1.0.26"
+serde = { version = "1.0.219", default-features = false, features = ["derive"] }
+serde_json = "1.0.140"
 serde_yaml = "0.9.34"
-sha2 = "0.10.8"
-tempfile = "3.16.0"
-toml = "0.8.20"
+sha2 = "0.10.9"
+tempfile = "3.20.0"
+toml = "0.8.23"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["time", "local-time"] }
 
 # Only used for logging in local time.
-time = { version = "0.3.37", features = ["macros"] }
+time = { version = "0.3.41", features = ["macros"] }
