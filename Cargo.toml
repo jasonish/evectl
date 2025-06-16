@@ -22,6 +22,8 @@ clap = { version = "4.5.40", features = ["derive", "color"] }
 colored = "3.0.0"
 crossterm = "0.29.0"
 ctrlc = "3.4.7"
+dirs = "5.0"
+indicatif = "0.17.10"
 inquire = "0.7.5"
 libc = "0.2.173"
 regex = "1.11.1"
@@ -35,6 +37,10 @@ tempfile = "3.20.0"
 toml = "0.8.23"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["time", "local-time"] }
+zip = "2.2"
 
 # Only used for logging in local time.
 time = { version = "0.3.41", features = ["macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Com"] }
