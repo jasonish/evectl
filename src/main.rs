@@ -31,6 +31,7 @@ mod selfupdate;
 mod suricata;
 mod systemd;
 mod term;
+mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -98,6 +99,9 @@ enum Commands {
 
     #[command(hide = true)]
     Menu { menu: String },
+
+    #[command(hide = !cfg!(target_os = "windows"))]
+    Windows(windows::Args),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -123,6 +127,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Windows(_) => true,
         },
         None => true,
     }
@@ -136,6 +141,16 @@ fn main() -> Result<()> {
     let is_interactive = is_interactive(&args.command);
     init_logging(is_interactive, args.verbose);
 
+    // Handle Windows commands first, before checking for container managers
+    if let Some(Commands::Windows(args)) = &args.command {
+        if !cfg!(target_os = "windows") {
+            error!("The 'windows' subcommand is only available on Windows systems");
+            std::process::exit(1);
+        }
+        windows::main(args.clone())?;
+        return Ok(());
+    }
+
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,
         None => {
@@ -148,6 +163,7 @@ fn main() -> Result<()> {
         error!("The Podman container manager requires running as root");
         std::process::exit(1);
     }
+
     info!("Found container manager {manager}");
 
     let root = std::env::current_dir()?;
@@ -279,6 +295,9 @@ fn main() -> Result<()> {
                     SystemdCommands::Remove => systemd::remove(),
                 }
                 0
+            }
+            Commands::Windows(_) => {
+                unreachable!();
             }
         };
         std::process::exit(code);
