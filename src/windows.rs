@@ -9,6 +9,7 @@ mod imp {
 
     const NPCAP_VERSION: &str = "1.82";
     const SURICATA_VERSION: &str = "7.0.10-1";
+    const EVEBOX_VERSION: &str = "0.20.5";
 
     #[derive(Parser, Debug, Clone)]
     pub(crate) struct Args {
@@ -23,12 +24,16 @@ mod imp {
 
         /// Install Suricata.
         InstallSuricata,
+
+        /// Install EveBox.
+        InstallEvebox,
     }
 
     pub(crate) fn main(args: Args) -> Result<()> {
         match args.command {
             Commands::InstallNpcap => download_npcap(),
             Commands::InstallSuricata => install_suricata(),
+            Commands::InstallEvebox => install_evebox(),
         }
     }
 
@@ -255,8 +260,8 @@ mod imp {
         let filename = format!("Suricata-{}-64bit.msi", SURICATA_VERSION);
 
         // Get the user's Downloads folder
-        let downloads_dir =
-            dirs::download_dir().ok_or_else(|| anyhow!("Could not find user's Downloads folder"))?;
+        let downloads_dir = dirs::download_dir()
+            .ok_or_else(|| anyhow!("Could not find user's Downloads folder"))?;
         let msi_path = downloads_dir.join(&filename);
 
         // Check if file already exists
@@ -282,6 +287,75 @@ mod imp {
 
         Ok(())
     }
+
+    #[cfg(windows)]
+    fn install_evebox() -> Result<()> {
+        let url = format!(
+            "https://evebox.org/files/release/latest/evebox-{}-windows-x64.zip",
+            EVEBOX_VERSION
+        );
+
+        // Create project-specific data directory
+        let data_dir = dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("Could not find local data directory"))?
+            .join("evectl")
+            .join("evebox");
+
+        // Create directory if it doesn't exist
+        std::fs::create_dir_all(&data_dir).context("Failed to create EveBox data directory")?;
+
+        // Check if EveBox is already installed in the data directory
+        let evebox_exe = data_dir.join("evebox.exe");
+        if evebox_exe.exists() {
+            info!(
+                "EveBox {} is already installed at {:?}",
+                EVEBOX_VERSION, evebox_exe
+            );
+            return Ok(());
+        }
+
+        // Download to temp directory
+        let temp_dir = tempfile::tempdir()?;
+        let zip_path = temp_dir
+            .path()
+            .join(format!("evebox-{}-windows-x64.zip", EVEBOX_VERSION));
+
+        download_file(&url, &zip_path, "EveBox")?;
+
+        info!("Extracting EveBox to {:?}", data_dir);
+
+        // Extract the zip file
+        let zip_file =
+            std::fs::File::open(&zip_path).context("Failed to open downloaded EveBox zip file")?;
+        let mut archive =
+            zip::ZipArchive::new(zip_file).context("Failed to read EveBox zip archive")?;
+
+        // Extract all files to the data directory
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let outpath = data_dir.join(file.mangled_name());
+
+            if file.name().ends_with('/') {
+                std::fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        std::fs::create_dir_all(p)?;
+                    }
+                }
+                let mut outfile = std::fs::File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+        }
+
+        info!(
+            "EveBox {} installed successfully at {:?}",
+            EVEBOX_VERSION, data_dir
+        );
+        info!("You can run EveBox from: {:?}", evebox_exe);
+
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -296,4 +370,4 @@ mod imp {
     }
 }
 
-pub(crate) use imp::{Args, main};
+pub(crate) use imp::{main, Args};

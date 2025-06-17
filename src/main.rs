@@ -141,6 +141,16 @@ fn main() -> Result<()> {
     let is_interactive = is_interactive(&args.command);
     init_logging(is_interactive, args.verbose);
 
+    // Handle Windows commands first, before checking for container managers
+    if let Some(Commands::Windows(args)) = &args.command {
+        if !cfg!(target_os = "windows") {
+            error!("The 'windows' subcommand is only available on Windows systems");
+            std::process::exit(1);
+        }
+        windows::main(args.clone())?;
+        return Ok(());
+    }
+
     let manager = match container::find_manager(args.podman) {
         Some(manager) => manager,
         None => {
@@ -155,15 +165,6 @@ fn main() -> Result<()> {
     }
 
     info!("Found container manager {manager}");
-
-    if let Some(Commands::Windows(args)) = &args.command {
-        if !cfg!(target_os = "windows") {
-            error!("The 'windows' subcommand is only available on Windows systems");
-            std::process::exit(1);
-        }
-        windows::main(args.clone())?;
-        return Ok(());
-    }
 
     let root = std::env::current_dir()?;
 
