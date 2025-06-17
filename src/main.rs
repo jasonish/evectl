@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use container::{Container, SuricataContainer};
 use logs::LogArgs;
+use service::ServiceControl;
 
 mod actions;
 mod config;
@@ -28,9 +29,11 @@ mod prelude;
 mod prompt;
 mod ruleindex;
 mod selfupdate;
+mod service;
 mod suricata;
 mod systemd;
 mod term;
+mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -98,6 +101,9 @@ enum Commands {
 
     #[command(hide = true)]
     Menu { menu: String },
+
+    #[command(hide = !cfg!(target_os = "windows"))]
+    Windows(windows::Args),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -123,6 +129,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Windows(_) => true,
         },
         None => true,
     }
@@ -136,19 +143,38 @@ fn main() -> Result<()> {
     let is_interactive = is_interactive(&args.command);
     init_logging(is_interactive, args.verbose);
 
-    let manager = match container::find_manager(args.podman) {
-        Some(manager) => manager,
-        None => {
-            error!("No container manager found. Docker or Podman must be available.");
-            error!("See https://evebox.org/runtimes/ for more info.");
+    // Handle Windows commands first, before checking for container managers
+    if let Some(Commands::Windows(args)) = &args.command {
+        if !cfg!(target_os = "windows") {
+            error!("The 'windows' subcommand is only available on Windows systems");
             std::process::exit(1);
         }
-    };
-    if manager.is_podman() && evectl::system::getuid() != 0 && !args.no_root {
-        error!("The Podman container manager requires running as root");
-        std::process::exit(1);
+        windows::main(args.clone())?;
+        return Ok(());
     }
-    info!("Found container manager {manager}");
+
+    // On Windows, we don't require a container manager
+    let manager = if cfg!(windows) {
+        // Create a dummy container manager that won't be used
+        // The service manager will use ProcessManager instead
+        container::ContainerManager::Docker(container::DockerManager::new())
+    } else {
+        match container::find_manager(args.podman) {
+            Some(manager) => {
+                if manager.is_podman() && evectl::system::getuid() != 0 && !args.no_root {
+                    error!("The Podman container manager requires running as root");
+                    std::process::exit(1);
+                }
+                info!("Found container manager {manager}");
+                manager
+            }
+            None => {
+                error!("No container manager found. Docker or Podman must be available.");
+                error!("See https://evebox.org/runtimes/ for more info.");
+                std::process::exit(1);
+            }
+        }
+    };
 
     let root = std::env::current_dir()?;
 
@@ -174,7 +200,10 @@ fn main() -> Result<()> {
         context
     };
 
-    let prompt_for_update = {
+    let prompt_for_update = if cfg!(windows) {
+        // On Windows, we don't check for container images
+        false
+    } else {
         let mut not_found = false;
         if !manager.has_image(&context.suricata_image) {
             info!("Suricata image {} not found", &context.suricata_image);
@@ -279,6 +308,9 @@ fn main() -> Result<()> {
                     SystemdCommands::Remove => systemd::remove(),
                 }
                 0
+            }
+            Commands::Windows(_) => {
+                unreachable!();
             }
         };
         std::process::exit(code);
@@ -542,67 +574,43 @@ fn start_foreground(context: &Context) -> Result<()> {
     Ok(())
 }
 
-fn stop_container(context: &Context, name: &str) -> bool {
-    let mut ok = true;
-    if let Err(err) = context.manager.stop(name, None) {
-        error!("Failed to stop container {name}: {err}");
-        ok = false;
-    }
-    context.manager.quiet_rm(name);
-
-    ok
-}
-
 fn stop_all(context: &Context) -> bool {
     let mut ok = true;
 
-    if context
-        .manager
-        .container_exists(&crate::suricata::container_name(context))
-    {
-        info!("Stopping {}", crate::suricata::container_name(context));
-        if !stop_container(context, &crate::suricata::container_name(context)) {
+    // Stop Suricata
+    let suricata_name = crate::suricata::container_name(context);
+    if context.service_manager.service_exists(&suricata_name) {
+        info!("Stopping {}", suricata_name);
+        if let Err(err) = actions::stop_suricata(context) {
+            error!("Failed to stop Suricata: {}", err);
             ok = false;
         }
     } else {
-        info!(
-            "Container {} is not running",
-            crate::suricata::container_name(context)
-        );
+        info!("Service {} is not running", suricata_name);
     }
 
-    if context
-        .manager
-        .container_exists(&crate::evebox::server::container_name(context))
-    {
-        info!(
-            "Stopping {}",
-            &crate::evebox::server::container_name(context)
-        );
-        if actions::stop_evebox_server(context).is_err() {
+    // Stop EveBox Server
+    let evebox_server_name = crate::evebox::server::container_name(context);
+    if context.service_manager.service_exists(&evebox_server_name) {
+        info!("Stopping {}", evebox_server_name);
+        if let Err(err) = actions::stop_evebox_server(context) {
+            error!("Failed to stop EveBox Server: {}", err);
             ok = false;
         }
     } else {
-        info!(
-            "Container {} is not running",
-            &crate::evebox::server::container_name(context)
-        );
+        info!("Service {} is not running", evebox_server_name);
     }
 
-    // Agent.
-    if context
-        .manager
-        .container_exists(&crate::evebox::agent::container_name(context))
-    {
-        info!("Stopping {}", crate::evebox::agent::container_name(context));
-        if !stop_container(context, &crate::evebox::agent::container_name(context)) {
+    // Stop EveBox Agent
+    let evebox_agent_name = crate::evebox::agent::container_name(context);
+    if context.service_manager.service_exists(&evebox_agent_name) {
+        info!("Stopping {}", evebox_agent_name);
+        if let Err(err) = actions::_stop_evebox_agent(context) {
+            error!("Failed to stop EveBox Agent: {}", err);
             ok = false;
         }
     } else {
-        info!(
-            "Container {} is not running",
-            crate::evebox::agent::container_name(context)
-        );
+        info!("Service {} is not running", evebox_agent_name);
     }
 
     // Stop Elasticsearch
@@ -682,10 +690,7 @@ fn log_status(context: &Context) {
 
     if context.config.suricata.enabled {
         enabled += 1;
-        if context
-            .manager
-            .is_running(&crate::suricata::container_name(context))
-        {
+        if crate::actions::is_suricata_running(context) {
             status.push(("info", "Suricata", "running".to_string()));
         } else {
             status.push(("warn", "Suricata", "not running".to_string()));
@@ -696,10 +701,7 @@ fn log_status(context: &Context) {
 
     if context.config.evebox_server.enabled {
         enabled += 1;
-        if context
-            .manager
-            .is_running(&crate::evebox::server::container_name(context))
-        {
+        if crate::actions::is_evebox_server_running(context) {
             let url = guess_evebox_url(context);
             status.push(("info", "EveBox Server", format!("running {}", url)));
         } else {
@@ -711,10 +713,7 @@ fn log_status(context: &Context) {
 
     if context.config.evebox_agent.enabled {
         enabled += 1;
-        if context
-            .manager
-            .is_running(&crate::evebox::agent::container_name(context))
-        {
+        if crate::actions::is_evebox_agent_running(context) {
             status.push(("info", "EveBox Agent", "running".to_string()));
         } else {
             status.push(("warn", "EveBox Agent", "not running".to_string()));
@@ -983,18 +982,12 @@ fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
 }
 
 fn start_suricata_detached(context: &Context) -> Result<()> {
-    context
-        .manager
-        .quiet_rm(&crate::suricata::container_name(context));
-    suricata::mkdirs(context)?;
-    let mut command = build_suricata_command(context, true)?;
-    let output = command.output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
+    crate::actions::start_suricata(context)?;
 
-    if let Err(err) = start_suricata_logrotate(context) {
-        error!("{}", err);
+    if !cfg!(windows) {
+        if let Err(err) = start_suricata_logrotate(context) {
+            error!("{}", err);
+        }
     }
     Ok(())
 }
@@ -1177,15 +1170,23 @@ fn start_evebox_agent_detached(context: &Context) -> Result<()> {
 
 fn update(context: &Context) -> bool {
     let mut ok = true;
-    for image in [
-        context.image_name(Container::Suricata),
-        context.image_name(Container::EveBox),
-    ] {
-        if let Err(err) = context.manager.pull(&image) {
-            error!("Failed to pull {image}: {err}");
-            ok = false;
+
+    if cfg!(windows) {
+        // On Windows, just update EveCtl itself
+        info!("On Windows, container images are not used. Checking for EveCtl updates only.");
+    } else {
+        // On Linux, pull container images
+        for image in [
+            context.image_name(Container::Suricata),
+            context.image_name(Container::EveBox),
+        ] {
+            if let Err(err) = context.manager.pull(&image) {
+                error!("Failed to pull {image}: {err}");
+                ok = false;
+            }
         }
     }
+
     if let Err(err) = selfupdate::self_update() {
         error!("Failed to update EveCtl: {err}");
         ok = false;

@@ -34,12 +34,36 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         if config.suricata.interfaces.is_empty() {
             selections.push(Options::Interface, "Select Interface");
         } else {
+            let interface_display = if cfg!(windows) {
+                // On Windows, try to display a friendly name instead of the GUID
+                let current = &config.suricata.interfaces[0];
+                if current.starts_with("\\Device\\NPF_") {
+                    // Try to find the friendly name for this GUID
+                    #[cfg(windows)]
+                    {
+                        if let Ok(interfaces) = evectl::system::get_interfaces() {
+                            let guid = current.trim_start_matches("\\Device\\NPF_");
+                            interfaces
+                                .iter()
+                                .find(|i| i.guid.as_ref().is_some_and(|g| g == guid))
+                                .map(|i| i.name.clone())
+                                .unwrap_or_else(|| current.clone())
+                        } else {
+                            current.clone()
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    current.clone()
+                } else {
+                    current.clone()
+                }
+            } else {
+                config.suricata.interfaces[0].clone()
+            };
+
             selections.push(
                 Options::Interface,
-                format!(
-                    "Select Interface (current: {})",
-                    &config.suricata.interfaces[0]
-                ),
+                format!("Select Interface (current: {})", interface_display),
             );
         }
 
@@ -125,10 +149,47 @@ pub(crate) fn select_interface(prompt: &str) -> Result<String> {
             .first()
             .map(|s| format!("-- {}", s.green().italic()))
             .unwrap_or("".to_string());
-        selections.push(&interface.name, format!("{} {}", interface.name, address));
+
+        #[cfg(windows)]
+        let display_text = {
+            let guid_display = interface
+                .guid
+                .as_ref()
+                .map(|g| format!(" [{}]", g.dimmed()))
+                .unwrap_or_default();
+            format!("{} {}{}", interface.name, address, guid_display)
+        };
+
+        #[cfg(not(windows))]
+        let display_text = format!("{} {}", interface.name, address);
+
+        selections.push(&interface.name, display_text);
     }
 
     let iface = inquire::Select::new(prompt, selections.to_vec()).prompt()?;
+
+    #[cfg(windows)]
+    {
+        // On Windows, we need to return the GUID for Suricata/Npcap
+        let selected_name = iface.tag;
+        for interface in &interfaces {
+            if interface.name == *selected_name {
+                if let Some(guid) = &interface.guid {
+                    // Ensure GUID has braces
+                    let formatted_guid = if guid.starts_with('{') && guid.ends_with('}') {
+                        guid.clone()
+                    } else {
+                        format!("{{{}}}", guid)
+                    };
+                    return Ok(format!("\\Device\\NPF_{}", formatted_guid));
+                }
+            }
+        }
+        // Fallback to interface name if GUID not found
+        Ok(selected_name.to_string())
+    }
+
+    #[cfg(not(windows))]
     Ok(iface.tag.to_string())
 }
 
