@@ -18,6 +18,7 @@ mod imp {
     }
 
     #[derive(Subcommand, Debug, Clone)]
+    #[allow(clippy::enum_variant_names)]
     enum Commands {
         /// Install Npcap on Windows
         InstallNpcap,

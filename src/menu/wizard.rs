@@ -53,10 +53,12 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
     // Suricata.
     match install_type {
         InstallType::Standalone | InstallType::Agent => {
-            info!("EveBox Agent: Pulling Suricata image...");
-            context
-                .manager
-                .pull(&context.image_name(Container::Suricata))?;
+            if !cfg!(windows) {
+                info!("EveBox Agent: Pulling Suricata image...");
+                context
+                    .manager
+                    .pull(&context.image_name(Container::Suricata))?;
+            }
 
             let interface = super::suricata::select_interface(
                 "Suricata: What network interface should Suricata listen on?",
@@ -73,10 +75,12 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
 
     // EveBox agent.
     if let InstallType::Agent = install_type {
-        info!("EveBox Agent: Pulling EveBox image...");
-        context
-            .manager
-            .pull(&context.image_name(Container::EveBox))?;
+        if !cfg!(windows) {
+            info!("EveBox Agent: Pulling EveBox image...");
+            context
+                .manager
+                .pull(&context.image_name(Container::EveBox))?;
+        }
 
         loop {
             if let Some((url, disable_certificate_validation)) =
@@ -115,14 +119,16 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
                 )
                 .prompt()?;
 
-            info!("EveBox Server: Pulling EveBox image...");
-            context
-                .manager
-                .pull(&context.image_name(Container::EveBox))?;
+            if !cfg!(windows) {
+                info!("EveBox Server: Pulling EveBox image...");
+                context
+                    .manager
+                    .pull(&context.image_name(Container::EveBox))?;
 
-            if use_elasticsearch {
-                info!("EveBox Server: Pulling Elasticsearch image...");
-                context.manager.pull(crate::elastic::DOCKER_IMAGE)?;
+                if use_elasticsearch {
+                    info!("EveBox Server: Pulling Elasticsearch image...");
+                    context.manager.pull(crate::elastic::DOCKER_IMAGE)?;
+                }
             }
 
             context.config.evebox_server.enabled = true;
