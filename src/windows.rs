@@ -6,6 +6,8 @@ mod imp {
     use crate::prelude::*;
     use clap::{Parser, Subcommand};
     use indicatif::{ProgressBar, ProgressStyle};
+    use inquire;
+    use serde_json;
 
     const NPCAP_VERSION: &str = "1.82";
     const SURICATA_VERSION: &str = "7.0.10-1";
@@ -30,6 +32,13 @@ mod imp {
 
         /// List network interfaces with their IP addresses and GUIDs
         ListInterfaces,
+
+        /// Start Suricata on Windows
+        StartSuricata {
+            /// Network interface GUID to listen on
+            #[arg(long)]
+            guid: Option<String>,
+        },
     }
 
     pub(crate) fn main(args: Args) -> Result<()> {
@@ -38,6 +47,7 @@ mod imp {
             Commands::InstallSuricata => install_suricata(),
             Commands::InstallEvebox => install_evebox(),
             Commands::ListInterfaces => list_interfaces(),
+            Commands::StartSuricata { guid } => start_suricata(guid),
         }
     }
 
@@ -383,6 +393,126 @@ mod imp {
         println!("{}", stdout);
 
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn start_suricata(guid: Option<String>) -> Result<()> {
+        use std::process::Command;
+
+        // Check if Suricata is installed
+        if !is_suricata_installed() {
+            bail!("Suricata is not installed. Please install it first using 'evectl windows install-suricata'");
+        }
+
+        let suricata_path = r"C:\Program Files\Suricata\suricata.exe";
+        if !std::path::Path::new(suricata_path).exists() {
+            bail!("Suricata executable not found at {}", suricata_path);
+        }
+
+        // Get the interface GUID to use
+        let interface_guid = match guid {
+            Some(g) => g,
+            None => {
+                // Prompt user to select an interface
+                let interfaces = get_windows_interfaces()?;
+                if interfaces.is_empty() {
+                    bail!("No network interfaces found");
+                }
+
+                let mut selections = vec![];
+                for interface in &interfaces {
+                    let display_name = if interface.ip_address.is_empty() {
+                        format!("{} (no IP)", interface.name)
+                    } else {
+                        format!("{} ({})", interface.name, interface.ip_address)
+                    };
+                    selections.push((interface.guid.clone(), display_name));
+                }
+
+                let choices: Vec<String> = selections.iter().map(|(_, name)| name.clone()).collect();
+                let selection = inquire::Select::new("Select network interface to listen on:", choices).prompt()?;
+                
+                // Find the GUID for the selected interface
+                let selected_guid = selections.iter()
+                    .find(|(_, name)| name == &selection)
+                    .map(|(guid, _)| guid.clone())
+                    .ok_or_else(|| anyhow!("Failed to find GUID for selected interface"))?;
+                
+                selected_guid
+            }
+        };
+
+        info!("Starting Suricata on interface GUID: {}", interface_guid);
+        info!("Logs will be written to current directory");
+
+        // Convert GUID to NPCAP device name format
+        let npcap_device = format!("\\Device\\NPF_{}", interface_guid);
+        info!("Using NPCAP device: {}", npcap_device);
+
+        // Build the Suricata command
+        let mut command = Command::new(suricata_path);
+        command.arg("-i");
+        command.arg(&npcap_device);
+        command.arg("-l");
+        command.arg(".");
+
+        // Run Suricata
+        let status = command.status()?;
+        
+        if !status.success() {
+            bail!("Suricata exited with status: {}", status);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn get_windows_interfaces() -> Result<Vec<WindowsInterface>> {
+        use std::process::Command;
+
+        // Use PowerShell to get network interface information
+        let output = Command::new("powershell")
+            .args([
+                "-Command",
+                "Get-NetAdapter | ForEach-Object { $adapter = $_; Get-NetIPAddress -InterfaceIndex $adapter.ifIndex | ForEach-Object { [PSCustomObject]@{ Name = $adapter.Name; IPAddress = $_.IPAddress; GUID = $adapter.InterfaceGuid } } } | ConvertTo-Json"
+            ])
+            .output()
+            .context("Failed to execute PowerShell command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("PowerShell command failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        // Parse JSON output
+        let interfaces: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+            .context("Failed to parse PowerShell output as JSON")?;
+
+        let mut result = Vec::new();
+        for interface in interfaces {
+            if let (Some(name), Some(ip), Some(guid)) = (
+                interface["Name"].as_str(),
+                interface["IPAddress"].as_str(),
+                interface["GUID"].as_str(),
+            ) {
+                result.push(WindowsInterface {
+                    name: name.to_string(),
+                    ip_address: ip.to_string(),
+                    guid: guid.to_string(),
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
+    #[derive(Debug)]
+    struct WindowsInterface {
+        name: String,
+        ip_address: String,
+        guid: String,
     }
 }
 
