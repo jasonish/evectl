@@ -27,6 +27,9 @@ mod imp {
 
         /// Install EveBox.
         InstallEvebox,
+
+        /// List network interfaces with their IP addresses and GUIDs
+        ListInterfaces,
     }
 
     pub(crate) fn main(args: Args) -> Result<()> {
@@ -34,6 +37,7 @@ mod imp {
             Commands::InstallNpcap => download_npcap(),
             Commands::InstallSuricata => install_suricata(),
             Commands::InstallEvebox => install_evebox(),
+            Commands::ListInterfaces => list_interfaces(),
         }
     }
 
@@ -353,6 +357,30 @@ mod imp {
             EVEBOX_VERSION, data_dir
         );
         info!("You can run EveBox from: {:?}", evebox_exe);
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn list_interfaces() -> Result<()> {
+        use std::process::Command;
+
+        // Use PowerShell to get network interface information
+        let output = Command::new("powershell")
+            .args([
+                "-Command",
+                "Get-NetAdapter | ForEach-Object { $adapter = $_; Get-NetIPAddress -InterfaceIndex $adapter.ifIndex | ForEach-Object { [PSCustomObject]@{ Name = $adapter.Name; IPAddress = $_.IPAddress; GUID = $adapter.InterfaceGuid } } } | Format-Table -AutoSize"
+            ])
+            .output()
+            .context("Failed to execute PowerShell command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("PowerShell command failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        println!("{}", stdout);
 
         Ok(())
     }
