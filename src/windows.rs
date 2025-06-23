@@ -406,6 +406,34 @@ mod imp {
     fn start_suricata(guid: Option<String>, background: bool) -> Result<()> {
         use std::process::Command;
 
+        // Check if Suricata is already running
+        let output = Command::new("powershell")
+            .args([
+                "-Command",
+                "try { Get-Process -Name 'suricata' -ErrorAction Stop | Select-Object Id, ProcessName, StartTime | ConvertTo-Json } catch { '[]' }"
+            ])
+            .output()
+            .context("Failed to execute PowerShell command")?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let processes_json = stdout.trim();
+            
+            if processes_json != "[]" && !processes_json.is_empty() {
+                let process_count = if processes_json.starts_with('{') {
+                    1
+                } else {
+                    let processes: Vec<serde_json::Value> = serde_json::from_str(processes_json)
+                        .unwrap_or_default();
+                    processes.len()
+                };
+                
+                if process_count > 0 {
+                    bail!("Suricata is already running ({} process(es) found). Use 'evectl windows stop-suricata' to stop it first.", process_count);
+                }
+            }
+        }
+
         // Check if Suricata is installed
         if !is_suricata_installed() {
             bail!("Suricata is not installed. Please install it first using 'evectl windows install-suricata'");
@@ -555,8 +583,13 @@ mod imp {
         }
 
         // Parse the JSON output to get process IDs
-        let processes: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-            .context("Failed to parse PowerShell output as JSON")?;
+        let processes_json = stdout.trim();
+        let processes: Vec<serde_json::Value> = if processes_json.starts_with('{') {
+            // Single process returned as an object
+            vec![serde_json::from_str(processes_json)?]
+        } else {
+            serde_json::from_str(processes_json)?
+        };
 
         if processes.is_empty() {
             info!("No running Suricata processes found");
