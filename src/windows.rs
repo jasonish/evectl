@@ -38,6 +38,9 @@ mod imp {
             /// Network interface GUID to listen on
             #[arg(long)]
             guid: Option<String>,
+            /// Launch Suricata in the background
+            #[arg(long)]
+            background: bool,
         },
     }
 
@@ -47,7 +50,7 @@ mod imp {
             Commands::InstallSuricata => install_suricata(),
             Commands::InstallEvebox => install_evebox(),
             Commands::ListInterfaces => list_interfaces(),
-            Commands::StartSuricata { guid } => start_suricata(guid),
+            Commands::StartSuricata { guid, background } => start_suricata(guid, background),
         }
     }
 
@@ -396,7 +399,7 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn start_suricata(guid: Option<String>) -> Result<()> {
+    fn start_suricata(guid: Option<String>, background: bool) -> Result<()> {
         use std::process::Command;
 
         // Check if Suricata is installed
@@ -457,13 +460,17 @@ mod imp {
         command.arg(".");
 
         // Run Suricata
-        let status = command.status()?;
-        
-        if !status.success() {
-            bail!("Suricata exited with status: {}", status);
+        if background {
+            let child = command.spawn()?;
+            println!("Suricata started in background with PID {}", child.id());
+            Ok(())
+        } else {
+            let status = command.status()?;
+            if !status.success() {
+                bail!("Suricata exited with status: {}", status);
+            }
+            Ok(())
         }
-
-        Ok(())
     }
 
     #[cfg(windows)]
