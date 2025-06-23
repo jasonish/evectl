@@ -42,6 +42,9 @@ mod imp {
             #[arg(long)]
             background: bool,
         },
+
+        /// Stop Suricata if running in the background
+        StopSuricata,
     }
 
     pub(crate) fn main(args: Args) -> Result<()> {
@@ -51,6 +54,7 @@ mod imp {
             Commands::InstallEvebox => install_evebox(),
             Commands::ListInterfaces => list_interfaces(),
             Commands::StartSuricata { guid, background } => start_suricata(guid, background),
+            Commands::StopSuricata => stop_suricata(),
         }
     }
 
@@ -520,6 +524,68 @@ mod imp {
         name: String,
         ip_address: String,
         guid: String,
+    }
+
+    #[cfg(windows)]
+    fn stop_suricata() -> Result<()> {
+        use std::process::Command;
+
+        info!("Looking for running Suricata processes...");
+
+        // Use PowerShell to find Suricata processes
+        let output = Command::new("powershell")
+            .args([
+                "-Command",
+                "try { Get-Process -Name 'suricata' -ErrorAction Stop | Select-Object Id, ProcessName, StartTime | ConvertTo-Json } catch { '[]' }"
+            ])
+            .output()
+            .context("Failed to execute PowerShell command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("PowerShell command failed: {}", stderr);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        // Check if any Suricata processes were found
+        if stdout.trim() == "[]" || stdout.trim().is_empty() {
+            info!("No running Suricata processes found");
+            return Ok(());
+        }
+
+        // Parse the JSON output to get process IDs
+        let processes: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+            .context("Failed to parse PowerShell output as JSON")?;
+
+        if processes.is_empty() {
+            info!("No running Suricata processes found");
+            return Ok(());
+        }
+
+        info!("Found {} Suricata process(es)", processes.len());
+
+        // Stop each Suricata process
+        for process in processes {
+            if let Some(pid) = process["Id"].as_u64() {
+                info!("Stopping Suricata process with PID: {}", pid);
+                
+                // Use taskkill to stop the process
+                let status = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .status()
+                    .context(format!("Failed to stop process {}", pid))?;
+
+                if status.success() {
+                    info!("Successfully stopped Suricata process with PID: {}", pid);
+                } else {
+                    warn!("Failed to stop Suricata process with PID: {}", pid);
+                }
+            }
+        }
+
+        info!("Suricata stop operation completed");
+        Ok(())
     }
 }
 
