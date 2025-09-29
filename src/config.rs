@@ -31,13 +31,6 @@ pub(crate) struct Config {
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) struct ContainerConfig {
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub runtime: String,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
 pub(crate) struct SuricataConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub enabled: bool,
