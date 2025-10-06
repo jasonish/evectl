@@ -106,7 +106,7 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
                 .prompt()?;
             let disable_https = inquire::Confirm::new("EveBox Server: Disable HTTPS?")
                 .with_default(false)
-                .with_help_message("Disable HTTPS, no recommended if remote-access is allowed")
+                .with_help_message("Disable HTTPS, not recommended if remote-access is allowed")
                 .prompt()?;
             let disable_auth = inquire::Confirm::new("EveBox Server: Disable authentication?")
                 .with_default(false)
