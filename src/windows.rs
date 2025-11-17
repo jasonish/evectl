@@ -23,7 +23,11 @@ mod imp {
         InstallNpcap,
 
         /// Install Suricata.
-        InstallSuricata,
+        InstallSuricata {
+            /// Force installation even if already installed
+            #[arg(long)]
+            force: bool,
+        },
 
         /// Install EveBox.
         InstallEvebox,
@@ -32,7 +36,7 @@ mod imp {
     pub(crate) fn main(args: Args) -> Result<()> {
         match args.command {
             Commands::InstallNpcap => download_npcap(),
-            Commands::InstallSuricata => install_suricata(),
+            Commands::InstallSuricata { force } => install_suricata(force),
             Commands::InstallEvebox => install_evebox(),
         }
     }
@@ -243,13 +247,79 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn install_suricata() -> Result<()> {
+    fn uninstall_suricata() -> Result<()> {
+        info!("Uninstalling Suricata...");
+
+        // Use PowerShell to find the Suricata product code from the registry
+        let ps_script = r#"
+            $uninstallPaths = @(
+                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            )
+
+            foreach ($path in $uninstallPaths) {
+                Get-ItemProperty $path -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -like 'Suricata*' } |
+                Select-Object -First 1 -ExpandProperty PSChildName
+            }
+        "#;
+
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
+            .output()
+            .context("Failed to execute PowerShell command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("PowerShell command failed: {}", stderr);
+        }
+
+        let product_code = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string();
+
+        if product_code.is_empty() {
+            bail!("Could not find Suricata product code in registry");
+        }
+
+        info!("Found Suricata with product code: {}", product_code);
+        info!("Launching uninstaller...");
+
+        // Launch msiexec to uninstall
+        let status = std::process::Command::new("msiexec")
+            .args(["/x", &product_code, "/qb"])
+            .status()
+            .context("Failed to launch Suricata uninstaller")?;
+
+        if !status.success() {
+            bail!("Suricata uninstaller exited with status: {}", status);
+        }
+
+        info!("Suricata uninstalled successfully");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn install_suricata(force: bool) -> Result<()> {
         #[cfg(windows)]
         {
             // Check if Suricata is already installed
             if is_suricata_installed() {
-                info!("Suricata is already installed on this system.");
-                return Ok(());
+                if force {
+                    info!("Suricata is already installed on this system.");
+                    let should_uninstall = inquire::Confirm::new("Would you like to uninstall the existing version first?")
+                        .with_default(true)
+                        .prompt()
+                        .context("Failed to get user confirmation")?;
+
+                    if should_uninstall {
+                        uninstall_suricata()?;
+                    }
+                } else {
+                    info!("Suricata is already installed on this system.");
+                    info!("Use --force to reinstall.");
+                    return Ok(());
+                }
             }
         }
 
