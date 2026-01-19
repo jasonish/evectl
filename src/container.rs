@@ -73,8 +73,8 @@ impl ContainerManager {
         }
         bail!(
             "Failed to find {} version in output: {}",
-            self.to_string(),
-            String::from_utf8_lossy(&output.stdout).to_string()
+            self,
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 
