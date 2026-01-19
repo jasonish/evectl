@@ -57,6 +57,12 @@ pub(crate) struct EveBoxServerConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub allow_remote: bool,
 
+    /// Bind to a specific interface by name (e.g., "eth0").
+    /// Only used when allow_remote is true.
+    /// This setting is only effective when `allow_remote` is true; otherwise it is ignored.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub bind_interface: Option<String>,
+
     #[serde(default, skip_serializing_if = "is_default")]
     pub no_tls: bool,
 

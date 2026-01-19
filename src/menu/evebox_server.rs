@@ -13,6 +13,7 @@ enum Options {
     ResetPassword,
     EnableRemote,
     DisableRemote,
+    SetBindInterface,
     ToggleElasticsearch,
     UseExternalElasticsearch,
     ElasticsearchUrl,
@@ -44,6 +45,13 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 
         if context.config.evebox_server.allow_remote {
             selections.push(Options::DisableRemote, "Disable Remote Access [enabled]");
+
+            let bind_label = if let Some(iface) = &context.config.evebox_server.bind_interface {
+                format!("Bind Interface [{}]", iface)
+            } else {
+                "Bind Interface [all interfaces]".to_string()
+            };
+            selections.push(Options::SetBindInterface, bind_label);
         } else {
             selections.push(Options::EnableRemote, "Enable Remote Access [disabled]");
         }
@@ -126,6 +134,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 Options::ResetPassword => crate::evebox::server::reset_password(context),
                 Options::EnableRemote => enable_remote_access(context),
                 Options::DisableRemote => disable_remote_access(context),
+                Options::SetBindInterface => set_bind_interface(context),
                 Options::ToggleElasticsearch => toggle_elasticsearch(context)?,
                 Options::UseExternalElasticsearch => use_external_elasticsearch(context)?,
                 Options::ElasticsearchUrl => {
@@ -236,6 +245,57 @@ fn enable_remote_access(context: &mut Context) {
 
 fn disable_remote_access(context: &mut Context) {
     context.config.evebox_server.allow_remote = false;
+}
+
+fn set_bind_interface(context: &mut Context) {
+    let interfaces = match evectl::system::get_interfaces() {
+        Ok(interfaces) => interfaces,
+        Err(err) => {
+            error!("Failed to get network interfaces: {}", err);
+            return;
+        }
+    };
+
+    // Filter to interfaces that have an IPv4 address
+    let available: Vec<_> = interfaces
+        .into_iter()
+        .filter(|iface| !iface.addr4.is_empty())
+        .collect();
+
+    if available.is_empty() {
+        error!("No network interfaces with IPv4 addresses found");
+        return;
+    }
+
+    let mut options: Vec<String> = vec!["All interfaces".to_string()];
+    for iface in &available {
+        let addrs = iface.addr4.join(", ");
+        options.push(format!("{} ({})", iface.name, addrs));
+    }
+
+    let default_index = if let Some(current) = &context.config.evebox_server.bind_interface {
+        available
+            .iter()
+            .position(|iface| &iface.name == current)
+            .map(|i| i + 1) // +1 because "All interfaces" is at index 0
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if let Ok(selection) = inquire::Select::new("Select interface to bind to:", options)
+        .with_starting_cursor(default_index)
+        .prompt()
+    {
+        if selection == "All interfaces" {
+            context.config.evebox_server.bind_interface = None;
+        } else {
+            // Extract interface name from "eth0 (192.168.1.1)"
+            if let Some(name) = selection.split_whitespace().next() {
+                context.config.evebox_server.bind_interface = Some(name.to_string());
+            }
+        }
+    }
 }
 
 fn set_elasticsearch_url(context: &mut Context) -> Result<()> {

@@ -20,6 +20,29 @@ pub struct Interface {
     pub addr6: Vec<String>,
 }
 
+/// Get the IPv4 address of a specific network interface.
+///
+/// Returns the first IPv4 address assigned to the interface, or an error
+/// if the interface doesn't exist or has no IPv4 address.
+#[cfg(target_os = "linux")]
+pub fn get_interface_ip(interface: &str) -> Result<String> {
+    let interfaces = get_interfaces()?;
+    for iface in interfaces {
+        if iface.name == interface {
+            if let Some(addr) = iface.addr4.first() {
+                return Ok(addr.clone());
+            }
+            anyhow::bail!("Interface {} has no IPv4 address", interface);
+        }
+    }
+    anyhow::bail!("Interface {} not found", interface)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_interface_ip(_interface: &str) -> Result<String> {
+    anyhow::bail!("get_interface_ip is only supported on Linux")
+}
+
 /// Get the network interfaces and their addresses.
 ///
 /// We parse the output of the "ip" command as we may need to do this

@@ -1030,11 +1030,19 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     command.arg("run");
     command.arg("--name");
     command.arg(crate::evebox::server::container_name(context));
-    if context.config.evebox_server.allow_remote {
-        command.arg("--publish=5636:5636");
+
+    let publish_arg = if context.config.evebox_server.allow_remote {
+        if let Some(iface) = &config.bind_interface {
+            let ip = evectl::system::get_interface_ip(iface)?;
+            format!("--publish={}:5636:5636", ip)
+        } else {
+            "--publish=5636:5636".to_string()
+        }
     } else {
-        command.arg("--publish=127.0.0.1:5636:5636");
-    }
+        "--publish=127.0.0.1:5636:5636".to_string()
+    };
+    command.arg(publish_arg);
+
     if daemon {
         command.arg("--detach");
     }
