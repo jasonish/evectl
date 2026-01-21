@@ -1194,6 +1194,12 @@ fn update(context: &Context) -> bool {
             ok = false;
         }
     }
+    if context.config.elasticsearch.enabled {
+        if let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE) {
+            error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
+            ok = false;
+        }
+    }
     if let Err(err) = selfupdate::self_update() {
         error!("Failed to update EveCtl: {err}");
         ok = false;

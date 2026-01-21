@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::prelude::*;
 
-pub(crate) const DOCKER_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.17.1";
+pub(crate) const DOCKER_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.19.10";
 
 const BIN: &str = "bin/elasticsearch";
 
