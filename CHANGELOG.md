@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Set EveBox server data/config directories via environment variables
 - Update Elasticsearch to 8.19.10
 - Pull image on Elasticsearch update
 
