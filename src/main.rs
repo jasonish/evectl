@@ -1070,6 +1070,12 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     std::fs::create_dir_all(&host_data_directory).unwrap();
     command.arg(format!("--volume={}:/data", host_data_directory.display()));
 
+    command.arg("--env");
+    command.arg("EVEBOX_CONFIG_DIRECTORY=/config");
+
+    command.arg("--env");
+    command.arg("EVEBOX_DATA_DIRECTORY=/data");
+
     if config.use_external_elasticsearch {
         if let Some(username) = &config.elasticsearch_client.username {
             command.arg("--env");
