@@ -108,11 +108,10 @@ fn set_sensor_name(config: &mut Config) {
 
 fn toggle_enabled(config: &mut Config) {
     config.suricata.enabled = !config.suricata.enabled;
-    if config.suricata.enabled && config.suricata.interfaces.is_empty() {
-        if let Ok(interface) = select_interface("Select Interface") {
+    if config.suricata.enabled && config.suricata.interfaces.is_empty()
+        && let Ok(interface) = select_interface("Select Interface") {
             config.suricata.interfaces = vec![interface];
         }
-    }
 }
 
 pub(crate) fn select_interface(prompt: &str) -> Result<String> {

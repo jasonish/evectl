@@ -172,7 +172,9 @@ fn use_external_elasticsearch(context: &mut Context) -> Result<()> {
         context.config.evebox_server.use_external_elasticsearch = false;
     } else {
         if context.config.elasticsearch.enabled {
-            warn!("Using external Elasticsearch will disable use of the managed Elasticsearch server.");
+            warn!(
+                "Using external Elasticsearch will disable use of the managed Elasticsearch server."
+            );
             if !inquire::Confirm::new("Continue?")
                 .with_default(true)
                 .prompt()?

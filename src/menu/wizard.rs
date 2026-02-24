@@ -136,8 +136,8 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
 
             if !disable_auth {
                 crate::prompt::enter_with_prefix(
-                "EveBox Server: When prompted, enter the password for the EveBox \"admin\" user.",
-            );
+                    "EveBox Server: When prompted, enter the password for the EveBox \"admin\" user.",
+                );
                 crate::evebox::server::reset_password(context);
             }
 
@@ -159,12 +159,10 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         .with_default(true)
         .prompt_skippable()?
         .unwrap_or(false)
-    {
-        if let Err(err) = crate::systemd::install() {
+        && let Err(err) = crate::systemd::install() {
             error!("Failed to install EveCtl as a systemd service: {}", err);
             crate::prompt::enter();
         }
-    }
 
     Ok(())
 }

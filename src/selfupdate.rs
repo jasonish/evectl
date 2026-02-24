@@ -9,7 +9,7 @@ use std::{
     process,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 

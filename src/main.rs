@@ -187,18 +187,15 @@ fn main() -> Result<()> {
         not_found
     };
 
-    if prompt_for_update {
-        if let Ok(true) =
+    if prompt_for_update
+        && let Ok(true) =
             inquire::Confirm::new("Required container images not found, download now?")
                 .with_default(true)
                 .prompt()
-        {
-            if !update(&context) {
+            && !update(&context) {
                 error!("Failed to downloading container images");
                 prompt::enter();
             }
-        }
-    }
 
     if let Some(command) = args.command {
         let code = match command {
@@ -495,7 +492,9 @@ fn start_foreground(context: &Context) -> Result<()> {
                 .is_running(&crate::suricata::container_name(context))
             {
                 if now.elapsed().as_secs() > 3 {
-                    error!("Timed out waiting for the Suricata container to start running, not starting log rotation");
+                    error!(
+                        "Timed out waiting for the Suricata container to start running, not starting log rotation"
+                    );
                     break;
                 } else {
                     continue;
@@ -1200,12 +1199,11 @@ fn update(context: &Context) -> bool {
             ok = false;
         }
     }
-    if context.config.elasticsearch.enabled {
-        if let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE) {
+    if context.config.elasticsearch.enabled
+        && let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE) {
             error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
             ok = false;
         }
-    }
     if let Err(err) = selfupdate::self_update() {
         error!("Failed to update EveCtl: {err}");
         ok = false;
@@ -1269,7 +1267,8 @@ fn init_logging(is_interactive: bool, verbose: u8) {
             format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z")
         } else {
             format_description!(
-            "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]")
+                "[year]-[month]-[day]T[hour]:[minute]:[second][offset_hour sign:mandatory][offset_minute]"
+            )
         };
 
         let timer = tracing_subscriber::fmt::time::LocalTime::new(format);

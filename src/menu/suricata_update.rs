@@ -163,23 +163,20 @@ fn copy_suricata_update_template(context: &Context, filename: &str) -> Result<()
 
 fn edit_file(context: &Context, filename: &str) {
     let path = context.config_dir().join(filename);
-    if !path.exists() {
-        if let Ok(true) = inquire::Confirm::new(&format!(
+    if !path.exists()
+        && let Ok(true) = inquire::Confirm::new(&format!(
             "Would you like to start with a {} template",
             filename
         ))
         .with_default(true)
         .prompt()
-        {
-            if let Err(err) = copy_suricata_update_template(context, filename) {
+            && let Err(err) = copy_suricata_update_template(context, filename) {
                 error!(
                     "Sorry, an error occurred copying the template for {}: {}",
                     filename, err
                 );
                 prompt::enter();
             }
-        }
-    }
 
     if let Ok(editor) = std::env::var("EDITOR") {
         if let Err(err) = std::process::Command::new(&editor).arg(&path).status() {

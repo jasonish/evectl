@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (C) 2025 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use crate::{container::Container, prelude::*, ArgBuilder};
+use crate::{ArgBuilder, container::Container, prelude::*};
 
 pub(crate) fn container_name(context: &Context) -> String {
     let prefix = context.root.file_name().unwrap().to_string_lossy();

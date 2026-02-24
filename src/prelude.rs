@@ -5,7 +5,7 @@
 
 pub(crate) use tracing::{debug, error, info, warn};
 
-pub(crate) use anyhow::{anyhow, bail, Context as _, Result};
+pub(crate) use anyhow::{Context as _, Result, anyhow, bail};
 
 pub(crate) use crate::config::Config;
 
