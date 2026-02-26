@@ -192,10 +192,11 @@ fn main() -> Result<()> {
             inquire::Confirm::new("Required container images not found, download now?")
                 .with_default(true)
                 .prompt()
-            && !update(&context) {
-                error!("Failed to downloading container images");
-                prompt::enter();
-            }
+        && !update(&context)
+    {
+        error!("Failed to downloading container images");
+        prompt::enter();
+    }
 
     if let Some(command) = args.command {
         let code = match command {
@@ -1200,10 +1201,11 @@ fn update(context: &Context) -> bool {
         }
     }
     if context.config.elasticsearch.enabled
-        && let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE) {
-            error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
-            ok = false;
-        }
+        && let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE)
+    {
+        error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
+        ok = false;
+    }
     if let Err(err) = selfupdate::self_update() {
         error!("Failed to update EveCtl: {err}");
         ok = false;

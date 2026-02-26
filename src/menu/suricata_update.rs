@@ -170,13 +170,14 @@ fn edit_file(context: &Context, filename: &str) {
         ))
         .with_default(true)
         .prompt()
-            && let Err(err) = copy_suricata_update_template(context, filename) {
-                error!(
-                    "Sorry, an error occurred copying the template for {}: {}",
-                    filename, err
-                );
-                prompt::enter();
-            }
+        && let Err(err) = copy_suricata_update_template(context, filename)
+    {
+        error!(
+            "Sorry, an error occurred copying the template for {}: {}",
+            filename, err
+        );
+        prompt::enter();
+    }
 
     if let Ok(editor) = std::env::var("EDITOR") {
         if let Err(err) = std::process::Command::new(&editor).arg(&path).status() {

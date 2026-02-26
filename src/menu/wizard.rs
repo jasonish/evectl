@@ -159,10 +159,11 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         .with_default(true)
         .prompt_skippable()?
         .unwrap_or(false)
-        && let Err(err) = crate::systemd::install() {
-            error!("Failed to install EveCtl as a systemd service: {}", err);
-            crate::prompt::enter();
-        }
+        && let Err(err) = crate::systemd::install()
+    {
+        error!("Failed to install EveCtl as a systemd service: {}", err);
+        crate::prompt::enter();
+    }
 
     Ok(())
 }
