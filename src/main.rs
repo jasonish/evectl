@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", allow(dead_code))]
+
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
@@ -31,6 +33,7 @@ mod selfupdate;
 mod suricata;
 mod systemd;
 mod term;
+mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -40,6 +43,7 @@ fn get_clap_style() -> clap::builder::Styles {
         .placeholder(clap::builder::styling::AnsiColor::Green.on_default())
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Parser, Debug)]
 #[command(styles=get_clap_style())]
 struct Args {
@@ -55,6 +59,17 @@ struct Args {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Parser, Debug)]
+#[command(styles=get_clap_style())]
+struct Args {
+    #[arg(long, short, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    #[command(subcommand)]
+    command: windows::Commands,
 }
 
 #[derive(Subcommand, Debug)]
@@ -98,6 +113,9 @@ enum Commands {
 
     #[command(hide = true)]
     Menu { menu: String },
+
+    #[command(hide = !cfg!(target_os = "windows"))]
+    Windows(windows::Args),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -109,6 +127,7 @@ enum SystemdCommands {
     Remove,
 }
 
+#[cfg(not(target_os = "windows"))]
 fn is_interactive(command: &Option<Commands>) -> bool {
     match command {
         Some(command) => match command {
@@ -123,11 +142,27 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Windows(_) => true,
         },
         None => true,
     }
 }
 
+#[cfg(target_os = "windows")]
+fn main() -> Result<()> {
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_some_and(|arg| arg == "windows") {
+        argv.remove(1);
+    }
+
+    let args = Args::parse_from(argv);
+    init_logging(true, args.verbose);
+
+    let windows_args = windows::Args::from_command(args.command);
+    windows::main(windows_args)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn main() -> Result<()> {
     // Mainly for use when developing...
     let _ = std::process::Command::new("stty").args(["sane"]).status();
@@ -148,6 +183,7 @@ fn main() -> Result<()> {
         error!("The Podman container manager requires running as root");
         std::process::exit(1);
     }
+
     info!("Found container manager {manager}");
 
     let root = std::env::current_dir()?;
@@ -277,6 +313,9 @@ fn main() -> Result<()> {
                     SystemdCommands::Remove => systemd::remove(),
                 }
                 0
+            }
+            Commands::Windows(_) => {
+                unreachable!();
             }
         };
         std::process::exit(code);
