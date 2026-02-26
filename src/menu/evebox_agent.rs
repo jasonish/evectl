@@ -58,7 +58,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn set_server(config: &mut Config) -> Result<()> {
+pub(crate) fn set_server(config: &mut Config) -> Result<()> {
     if let Some((server, disable_certificate_validation)) = prompt_for_server_url(config)? {
         config.evebox_agent.server = server;
         config.evebox_agent.disable_certificate_validation = disable_certificate_validation;

@@ -119,7 +119,7 @@ fn set_eve_output(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn set_sensor_name(config: &mut Config) {
+pub(crate) fn set_sensor_name(config: &mut Config) {
     let current = config.suricata.sensor_name.clone();
     if let Ok(sensor_name) = inquire::Text::new("Enter Sensor Name:").prompt() {
         if sensor_name.trim().is_empty() {
@@ -166,7 +166,7 @@ pub(crate) fn select_interface(prompt: &str) -> Result<String> {
     Ok(iface.tag.to_string())
 }
 
-fn set_bpf_filter(config: &mut Config) {
+pub(crate) fn set_bpf_filter(config: &mut Config) {
     let current = config.suricata.bpf.clone();
     if let Ok(filter) = inquire::Text::new("Enter BPF filter:").prompt() {
         if filter.is_empty() {

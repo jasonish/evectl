@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", allow(dead_code))]
+
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
@@ -15,7 +17,9 @@ use prelude::*;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use config::EveOutput;
-use container::{Container, ContainerManager, SuricataContainer};
+#[cfg(not(target_os = "windows"))]
+use container::ContainerManager;
+use container::{Container, SuricataContainer};
 use logs::LogArgs;
 
 const EVE_SOCKET_CONTAINER_PATH: &str = "/var/run/suricata/eve.sock";
@@ -37,6 +41,7 @@ mod selfupdate;
 mod suricata;
 mod systemd;
 mod term;
+mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
     clap::builder::Styles::styled()
@@ -46,6 +51,7 @@ fn get_clap_style() -> clap::builder::Styles {
         .placeholder(clap::builder::styling::AnsiColor::Green.on_default())
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Parser, Debug)]
 #[command(styles=get_clap_style())]
 struct Args {
@@ -61,6 +67,17 @@ struct Args {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Parser, Debug)]
+#[command(styles=get_clap_style())]
+struct Args {
+    #[arg(long, short, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    #[command(subcommand)]
+    command: Option<windows::Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -109,6 +126,9 @@ enum Commands {
 
     #[command(hide = true)]
     Menu { menu: String },
+
+    #[command(hide = !cfg!(target_os = "windows"))]
+    Windows(windows::Args),
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -120,6 +140,7 @@ enum SystemdCommands {
     Remove,
 }
 
+#[cfg(not(target_os = "windows"))]
 fn is_interactive(command: &Option<Commands>) -> bool {
     match command {
         Some(command) => match command {
@@ -137,11 +158,13 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Windows(_) => true,
         },
         None => true,
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
     !matches!(
         command,
@@ -160,6 +183,7 @@ struct UpdateContinuationArgs {
 }
 
 impl UpdateContinuationArgs {
+    #[cfg(not(target_os = "windows"))]
     fn new(manager: ContainerManager, args: &Args) -> Self {
         Self {
             podman: manager.is_podman(),
@@ -188,6 +212,49 @@ impl UpdateContinuationArgs {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn wait_for_enter_before_exit() {
+    use std::io::IsTerminal;
+
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        eprint!("Press Enter to exit...");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn main() -> Result<()> {
+    // Reqwest's rustls-no-provider feature requires installing a crypto
+    // provider before any client is built (see Cargo.toml for why ring).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_some_and(|arg| arg == "windows") {
+        argv.remove(1);
+    }
+
+    match selfupdate::apply_staged_update_on_startup() {
+        Ok(true) => {
+            eprintln!("Applied staged EveCtl update. Please run your command again.");
+            wait_for_enter_before_exit();
+            std::process::exit(0);
+        }
+        Ok(false) => {}
+        Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),
+    }
+
+    let args = Args::parse_from(argv);
+    init_logging(true, args.verbose);
+
+    let windows_args = windows::Args::from_command(args.command);
+    windows::main(windows_args)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn main() -> Result<()> {
     // Reqwest's rustls-no-provider feature requires installing a crypto
     // provider before any client is built (see Cargo.toml for why ring).
@@ -214,6 +281,7 @@ fn main() -> Result<()> {
         error!("The Podman container manager requires running as root");
         std::process::exit(1);
     }
+
     info!("Found container manager {manager}");
     let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
 
@@ -286,9 +354,9 @@ fn main() -> Result<()> {
             Commands::UpdateRules => {
                 if let Err(err) = actions::update_rules(&context, &[]) {
                     error!("Failed to update rules: {}", err);
-                    0
-                } else {
                     1
+                } else {
+                    0
                 }
             }
             Commands::Update {
@@ -357,6 +425,10 @@ fn main() -> Result<()> {
                     SystemdCommands::Remove => systemd::remove(),
                 }
                 0
+            }
+            Commands::Windows(_) => {
+                error!("The windows command is only available on Windows");
+                1
             }
         };
         std::process::exit(code);
@@ -1560,7 +1632,7 @@ fn print(what: String) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
     use clap::CommandFactory;

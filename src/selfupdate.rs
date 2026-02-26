@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(target_os = "windows")]
+use anyhow::{Context as _, anyhow};
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
@@ -18,15 +20,35 @@ pub(crate) enum SelfUpdate {
     Updated(PathBuf),
 }
 
+fn should_skip_update_check() -> bool {
+    if env::var("CARGO").is_ok() || env::var_os("EVECTL_SKIP_UPDATE_CHECK").is_some() {
+        return true;
+    }
+
+    let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") else {
+        return false;
+    };
+
+    let target_dir = match fs::canonicalize(Path::new(manifest_dir).join("target")) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+
+    let current_exe = match env::current_exe().and_then(fs::canonicalize) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+
+    current_exe.starts_with(&target_dir)
+}
+
 pub(crate) fn self_update() -> Result<SelfUpdate> {
-    // If we're running from cargo, don't self update.
-    if env::var("CARGO").is_ok() {
-        info!("Not self updating as we are running from Cargo");
+    if should_skip_update_check() {
+        info!("Skipping self-update check for this executable");
         return Ok(SelfUpdate::Unchanged);
     }
 
-    let target = env!("TARGET");
-    let url = format!("https://evebox.org/files/evectl/{}/evectl", target);
+    let url = release_url();
     let hash_url = format!("{}.sha256", url);
     let current_exe = if let Ok(exe) = env::current_exe() {
         exe
@@ -39,7 +61,7 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
     info!("Calculating checksum of current executable");
     let current_hash = match current_checksum(&current_exe) {
         Err(err) => {
-            tracing::warn!("Failed to calculate checksum of current exec: {}", err);
+            warn!("Failed to calculate checksum of current exec: {}", err);
             None
         }
         Ok(checksum) => Some(checksum),
@@ -57,7 +79,10 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
         );
         bail!("Failed to fetch remote checksum");
     }
-    let remote_hash = response.text()?.trim().to_lowercase();
+
+    let remote_hash_text = response.text()?;
+    let remote_hash = parse_sha256_hash(&remote_hash_text)
+        .ok_or_else(|| anyhow::anyhow!("Remote checksum response was invalid"))?;
     debug!("Remote SHA256 checksum: {}", &remote_hash);
 
     match current_hash {
@@ -84,25 +109,96 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
         &hash
     );
     if hash != remote_hash {
-        tracing::error!("Downloaded file has invalid checksum, not updating");
-        tracing::error!("- Expected {}", remote_hash);
+        error!("Downloaded file has invalid checksum, not updating");
+        error!("- Expected {}", remote_hash);
         bail!("Downloaded file has invalid checksum");
     }
 
-    info!("Replacing current executable");
+    info!("Preparing updated executable");
     download_exe.seek(SeekFrom::Start(0))?;
-    if let Err(err) = fs::remove_file(&current_exe) {
-        tracing::warn!(
-            "Failed to remove current exe: {}: {}",
-            current_exe.display(),
-            err
-        );
-    }
-    let mut final_exec = fs::File::create(&current_exe)?;
-    io::copy(&mut download_exe, &mut final_exec)?;
-    make_executable(&current_exe)?;
+    replace_current_executable(&current_exe, &mut download_exe)?;
+
+    #[cfg(target_os = "windows")]
+    warn!(
+        "An EveCtl update has been downloaded and staged. It will be applied on the next start. Re-run your command after that run completes."
+    );
+
+    #[cfg(not(target_os = "windows"))]
     warn!("The EveCtl program has been updated.");
+
     Ok(SelfUpdate::Updated(current_exe))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
+    use std::process::Command;
+
+    let current_exe = match env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(
+                "Failed to determine executable path for staged update: {}",
+                err
+            );
+            return Ok(false);
+        }
+    };
+
+    let file_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("Failed to determine executable filename"))?;
+
+    let staged_path = current_exe.with_file_name(format!("{}.new", file_name));
+    if !staged_path.exists() {
+        return Ok(false);
+    }
+
+    let script = r#"
+$target = $env:EVECTL_SELF_UPDATE_TARGET
+$staged = $env:EVECTL_SELF_UPDATE_STAGED
+
+for ($i = 0; $i -lt 120; $i++) {
+    try {
+        Copy-Item -LiteralPath $staged -Destination $target -Force
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+exit 1
+"#;
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+        .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
+        .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
+        .spawn()
+        .context("Failed to launch Windows staged self-update helper")?;
+
+    Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+fn release_url() -> String {
+    // Windows builds are published as evectl.exe under the GNU target path.
+    "https://evebox.org/files/evectl/x86_64-pc-windows-gnu/evectl.exe".to_string()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn release_url() -> String {
+    let target = env!("TARGET");
+    format!("https://evebox.org/files/evectl/{}/evectl", target)
+}
+
+fn parse_sha256_hash(input: &str) -> Option<String> {
+    let hash = input.split_whitespace().next()?.trim();
+    if hash.len() != 64 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(hash.to_lowercase())
 }
 
 fn download_release(url: &str) -> Result<File> {
@@ -131,6 +227,37 @@ fn current_checksum(path: &Path) -> Result<String> {
     file_checksum(&mut file)
 }
 
+#[cfg(target_os = "windows")]
+fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Result<()> {
+    let file_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("Failed to determine executable filename"))?;
+
+    let staged_path = current_exe.with_file_name(format!("{}.new", file_name));
+    let mut staged_exe = fs::File::create(&staged_path)?;
+    io::copy(download_exe, &mut staged_exe)?;
+    staged_exe.sync_all()?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Result<()> {
+    if let Err(err) = fs::remove_file(current_exe) {
+        warn!(
+            "Failed to remove current exe: {}: {}",
+            current_exe.display(),
+            err
+        );
+    }
+
+    let mut final_exec = fs::File::create(current_exe)?;
+    io::copy(download_exe, &mut final_exec)?;
+    make_executable(current_exe)?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::prelude::PermissionsExt;
@@ -138,7 +265,7 @@ fn make_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }

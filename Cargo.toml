@@ -47,3 +47,10 @@ webpki-root-certs = "1.0.9"
 
 # Only used for logging in local time.
 time = { version = "0.3.47", features = ["macros"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs = "5.0"
+indicatif = "0.17.10"
+suricasta-rules = { git = "https://github.com/jasonish/suricasta-rules", tag = "0.4.0" }
+zip = "2.2"
+windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Com", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }

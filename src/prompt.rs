@@ -10,7 +10,7 @@ pub fn enter_with_prefix(prefix: &str) {
 }
 
 pub fn confirm(prompt: &str, help: Option<&str>) -> bool {
-    let prompt = inquire::Confirm::new(prompt);
+    let prompt = inquire::Confirm::new(prompt).with_default(true);
     let prompt = if let Some(help) = help {
         prompt.with_help_message(help)
     } else {
