@@ -43,6 +43,18 @@ pub fn get_interface_ip(_interface: &str) -> Result<String> {
     anyhow::bail!("get_interface_ip is only supported on Linux")
 }
 
+/// Resolve a bind value to an IP address.
+///
+/// If `value` is an IP address, it is returned as-is.
+/// Otherwise, it is treated as an interface name and resolved to the first
+/// IPv4 address on that interface.
+pub fn resolve_interface_or_ip(value: &str) -> Result<String> {
+    if value.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(value.to_string());
+    }
+    get_interface_ip(value)
+}
+
 /// Get the network interfaces and their addresses.
 ///
 /// We parse the output of the "ip" command as we may need to do this

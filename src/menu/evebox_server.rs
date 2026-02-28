@@ -13,11 +13,23 @@ enum Options {
     ResetPassword,
     EnableRemote,
     DisableRemote,
-    SetBindInterface,
+    SetBindAddress,
     ToggleElasticsearch,
     UseExternalElasticsearch,
     ElasticsearchUrl,
     Return,
+}
+
+#[derive(Clone)]
+struct BindAddressOption {
+    label: String,
+    address: Option<String>,
+}
+
+impl std::fmt::Display for BindAddressOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
 }
 
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
@@ -46,12 +58,16 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         if context.config.evebox_server.allow_remote {
             selections.push(Options::DisableRemote, "Disable Remote Access [enabled]");
 
-            let bind_label = if let Some(iface) = &context.config.evebox_server.bind_interface {
-                format!("Bind Interface [{}]", iface)
+            let bind_label = if let Some(value) = &context.config.evebox_server.bind_address {
+                if value.parse::<std::net::IpAddr>().is_ok() {
+                    format!("Bind Address [{}]", value)
+                } else {
+                    format!("Bind Address [interface: {}]", value)
+                }
             } else {
-                "Bind Interface [all interfaces]".to_string()
+                "Bind Address [all interfaces]".to_string()
             };
-            selections.push(Options::SetBindInterface, bind_label);
+            selections.push(Options::SetBindAddress, bind_label);
         } else {
             selections.push(Options::EnableRemote, "Enable Remote Access [disabled]");
         }
@@ -134,7 +150,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 Options::ResetPassword => crate::evebox::server::reset_password(context),
                 Options::EnableRemote => enable_remote_access(context),
                 Options::DisableRemote => disable_remote_access(context),
-                Options::SetBindInterface => set_bind_interface(context),
+                Options::SetBindAddress => set_bind_address(context),
                 Options::ToggleElasticsearch => toggle_elasticsearch(context)?,
                 Options::UseExternalElasticsearch => use_external_elasticsearch(context)?,
                 Options::ElasticsearchUrl => {
@@ -249,7 +265,7 @@ fn disable_remote_access(context: &mut Context) {
     context.config.evebox_server.allow_remote = false;
 }
 
-fn set_bind_interface(context: &mut Context) {
+fn set_bind_address(context: &mut Context) {
     let interfaces = match evectl::system::get_interfaces() {
         Ok(interfaces) => interfaces,
         Err(err) => {
@@ -258,45 +274,52 @@ fn set_bind_interface(context: &mut Context) {
         }
     };
 
-    // Filter to interfaces that have an IPv4 address
-    let available: Vec<_> = interfaces
-        .into_iter()
-        .filter(|iface| !iface.addr4.is_empty())
-        .collect();
+    let mut available: Vec<(String, String)> = vec![];
+    for iface in interfaces {
+        for addr in iface.addr4 {
+            available.push((iface.name.clone(), addr));
+        }
+    }
 
     if available.is_empty() {
         error!("No network interfaces with IPv4 addresses found");
         return;
     }
 
-    let mut options: Vec<String> = vec!["All interfaces".to_string()];
-    for iface in &available {
-        let addrs = iface.addr4.join(", ");
-        options.push(format!("{} ({})", iface.name, addrs));
+    let mut options = vec![BindAddressOption {
+        label: "All interfaces".to_string(),
+        address: None,
+    }];
+
+    for (iface, addr) in &available {
+        options.push(BindAddressOption {
+            label: format!("{} ({})", addr, iface),
+            address: Some(addr.to_string()),
+        });
     }
 
-    let default_index = if let Some(current) = &context.config.evebox_server.bind_interface {
-        available
-            .iter()
-            .position(|iface| &iface.name == current)
-            .map(|i| i + 1) // +1 because "All interfaces" is at index 0
-            .unwrap_or(0)
+    let default_index = if let Some(current) = &context.config.evebox_server.bind_address {
+        if current.parse::<std::net::IpAddr>().is_ok() {
+            options
+                .iter()
+                .position(|option| option.address.as_ref() == Some(current))
+                .unwrap_or(0)
+        } else {
+            available
+                .iter()
+                .position(|(iface, _)| iface == current)
+                .map(|i| i + 1) // +1 because "All interfaces" is at index 0
+                .unwrap_or(0)
+        }
     } else {
         0
     };
 
-    if let Ok(selection) = inquire::Select::new("Select interface to bind to:", options)
+    if let Ok(selection) = inquire::Select::new("Select address to bind to:", options)
         .with_starting_cursor(default_index)
         .prompt()
     {
-        if selection == "All interfaces" {
-            context.config.evebox_server.bind_interface = None;
-        } else {
-            // Extract interface name from "eth0 (192.168.1.1)"
-            if let Some(name) = selection.split_whitespace().next() {
-                context.config.evebox_server.bind_interface = Some(name.to_string());
-            }
-        }
+        context.config.evebox_server.bind_address = selection.address;
     }
 }
 

@@ -620,46 +620,55 @@ fn guess_evebox_url(context: &Context) -> String {
     };
 
     if !context.config.evebox_server.allow_remote {
-        format!("{}://127.0.0.1:5636", scheme)
-    } else {
-        let interfaces = match evectl::system::get_interfaces() {
-            Ok(interfaces) => interfaces,
+        return format!("{}://127.0.0.1:5636", scheme);
+    }
+
+    if let Some(bind_value) = &context.config.evebox_server.bind_address {
+        match evectl::system::resolve_interface_or_ip(bind_value) {
+            Ok(address) => return format!("{}://{}:5636", scheme, address),
             Err(err) => {
-                error!("Failed to get system interfaces: {err}");
-                return format!("{}://127.0.0.1:5636", scheme);
+                error!("Failed to resolve bind value {bind_value}: {err}");
             }
-        };
+        }
+    }
 
-        // Find the first interface that is up...
-        let mut addr: Option<&String> = None;
+    let interfaces = match evectl::system::get_interfaces() {
+        Ok(interfaces) => interfaces,
+        Err(err) => {
+            error!("Failed to get system interfaces: {err}");
+            return format!("{}://127.0.0.1:5636", scheme);
+        }
+    };
 
-        for interface in &interfaces {
-            // Only consider IPv4 addresses for now.
-            if interface.addr4.is_empty() {
-                continue;
-            }
-            if interface.name == "lo" && addr.is_none() {
-                addr = interface.addr4.first();
-            } else if interface.status == "UP" {
-                match addr {
-                    Some(previous) => {
-                        if previous.starts_with("127") {
-                            addr = interface.addr4.first();
-                        }
-                    }
-                    None => {
+    // Find the first interface that is up...
+    let mut addr: Option<&String> = None;
+
+    for interface in &interfaces {
+        // Only consider IPv4 addresses for now.
+        if interface.addr4.is_empty() {
+            continue;
+        }
+        if interface.name == "lo" && addr.is_none() {
+            addr = interface.addr4.first();
+        } else if interface.status == "UP" {
+            match addr {
+                Some(previous) => {
+                    if previous.starts_with("127") {
                         addr = interface.addr4.first();
                     }
                 }
+                None => {
+                    addr = interface.addr4.first();
+                }
             }
         }
-
-        format!(
-            "{}://{}:5636",
-            scheme,
-            addr.unwrap_or(&"127.0.0.1".to_string())
-        )
     }
+
+    format!(
+        "{}://{}:5636",
+        scheme,
+        addr.unwrap_or(&"127.0.0.1".to_string())
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1032,8 +1041,8 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     command.arg(crate::evebox::server::container_name(context));
 
     let publish_arg = if context.config.evebox_server.allow_remote {
-        if let Some(iface) = &config.bind_interface {
-            let ip = evectl::system::get_interface_ip(iface)?;
+        if let Some(bind_value) = &config.bind_address {
+            let ip = evectl::system::resolve_interface_or_ip(bind_value)?;
             format!("--publish={}:5636:5636", ip)
         } else {
             "--publish=5636:5636".to_string()
