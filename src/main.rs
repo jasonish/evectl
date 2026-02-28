@@ -846,7 +846,7 @@ fn menu_main(mut context: Context) -> Result<()> {
                         prompt::enter();
                     }
                     Main::SuricataUpdate => menu::suricata_update::menu(&mut context)?,
-                    Main::Exit => break,
+                    Main::Exit => break 'outer,
                 },
                 Err(_) => break 'outer,
             }
