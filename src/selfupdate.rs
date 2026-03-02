@@ -196,11 +196,6 @@ exit 1
     Ok(true)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
-    Ok(false)
-}
-
 #[cfg(target_os = "windows")]
 fn release_url() -> String {
     // Windows builds are published as evectl.exe under the GNU target path.
