@@ -99,7 +99,7 @@ pub(crate) fn self_update() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         warn!(
-            "An EveCtl update has been downloaded and staged. It will be applied on the next start."
+            "An EveCtl update has been downloaded and staged. It will be applied on the next start (that run exits once to finalize)."
         );
         return Ok(());
     }
@@ -133,42 +133,14 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
         return Ok(false);
     }
 
-    let relaunch_args: Vec<String> = env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    let relaunch_args_json = serde_json::to_string(&relaunch_args)?;
-
     let script = r#"
 $target = $env:EVECTL_SELF_UPDATE_TARGET
 $staged = $env:EVECTL_SELF_UPDATE_STAGED
-$workingDir = $env:EVECTL_SELF_UPDATE_WORKDIR
-$argsJson = $env:EVECTL_SELF_UPDATE_ARGS_JSON
-$argList = @()
-
-if ($argsJson) {
-    try {
-        $parsed = ConvertFrom-Json -InputObject $argsJson
-        if ($null -ne $parsed) {
-            if ($parsed -is [System.Array]) {
-                $argList = @($parsed)
-            } else {
-                $argList = @([string]$parsed)
-            }
-        }
-    } catch {
-    }
-}
 
 for ($i = 0; $i -lt 120; $i++) {
     try {
         Copy-Item -LiteralPath $staged -Destination $target -Force
         Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-        if ($workingDir) {
-            Start-Process -FilePath $target -ArgumentList $argList -WorkingDirectory $workingDir | Out-Null
-        } else {
-            Start-Process -FilePath $target -ArgumentList $argList | Out-Null
-        }
         exit 0
     } catch {
         Start-Sleep -Milliseconds 250
@@ -178,18 +150,10 @@ for ($i = 0; $i -lt 120; $i++) {
 exit 1
 "#;
 
-    let mut command = Command::new("powershell");
-    command
+    Command::new("powershell")
         .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
         .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
         .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
-        .env("EVECTL_SELF_UPDATE_ARGS_JSON", &relaunch_args_json);
-
-    if let Ok(working_dir) = env::current_dir() {
-        command.env("EVECTL_SELF_UPDATE_WORKDIR", working_dir);
-    }
-
-    command
         .spawn()
         .context("Failed to launch Windows staged self-update helper")?;
 
