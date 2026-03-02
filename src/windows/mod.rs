@@ -6,12 +6,19 @@ mod imp {
     use crate::prelude::*;
     use clap::{Parser, Subcommand};
     use indicatif::{ProgressBar, ProgressStyle};
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     const NPCAP_VERSION: &str = "1.87";
     const SURICATA_VERSION: &str = "8.0.3-1";
     const EVEBOX_VERSION: &str = "0.23.0";
     const EVEBOX_URL: &str =
         "https://evebox.org/files/release/0.23.0/evebox-0.23.0-windows-x64.zip";
+    const STATUS_CONTROL_C_EXIT: i32 = -1073741510;
+
+    static CTRL_C_RECEIVED: AtomicBool = AtomicBool::new(false);
+    static CTRL_C_HANDLER_SETUP: OnceLock<Result<(), String>> = OnceLock::new();
 
     #[derive(Parser, Debug, Clone)]
     pub(crate) struct Args {
@@ -21,6 +28,9 @@ mod imp {
 
     #[derive(Subcommand, Debug, Clone)]
     pub(crate) enum Commands {
+        /// Display project directories for config, rules, and logs.
+        Info,
+
         /// Install Npcap (interactive) and then Suricata (non-interactive).
         InstallSuricata,
 
@@ -58,6 +68,7 @@ mod imp {
 
     pub(crate) fn main(args: Args) -> Result<()> {
         match args.command {
+            Commands::Info => project_info(),
             Commands::InstallSuricata => install_suricata(),
             Commands::UpgradeSuricata => upgrade_suricata(),
             Commands::Uninstall => uninstall_windows_components(),
@@ -66,6 +77,66 @@ mod imp {
             Commands::StartSuricata { guid, background } => start_suricata(guid, background),
             Commands::StopSuricata => stop_suricata(),
         }
+    }
+
+    #[cfg(windows)]
+    fn project_info() -> Result<()> {
+        let config_root = dirs::config_dir()
+            .ok_or_else(|| anyhow!("Could not find user config directory"))?
+            .join("evectl");
+        let data_root = dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("Could not find local data directory"))?
+            .join("evectl");
+
+        let evectl_config = config_root.join("evectl.toml");
+        let suricata_config_dir = config_root.join("suricata");
+        let suricata_rules_dir = suricata_config_dir.join("lib").join("rules");
+        let suricata_update_dir = suricata_config_dir.join("lib").join("update");
+        let suricata_update_cache_dir = suricata_update_dir.join("cache");
+        let suricata_log_dir = data_root.join("suricata").join("log");
+        let suricata_run_dir = data_root.join("suricata").join("run");
+        let evebox_data_dir = data_root.join("evebox");
+
+        println!("Windows path-based directories:");
+        println!("  Config root:               {}", config_root.display());
+        println!("  Data root:                 {}", data_root.display());
+        println!();
+
+        println!("Recommended config and rules paths:");
+        println!("  EveCtl config file:        {}", evectl_config.display());
+        println!(
+            "  Suricata config directory: {}",
+            suricata_config_dir.display()
+        );
+        println!(
+            "  Suricata rules directory:  {}",
+            suricata_rules_dir.display()
+        );
+        println!(
+            "  Rule update state:         {}",
+            suricata_update_dir.display()
+        );
+        println!(
+            "  Rule update cache:         {}",
+            suricata_update_cache_dir.display()
+        );
+        println!();
+
+        println!("Recommended Suricata log/runtime paths:");
+        println!(
+            "  Suricata logs:             {}",
+            suricata_log_dir.display()
+        );
+        println!(
+            "  Suricata runtime files:    {}",
+            suricata_run_dir.display()
+        );
+        println!();
+
+        println!("Other Windows data paths:");
+        println!("  EveBox data directory:     {}", evebox_data_dir.display());
+
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -990,7 +1061,17 @@ exit $process.ExitCode
         };
 
         info!("Starting Suricata on interface GUID: {}", interface_guid);
-        info!("Logs will be written to current directory");
+
+        let suricata_log_dir = dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("Could not find local data directory"))?
+            .join("evectl")
+            .join("suricata")
+            .join("log");
+        std::fs::create_dir_all(&suricata_log_dir).context(format!(
+            "Failed to create Suricata log directory {}",
+            suricata_log_dir.display()
+        ))?;
+        info!("Logs will be written to {}", suricata_log_dir.display());
 
         // Convert GUID to NPCAP device name format
         let npcap_device = format!("\\Device\\NPF_{}", interface_guid);
@@ -1001,7 +1082,8 @@ exit $process.ExitCode
         command.arg("-i");
         command.arg(&npcap_device);
         command.arg("-l");
-        command.arg(".");
+        command.arg(&suricata_log_dir);
+        info!("Running command: {}", format_command_line(&command));
 
         // Run Suricata
         if background {
@@ -1009,11 +1091,59 @@ exit $process.ExitCode
             println!("Suricata started in background with PID {}", child.id());
             Ok(())
         } else {
-            let status = command.status()?;
-            if !status.success() {
-                bail!("Suricata exited with status: {}", status);
+            ensure_ctrlc_handler()?;
+            CTRL_C_RECEIVED.store(false, Ordering::SeqCst);
+
+            let mut child = command.spawn().context("Failed to start Suricata")?;
+
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    let ctrl_c = CTRL_C_RECEIVED.swap(false, Ordering::SeqCst);
+                    let ctrl_c_exit = status
+                        .code()
+                        .is_some_and(|code| code == STATUS_CONTROL_C_EXIT);
+
+                    if status.success() || (ctrl_c && ctrl_c_exit) {
+                        return Ok(());
+                    }
+
+                    bail!("Suricata exited with status: {}", status);
+                }
+
+                std::thread::sleep(Duration::from_millis(100));
             }
-            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    fn format_command_line(command: &std::process::Command) -> String {
+        fn quote(arg: &str) -> String {
+            if arg.contains([' ', '\t', '"']) {
+                format!("\"{}\"", arg.replace('"', "\\\""))
+            } else {
+                arg.to_string()
+            }
+        }
+
+        let mut parts = vec![quote(&command.get_program().to_string_lossy())];
+        for arg in command.get_args() {
+            parts.push(quote(&arg.to_string_lossy()));
+        }
+        parts.join(" ")
+    }
+
+    #[cfg(windows)]
+    fn ensure_ctrlc_handler() -> Result<()> {
+        let result = CTRL_C_HANDLER_SETUP.get_or_init(|| {
+            ctrlc::set_handler(|| {
+                CTRL_C_RECEIVED.store(true, Ordering::SeqCst);
+            })
+            .map_err(|err| err.to_string())
+        });
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) => bail!("Failed to set Ctrl-C handler: {}", err),
         }
     }
 
@@ -1142,7 +1272,7 @@ mod imp {
     pub(crate) struct Args;
 }
 
-#[cfg(windows)]
-pub(crate) use imp::{Args, Commands, main};
 #[cfg(not(windows))]
 pub(crate) use imp::Args;
+#[cfg(windows)]
+pub(crate) use imp::{Args, Commands, main};
