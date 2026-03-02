@@ -9,7 +9,9 @@ use std::{
     process,
 };
 
-use anyhow::{Context as _, Result, anyhow, bail};
+#[cfg(target_os = "windows")]
+use anyhow::{Context as _, anyhow};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
