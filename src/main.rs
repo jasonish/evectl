@@ -150,6 +150,12 @@ fn is_interactive(command: &Option<Commands>) -> bool {
 
 #[cfg(target_os = "windows")]
 fn main() -> Result<()> {
+    match selfupdate::apply_staged_update_on_startup() {
+        Ok(true) => std::process::exit(0),
+        Ok(false) => {}
+        Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),
+    }
+
     let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if argv.get(1).is_some_and(|arg| arg == "windows") {
         argv.remove(1);

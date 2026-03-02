@@ -6,7 +6,6 @@ use std::{
     fs::{self, File},
     io::{self, Seek, SeekFrom},
     path::Path,
-    process,
 };
 
 #[cfg(target_os = "windows")]
@@ -93,13 +92,113 @@ pub(crate) fn self_update() -> Result<()> {
         return Ok(());
     }
 
-    info!("Replacing current executable");
+    info!("Preparing updated executable");
     download_exe.seek(SeekFrom::Start(0))?;
     replace_current_executable(&current_exe, &mut download_exe)?;
-    warn!("The EveCtl program has been updated. Please restart.");
 
-    // Re-execute self.
-    process::exit(0);
+    #[cfg(target_os = "windows")]
+    {
+        warn!(
+            "An EveCtl update has been downloaded and staged. It will be applied on the next start."
+        );
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        warn!("The EveCtl program has been updated. Please restart.");
+        std::process::exit(0);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
+    use std::process::Command;
+
+    let current_exe = match env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            warn!("Failed to determine executable path for staged update: {}", err);
+            return Ok(false);
+        }
+    };
+
+    let file_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("Failed to determine executable filename"))?;
+
+    let staged_path = current_exe.with_file_name(format!("{}.new", file_name));
+    if !staged_path.exists() {
+        return Ok(false);
+    }
+
+    let relaunch_args: Vec<String> = env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let relaunch_args_json = serde_json::to_string(&relaunch_args)?;
+
+    let script = r#"
+$target = $env:EVECTL_SELF_UPDATE_TARGET
+$staged = $env:EVECTL_SELF_UPDATE_STAGED
+$workingDir = $env:EVECTL_SELF_UPDATE_WORKDIR
+$argsJson = $env:EVECTL_SELF_UPDATE_ARGS_JSON
+$argList = @()
+
+if ($argsJson) {
+    try {
+        $parsed = ConvertFrom-Json -InputObject $argsJson
+        if ($null -ne $parsed) {
+            if ($parsed -is [System.Array]) {
+                $argList = @($parsed)
+            } else {
+                $argList = @([string]$parsed)
+            }
+        }
+    } catch {
+    }
+}
+
+for ($i = 0; $i -lt 120; $i++) {
+    try {
+        Copy-Item -LiteralPath $staged -Destination $target -Force
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        if ($workingDir) {
+            Start-Process -FilePath $target -ArgumentList $argList -WorkingDirectory $workingDir | Out-Null
+        } else {
+            Start-Process -FilePath $target -ArgumentList $argList | Out-Null
+        }
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+exit 1
+"#;
+
+    let mut command = Command::new("powershell");
+    command
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+        .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
+        .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
+        .env("EVECTL_SELF_UPDATE_ARGS_JSON", &relaunch_args_json);
+
+    if let Ok(working_dir) = env::current_dir() {
+        command.env("EVECTL_SELF_UPDATE_WORKDIR", working_dir);
+    }
+
+    command
+        .spawn()
+        .context("Failed to launch Windows staged self-update helper")?;
+
+    Ok(true)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
+    Ok(false)
 }
 
 #[cfg(target_os = "windows")]
@@ -144,41 +243,15 @@ fn current_checksum(path: &Path) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Result<()> {
-    use std::process::Command;
-
     let file_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow!("Failed to determine executable filename"))?;
 
     let staged_path = current_exe.with_file_name(format!("{}.new", file_name));
-    {
-        let mut staged_exe = fs::File::create(&staged_path)?;
-        io::copy(download_exe, &mut staged_exe)?;
-        staged_exe.sync_all()?;
-    }
-
-    let script = r#"
-$target = $env:EVECTL_SELF_UPDATE_TARGET
-$staged = $env:EVECTL_SELF_UPDATE_STAGED
-for ($i = 0; $i -lt 120; $i++) {
-    try {
-        Copy-Item -LiteralPath $staged -Destination $target -Force
-        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-        exit 0
-    } catch {
-        Start-Sleep -Milliseconds 250
-    }
-}
-exit 1
-"#;
-
-    Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
-        .env("EVECTL_SELF_UPDATE_TARGET", current_exe)
-        .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
-        .spawn()
-        .context("Failed to launch Windows self-update replacement helper")?;
+    let mut staged_exe = fs::File::create(&staged_path)?;
+    io::copy(download_exe, &mut staged_exe)?;
+    staged_exe.sync_all()?;
 
     Ok(())
 }
