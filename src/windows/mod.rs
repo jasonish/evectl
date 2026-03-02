@@ -40,8 +40,16 @@ mod imp {
         /// Display project directories for config, rules, and logs.
         Info,
 
-        /// Install Npcap (interactive) and then Suricata (non-interactive).
-        InstallSuricata,
+        /// Install Npcap (interactive), Suricata, and optionally EveBox.
+        Install {
+            /// Install EveBox without prompting.
+            #[arg(long, conflicts_with = "no_evebox")]
+            evebox: bool,
+
+            /// Skip EveBox installation and do not prompt.
+            #[arg(long)]
+            no_evebox: bool,
+        },
 
         /// Upgrade EveCtl itself, and bundled Windows components (Npcap and Suricata) when newer.
         #[command(alias = "upgrade-suricata")]
@@ -49,9 +57,6 @@ mod imp {
 
         /// Uninstall EveBox (if installed), then Suricata, then Npcap.
         Uninstall,
-
-        /// Install EveBox.
-        InstallEvebox,
 
         /// List network interfaces with their IP addresses and GUIDs
         ListInterfaces,
@@ -79,10 +84,9 @@ mod imp {
     pub(crate) fn main(args: Args) -> Result<()> {
         match args.command {
             Commands::Info => project_info(),
-            Commands::InstallSuricata => install_suricata(),
+            Commands::Install { evebox, no_evebox } => install(evebox, no_evebox),
             Commands::Upgrade => upgrade_suricata(),
             Commands::Uninstall => uninstall_windows_components(),
-            Commands::InstallEvebox => install_evebox(),
             Commands::ListInterfaces => list_interfaces(),
             Commands::StartSuricata { guid, background } => start_suricata(guid, background),
             Commands::StopSuricata => stop_suricata(),
@@ -603,6 +607,33 @@ exit $process.ExitCode
         }
 
         false
+    }
+
+    #[cfg(windows)]
+    fn install(evebox: bool, no_evebox: bool) -> Result<()> {
+        if evebox && no_evebox {
+            bail!("--evebox and --no-evebox cannot be used together");
+        }
+
+        install_suricata()?;
+
+        let should_install_evebox = if evebox {
+            true
+        } else if no_evebox {
+            false
+        } else {
+            inquire::Confirm::new("Install EveBox?")
+                .with_default(false)
+                .prompt()?
+        };
+
+        if should_install_evebox {
+            install_evebox()?;
+        } else {
+            info!("Skipping EveBox installation");
+        }
+
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -1356,9 +1387,7 @@ exit $process.ExitCode
 
         // Check if Suricata is installed
         if !is_suricata_installed() {
-            bail!(
-                "Suricata is not installed. Please install it first using 'evectl install-suricata'"
-            );
+            bail!("Suricata is not installed. Please install it first using 'evectl install'");
         }
 
         let suricata_path = find_suricata_executable()

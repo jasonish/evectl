@@ -118,7 +118,10 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
     let current_exe = match env::current_exe() {
         Ok(path) => path,
         Err(err) => {
-            warn!("Failed to determine executable path for staged update: {}", err);
+            warn!(
+                "Failed to determine executable path for staged update: {}",
+                err
+            );
             return Ok(false);
         }
     };
