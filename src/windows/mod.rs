@@ -611,6 +611,8 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn install(evebox: bool, no_evebox: bool) -> Result<()> {
+        use std::io::IsTerminal;
+
         if evebox && no_evebox {
             bail!("--evebox and --no-evebox cannot be used together");
         }
@@ -621,10 +623,25 @@ exit $process.ExitCode
             true
         } else if no_evebox {
             false
-        } else {
-            inquire::Confirm::new("Install EveBox?")
+        } else if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            match inquire::Confirm::new("Install EveBox?")
                 .with_default(false)
-                .prompt()?
+                .prompt()
+            {
+                Ok(choice) => choice,
+                Err(err) => {
+                    warn!(
+                        "Unable to prompt for EveBox installation ({}). Skipping EveBox. Use --evebox to install without prompting.",
+                        err
+                    );
+                    false
+                }
+            }
+        } else {
+            info!(
+                "Non-interactive terminal detected; skipping EveBox prompt. Use --evebox to install EveBox without prompting."
+            );
+            false
         };
 
         if should_install_evebox {

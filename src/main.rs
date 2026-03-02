@@ -150,18 +150,19 @@ fn is_interactive(command: &Option<Commands>) -> bool {
 
 #[cfg(target_os = "windows")]
 fn main() -> Result<()> {
-    match selfupdate::apply_staged_update_on_startup() {
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_some_and(|arg| arg == "windows") {
+        argv.remove(1);
+    }
+
+    let relaunch_args: Vec<std::ffi::OsString> = argv.iter().skip(1).cloned().collect();
+    match selfupdate::apply_staged_update_on_startup(&relaunch_args) {
         Ok(true) => {
-            eprintln!("Applied staged EveCtl update. Please run your command again.");
+            eprintln!("Applying staged EveCtl update and restarting...");
             std::process::exit(0);
         }
         Ok(false) => {}
         Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),
-    }
-
-    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    if argv.get(1).is_some_and(|arg| arg == "windows") {
-        argv.remove(1);
     }
 
     let args = Args::parse_from(argv);

@@ -99,7 +99,7 @@ pub(crate) fn self_update() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         warn!(
-            "An EveCtl update has been downloaded and staged. It will be applied on the next start (that run exits once to finalize)."
+            "An EveCtl update has been downloaded and staged. It will be applied automatically on the next start."
         );
         return Ok(());
     }
@@ -112,7 +112,7 @@ pub(crate) fn self_update() -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
+pub(crate) fn apply_staged_update_on_startup(relaunch_args: &[std::ffi::OsString]) -> Result<bool> {
     use std::process::Command;
 
     let current_exe = match env::current_exe() {
@@ -136,14 +136,50 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
         return Ok(false);
     }
 
+    let relaunch_args: Vec<String> = relaunch_args
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect();
+    let relaunch_args_json =
+        serde_json::to_string(&relaunch_args).context("Failed to serialize relaunch args")?;
+
     let script = r#"
+$ErrorActionPreference = 'Stop'
 $target = $env:EVECTL_SELF_UPDATE_TARGET
 $staged = $env:EVECTL_SELF_UPDATE_STAGED
+$argsJson = $env:EVECTL_SELF_UPDATE_RELAUNCH_ARGS
+$relaunchArgs = @()
+
+if ($argsJson) {
+    try {
+        $parsed = ConvertFrom-Json -InputObject $argsJson
+        if ($null -ne $parsed) {
+            if ($parsed -is [System.Array]) {
+                $relaunchArgs = @($parsed)
+            } else {
+                $relaunchArgs = @($parsed)
+            }
+        }
+    } catch {
+        $relaunchArgs = @()
+    }
+}
 
 for ($i = 0; $i -lt 120; $i++) {
     try {
         Copy-Item -LiteralPath $staged -Destination $target -Force
         Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+
+        if ($relaunchArgs.Count -gt 0) {
+            & $target @relaunchArgs
+        } else {
+            & $target
+        }
+
+        if ($LASTEXITCODE -ne $null) {
+            exit [int]$LASTEXITCODE
+        }
+
         exit 0
     } catch {
         Start-Sleep -Milliseconds 250
@@ -154,9 +190,10 @@ exit 1
 "#;
 
     Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+        .args(["-NoProfile", "-Command", script])
         .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
         .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
+        .env("EVECTL_SELF_UPDATE_RELAUNCH_ARGS", &relaunch_args_json)
         .spawn()
         .context("Failed to launch Windows staged self-update helper")?;
 
