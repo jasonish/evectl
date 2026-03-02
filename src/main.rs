@@ -149,16 +149,28 @@ fn is_interactive(command: &Option<Commands>) -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn wait_for_enter_before_exit() {
+    use std::io::IsTerminal;
+
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        eprint!("Press Enter to exit...");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn main() -> Result<()> {
     let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if argv.get(1).is_some_and(|arg| arg == "windows") {
         argv.remove(1);
     }
 
-    let relaunch_args: Vec<std::ffi::OsString> = argv.iter().skip(1).cloned().collect();
-    match selfupdate::apply_staged_update_on_startup(&relaunch_args) {
+    match selfupdate::apply_staged_update_on_startup() {
         Ok(true) => {
-            eprintln!("Applying staged EveCtl update and restarting...");
+            eprintln!("Applied staged EveCtl update. Please run your command again.");
+            wait_for_enter_before_exit();
             std::process::exit(0);
         }
         Ok(false) => {}
