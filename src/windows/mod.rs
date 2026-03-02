@@ -12,6 +12,15 @@ mod imp {
 
     const NPCAP_VERSION: &str = "1.87";
     const SURICATA_VERSION: &str = "8.0.3-1";
+    const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
+        r"C:\Program Files\Suricata\suricata.exe",
+        r"C:\Program Files (x86)\Suricata\suricata.exe",
+    ];
+    const SURICATA_SYSTEM_INSTALL_DIRS: [&str; 2] = [
+        r"C:\Program Files\Suricata",
+        r"C:\Program Files (x86)\Suricata",
+    ];
+    const SURICATA_VERSION_MARKER: &str = ".evectl-suricata-version";
     const EVEBOX_VERSION: &str = "0.23.0";
     const EVEBOX_URL: &str =
         "https://evebox.org/files/release/0.23.0/evebox-0.23.0-windows-x64.zip";
@@ -81,24 +90,19 @@ mod imp {
 
     #[cfg(windows)]
     fn project_info() -> Result<()> {
-        let config_root = dirs::config_dir()
-            .ok_or_else(|| anyhow!("Could not find user config directory"))?
-            .join("evectl");
-        let data_root = dirs::data_local_dir()
-            .ok_or_else(|| anyhow!("Could not find local data directory"))?
-            .join("evectl");
+        let data_root = get_evectl_data_dir()?;
 
-        let evectl_config = config_root.join("evectl.toml");
-        let suricata_config_dir = config_root.join("suricata");
+        let evectl_config = data_root.join("evectl.toml");
+        let suricata_config_dir = data_root.join("suricata");
         let suricata_rules_dir = suricata_config_dir.join("lib").join("rules");
         let suricata_update_dir = suricata_config_dir.join("lib").join("update");
         let suricata_update_cache_dir = suricata_update_dir.join("cache");
+        let suricata_install_dir = data_root.join("suricata").join("install");
         let suricata_log_dir = data_root.join("suricata").join("log");
         let suricata_run_dir = data_root.join("suricata").join("run");
         let evebox_data_dir = data_root.join("evebox");
 
         println!("Windows path-based directories:");
-        println!("  Config root:               {}", config_root.display());
         println!("  Data root:                 {}", data_root.display());
         println!();
 
@@ -122,7 +126,11 @@ mod imp {
         );
         println!();
 
-        println!("Recommended Suricata log/runtime paths:");
+        println!("Recommended Suricata paths:");
+        println!(
+            "  Suricata install dir:      {}",
+            suricata_install_dir.display()
+        );
         println!(
             "  Suricata logs:             {}",
             suricata_log_dir.display()
@@ -297,27 +305,191 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn install_msi_package(path: &std::path::Path, name: &str) -> Result<()> {
+    fn get_evectl_data_dir() -> Result<std::path::PathBuf> {
+        Ok(dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("Could not find local data directory"))?
+            .join("evectl"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_data_dir() -> Result<std::path::PathBuf> {
+        Ok(get_evectl_data_dir()?.join("suricata"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_install_dir() -> Result<std::path::PathBuf> {
+        Ok(get_suricata_data_dir()?.join("install"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_exe_path() -> Result<std::path::PathBuf> {
+        Ok(get_suricata_install_dir()?.join("suricata.exe"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_version_marker_path() -> Result<std::path::PathBuf> {
+        Ok(get_suricata_install_dir()?.join(SURICATA_VERSION_MARKER))
+    }
+
+    #[cfg(windows)]
+    fn find_suricata_executable() -> Option<std::path::PathBuf> {
         use std::process::Command;
 
-        info!("Installing {} from {:?}", name, path);
+        if let Ok(path) = get_suricata_exe_path()
+            && path.exists()
+        {
+            return Some(path);
+        }
 
+        for path in &SURICATA_SYSTEM_EXE_PATHS {
+            let path = std::path::PathBuf::from(path);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        if let Ok(output) = Command::new("where").arg("suricata.exe").output()
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(path) = stdout.lines().map(str::trim).find(|line| !line.is_empty()) {
+                let path = std::path::PathBuf::from(path);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+
+        None
+    }
+
+    #[cfg(windows)]
+    fn find_file_recursive(
+        root: &std::path::Path,
+        target_filename: &str,
+    ) -> Result<Option<std::path::PathBuf>> {
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .context(format!("Failed to read directory {}", dir.display()))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                let file_type = entry.file_type()?;
+
+                if file_type.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                if file_type.is_file()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(target_filename)
+                {
+                    return Ok(Some(path));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    #[cfg(windows)]
+    fn copy_dir_recursive(source: &std::path::Path, destination: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(destination).context(format!(
+            "Failed to create destination directory {}",
+            destination.display()
+        ))?;
+
+        for entry in std::fs::read_dir(source).context(format!(
+            "Failed to read source directory {}",
+            source.display()
+        ))? {
+            let entry = entry?;
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            let file_type = entry.file_type()?;
+
+            if file_type.is_dir() {
+                copy_dir_recursive(&source_path, &destination_path)?;
+            } else if file_type.is_file() {
+                std::fs::copy(&source_path, &destination_path).context(format!(
+                    "Failed to copy {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                ))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn patch_suricata_config_for_local_install(install_dir: &std::path::Path) -> Result<()> {
+        let config_path = install_dir.join("suricata.yaml");
+        if !config_path.exists() {
+            return Ok(());
+        }
+
+        let original = std::fs::read_to_string(&config_path)
+            .context(format!("Failed to read {}", config_path.display()))?;
+
+        let install_dir_str = install_dir.display().to_string().replace('/', "\\");
+        let patched = original
+            .replace(r"C:\Program Files\Suricata", &install_dir_str)
+            .replace(r"C:\Program Files (x86)\Suricata", &install_dir_str);
+
+        if patched != original {
+            std::fs::write(&config_path, patched)
+                .context(format!("Failed to write {}", config_path.display()))?;
+            info!(
+                "Patched Suricata config paths for local install at {}",
+                config_path.display()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn extract_msi_package_to_dir(
+        path: &std::path::Path,
+        name: &str,
+        destination: &std::path::Path,
+    ) -> Result<()> {
+        use std::process::Command;
+
+        info!(
+            "Extracting {} from {:?} into {}",
+            name,
+            path,
+            destination.display()
+        );
+
+        let staging_dir =
+            tempfile::tempdir().context("Failed to create MSI extraction directory")?;
         let log_path =
-            std::env::temp_dir().join(format!("evectl-{}-install.log", name.to_ascii_lowercase()));
+            std::env::temp_dir().join(format!("evectl-{}-extract.log", name.to_ascii_lowercase()));
 
         let msi_path = path.to_string_lossy().replace('\'', "''");
+        let target_dir = staging_dir.path().to_string_lossy().replace('\'', "''");
         let log_path_str = log_path.to_string_lossy().replace('\'', "''");
 
         let script = format!(
             r#"
 $ErrorActionPreference = 'Stop'
 $msiPath = '{}'
+$targetDir = '{}'
 $logPath = '{}'
-$argumentList = @('/i', $msiPath, '/qn', '/norestart', '/L*v', $logPath)
-$process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
+New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+$argumentList = @('/a', $msiPath, '/qn', '/norestart', ('TARGETDIR=' + $targetDir), '/L*v', $logPath)
+$process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentList -Wait -PassThru
 exit $process.ExitCode
 "#,
-            msi_path, log_path_str
+            msi_path, target_dir, log_path_str
         );
 
         let output = Command::new("powershell")
@@ -325,32 +497,56 @@ exit $process.ExitCode
             .arg("-Command")
             .arg(&script)
             .output()
-            .context(format!("Failed to launch {} MSI installer", name))?;
+            .context(format!("Failed to extract {} MSI", name))?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         match output.status.code() {
             Some(0) => {
-                info!("{} installation completed successfully", name);
-                Ok(())
+                info!("{} extraction completed successfully", name);
             }
             Some(3010) | Some(1641) => {
                 warn!(
-                    "{} installation completed, but a system reboot is required",
+                    "{} extraction completed, but a system reboot was requested by Windows Installer",
                     name
                 );
-                Ok(())
             }
-            Some(1223) => bail!("{} installation was cancelled at the UAC prompt", name),
+            Some(1223) => bail!("{} extraction was cancelled at the UAC prompt", name),
             Some(code) => bail!(
-                "{} installer exited with code {}. MSI log: {:?}. {}",
+                "{} extraction failed with code {}. MSI log: {:?}. {}",
                 name,
                 code,
                 log_path,
                 stderr.trim()
             ),
-            None => bail!("{} installer terminated unexpectedly", name),
+            None => bail!("{} extraction terminated unexpectedly", name),
         }
+
+        let extracted_exe = find_file_recursive(staging_dir.path(), "suricata.exe")?
+            .ok_or_else(|| anyhow!("Failed to locate suricata.exe in extracted MSI contents"))?;
+
+        let extracted_root = extracted_exe.parent().ok_or_else(|| {
+            anyhow!(
+                "Failed to determine extracted Suricata root from {}",
+                extracted_exe.display()
+            )
+        })?;
+
+        if destination.exists() {
+            std::fs::remove_dir_all(destination).context(format!(
+                "Failed to remove existing Suricata directory {}",
+                destination.display()
+            ))?;
+        }
+
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .context(format!("Failed to create {}", parent.display()))?;
+        }
+
+        copy_dir_recursive(extracted_root, destination)?;
+
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -377,30 +573,13 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn is_suricata_installed() -> bool {
-        // Check if Suricata executable exists in common locations
-        let common_paths = [
-            r"C:\Program Files\Suricata\suricata.exe",
-            r"C:\Program Files (x86)\Suricata\suricata.exe",
-        ];
-
-        for path in &common_paths {
-            if std::path::Path::new(path).exists() {
-                return true;
-            }
+        if find_suricata_executable().is_some() {
+            return true;
         }
 
         // Check if Suricata service exists
         if let Ok(output) = std::process::Command::new("sc")
             .args(["query", "Suricata"])
-            .output()
-            && output.status.success()
-        {
-            return true;
-        }
-
-        // Check using where command
-        if let Ok(output) = std::process::Command::new("where")
-            .arg("suricata.exe")
             .output()
             && output.status.success()
         {
@@ -571,6 +750,18 @@ if ($entry -and $entry.DisplayVersion) {
         let installed_version = match get_suricata_installed_version()? {
             Some(version) => version,
             None => {
+                let evectl_install_exists = get_suricata_exe_path()
+                    .map(|path| path.exists())
+                    .unwrap_or(false);
+
+                if evectl_install_exists {
+                    info!(
+                        "Suricata is installed in the evectl-managed directory, but the version could not be determined. Reinstalling bundled version {}.",
+                        SURICATA_VERSION
+                    );
+                    return install_or_upgrade_suricata(true);
+                }
+
                 info!(
                     "Suricata is installed, but the installed version could not be determined. Skipping automatic Suricata upgrade."
                 );
@@ -619,6 +810,19 @@ if ($entry -and $entry.DisplayVersion) {
     fn get_suricata_installed_version() -> Result<Option<String>> {
         use std::process::Command;
 
+        if let Ok(marker_path) = get_suricata_version_marker_path()
+            && marker_path.exists()
+        {
+            let version = std::fs::read_to_string(&marker_path).context(format!(
+                "Failed to read Suricata version marker {}",
+                marker_path.display()
+            ))?;
+            let version = version.trim();
+            if !version.is_empty() {
+                return Ok(Some(version.to_string()));
+            }
+        }
+
         let script = r#"
 $entry = @(
     Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue
@@ -656,10 +860,22 @@ if ($entry -and $entry.DisplayVersion) {
     #[cfg(windows)]
     fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
         let installed = is_suricata_installed();
-        if installed && !upgrade {
-            info!("Suricata is already installed on this system.");
+        let evectl_install_exists = get_suricata_exe_path()
+            .map(|path| path.exists())
+            .unwrap_or(false);
+
+        if evectl_install_exists && !upgrade {
+            info!("Suricata is already installed in the evectl-managed directory.");
             return Ok(());
         }
+
+        if installed && !upgrade
+            && let Ok(install_dir) = get_suricata_install_dir() {
+                info!(
+                    "A system Suricata installation was detected. Installing an evectl-managed copy into {}.",
+                    install_dir.display()
+                );
+            }
 
         if upgrade {
             if installed {
@@ -684,12 +900,14 @@ if ($entry -and $entry.DisplayVersion) {
         );
         let filename = format!("Suricata-{}-64bit.msi", SURICATA_VERSION);
 
-        // Get the user's Downloads folder
-        let downloads_dir = dirs::download_dir()
-            .ok_or_else(|| anyhow!("Could not find user's Downloads folder"))?;
-        let msi_path = downloads_dir.join(&filename);
+        let cache_dir = get_evectl_data_dir()?.join("downloads");
+        std::fs::create_dir_all(&cache_dir).context(format!(
+            "Failed to create installer cache directory {}",
+            cache_dir.display()
+        ))?;
 
-        // Check if file already exists
+        let msi_path = cache_dir.join(&filename);
+
         if msi_path.exists() {
             info!("Suricata installer already exists at {:?}", msi_path);
             info!("Skipping download, using existing file");
@@ -697,7 +915,108 @@ if ($entry -and $entry.DisplayVersion) {
             download_file(&url, &msi_path, "Suricata")?;
         }
 
-        install_msi_package(&msi_path, "Suricata")?;
+        let install_dir = get_suricata_install_dir()?;
+        extract_msi_package_to_dir(&msi_path, "Suricata", &install_dir)?;
+        patch_suricata_config_for_local_install(&install_dir)?;
+
+        let marker_path = get_suricata_version_marker_path()?;
+        std::fs::write(&marker_path, suricata_version_for_comparison()).context(format!(
+            "Failed to write Suricata version marker {}",
+            marker_path.display()
+        ))?;
+
+        let suricata_exe = get_suricata_exe_path()?;
+        if !suricata_exe.exists() {
+            bail!(
+                "Suricata extraction completed, but executable not found at {}",
+                suricata_exe.display()
+            );
+        }
+
+        info!(
+            "Suricata {} extracted to {}",
+            SURICATA_VERSION,
+            install_dir.display()
+        );
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn cleanup_suricata_leftovers() -> Result<()> {
+        use std::process::Command;
+
+        let mut errors = vec![];
+        let mut install_dirs: Vec<std::path::PathBuf> = SURICATA_SYSTEM_INSTALL_DIRS
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+
+        if let Ok(evectl_install_dir) = get_suricata_install_dir() {
+            install_dirs.push(evectl_install_dir);
+        }
+
+        for path in &install_dirs {
+            if !path.exists() {
+                continue;
+            }
+
+            info!("Removing Suricata directory {}", path.display());
+
+            if let Err(err) = std::fs::remove_dir_all(path) {
+                warn!(
+                    "Failed to remove {} directly: {}. Trying PowerShell cleanup...",
+                    path.display(),
+                    err
+                );
+
+                let escaped = path.to_string_lossy().replace('\'', "''");
+                let script = format!(
+                    "$ErrorActionPreference = 'Stop'; if (Test-Path -LiteralPath '{0}') {{ Remove-Item -LiteralPath '{0}' -Recurse -Force }}",
+                    escaped
+                );
+
+                match Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &script])
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {}
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        errors.push(format!("{}: {}", path.display(), stderr.trim()));
+                    }
+                    Err(ps_err) => {
+                        errors.push(format!("{}: {}", path.display(), ps_err));
+                    }
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            bail!(
+                "Failed to remove Suricata leftover files:\n- {}",
+                errors.join("\n- ")
+            );
+        }
+
+        let mut leftover_paths: Vec<String> = SURICATA_SYSTEM_EXE_PATHS
+            .iter()
+            .filter(|path| std::path::Path::new(path).exists())
+            .map(|path| path.to_string())
+            .collect();
+
+        if let Ok(path) = get_suricata_exe_path()
+            && path.exists()
+        {
+            leftover_paths.push(path.display().to_string());
+        }
+
+        if !leftover_paths.is_empty() {
+            bail!(
+                "Suricata uninstall completed, but these executables still exist:\n- {}",
+                leftover_paths.join("\n- ")
+            );
+        }
 
         Ok(())
     }
@@ -722,7 +1041,7 @@ if (-not $entry) {
 
 $productCode = $entry.PSChildName
 if ($productCode -match '^\{[0-9A-Fa-f\-]+\}$') {
-    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/x', $productCode, '/qn' -Wait -NoNewWindow -PassThru
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList '/x', $productCode, '/qn' -Verb RunAs -Wait -PassThru
     exit $process.ExitCode
 }
 
@@ -741,12 +1060,12 @@ if ($command -match '(?i)msiexec(\.exe)?') {
     }
 }
 
-$process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/C', $command -Wait -NoNewWindow -PassThru
+$process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/C', $command -Verb RunAs -Wait -PassThru
 exit $process.ExitCode
 "#;
 
         let output = Command::new("powershell")
-            .args(["-Command", script])
+            .args(["-NoProfile", "-Command", script])
             .output()
             .context("Failed to execute Suricata uninstall command")?;
 
@@ -757,12 +1076,14 @@ exit $process.ExitCode
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.contains("NOT_FOUND") {
-            info!("Suricata uninstall entry not found. Skipping Suricata uninstall.");
-            return Ok(());
+            info!(
+                "Suricata uninstall entry not found. Attempting file-system cleanup of known install paths."
+            );
+        } else {
+            info!("Existing Suricata uninstall completed");
         }
 
-        info!("Existing Suricata uninstall completed");
-        Ok(())
+        cleanup_suricata_leftovers()
     }
 
     #[cfg(windows)]
@@ -833,10 +1154,7 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn get_evebox_data_dir() -> Result<std::path::PathBuf> {
-        Ok(dirs::data_local_dir()
-            .ok_or_else(|| anyhow!("Could not find local data directory"))?
-            .join("evectl")
-            .join("evebox"))
+        Ok(get_evectl_data_dir()?.join("evebox"))
     }
 
     #[cfg(windows)]
@@ -1019,10 +1337,12 @@ exit $process.ExitCode
             );
         }
 
-        let suricata_path = r"C:\Program Files\Suricata\suricata.exe";
-        if !std::path::Path::new(suricata_path).exists() {
-            bail!("Suricata executable not found at {}", suricata_path);
-        }
+        let suricata_path = find_suricata_executable()
+            .ok_or_else(|| anyhow!("Suricata executable not found in expected locations"))?;
+        let suricata_dir = suricata_path
+            .parent()
+            .ok_or_else(|| anyhow!("Failed to determine Suricata installation directory"))?
+            .to_path_buf();
 
         // Get the interface GUID to use
         let interface_guid = match guid {
@@ -1062,11 +1382,7 @@ exit $process.ExitCode
 
         info!("Starting Suricata on interface GUID: {}", interface_guid);
 
-        let suricata_log_dir = dirs::data_local_dir()
-            .ok_or_else(|| anyhow!("Could not find local data directory"))?
-            .join("evectl")
-            .join("suricata")
-            .join("log");
+        let suricata_log_dir = get_suricata_data_dir()?.join("log");
         std::fs::create_dir_all(&suricata_log_dir).context(format!(
             "Failed to create Suricata log directory {}",
             suricata_log_dir.display()
@@ -1078,7 +1394,13 @@ exit $process.ExitCode
         info!("Using NPCAP device: {}", npcap_device);
 
         // Build the Suricata command
-        let mut command = Command::new(suricata_path);
+        let mut command = Command::new(&suricata_path);
+        let suricata_config = suricata_dir.join("suricata.yaml");
+        if suricata_config.exists() {
+            command.arg("-c");
+            command.arg(&suricata_config);
+        }
+        command.current_dir(&suricata_dir);
         command.arg("-i");
         command.arg(&npcap_device);
         command.arg("-l");
