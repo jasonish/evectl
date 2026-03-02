@@ -43,8 +43,9 @@ mod imp {
         /// Install Npcap (interactive) and then Suricata (non-interactive).
         InstallSuricata,
 
-        /// Upgrade Suricata and upgrade Npcap when a newer bundled version is known.
-        UpgradeSuricata,
+        /// Upgrade EveCtl itself, and bundled Windows components (Npcap and Suricata) when newer.
+        #[command(alias = "upgrade-suricata")]
+        Upgrade,
 
         /// Uninstall EveBox (if installed), then Suricata, then Npcap.
         Uninstall,
@@ -79,7 +80,7 @@ mod imp {
         match args.command {
             Commands::Info => project_info(),
             Commands::InstallSuricata => install_suricata(),
-            Commands::UpgradeSuricata => upgrade_suricata(),
+            Commands::Upgrade => upgrade_suricata(),
             Commands::Uninstall => uninstall_windows_components(),
             Commands::InstallEvebox => install_evebox(),
             Commands::ListInterfaces => list_interfaces(),
@@ -101,9 +102,16 @@ mod imp {
         let suricata_log_dir = data_root.join("suricata").join("log");
         let suricata_run_dir = data_root.join("suricata").join("run");
         let evebox_data_dir = data_root.join("evebox");
+        let evebox_exe = evebox_data_dir.join("evebox.exe");
+        let evectl_exe = std::env::current_exe().ok();
 
         println!("Windows path-based directories:");
         println!("  Data root:                 {}", data_root.display());
+        if let Some(evectl_exe) = &evectl_exe {
+            println!("  Current EveCtl binary:     {}", evectl_exe.display());
+        } else {
+            println!("  Current EveCtl binary:     <unknown>");
+        }
         println!();
 
         println!("Recommended config and rules paths:");
@@ -143,6 +151,14 @@ mod imp {
 
         println!("Other Windows data paths:");
         println!("  EveBox data directory:     {}", evebox_data_dir.display());
+        if evebox_exe.exists() {
+            println!("  Current EveBox binary:     {}", evebox_exe.display());
+        } else {
+            println!(
+                "  Current EveBox binary:     {} (not installed)",
+                evebox_exe.display()
+            );
+        }
 
         Ok(())
     }
@@ -598,7 +614,13 @@ exit $process.ExitCode
     #[cfg(windows)]
     fn upgrade_suricata() -> Result<()> {
         maybe_upgrade_npcap()?;
-        maybe_upgrade_suricata()
+        maybe_upgrade_suricata()?;
+
+        if let Err(err) = crate::selfupdate::self_update() {
+            warn!("Failed to self-upgrade EveCtl: {}", err);
+        }
+
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -869,13 +891,15 @@ if ($entry -and $entry.DisplayVersion) {
             return Ok(());
         }
 
-        if installed && !upgrade
-            && let Ok(install_dir) = get_suricata_install_dir() {
-                info!(
-                    "A system Suricata installation was detected. Installing an evectl-managed copy into {}.",
-                    install_dir.display()
-                );
-            }
+        if installed
+            && !upgrade
+            && let Ok(install_dir) = get_suricata_install_dir()
+        {
+            info!(
+                "A system Suricata installation was detected. Installing an evectl-managed copy into {}.",
+                install_dir.display()
+            );
+        }
 
         if upgrade {
             if installed {
