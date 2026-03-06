@@ -33,6 +33,7 @@ mod imp {
     const EVEBOX_HOST: &str = "127.0.0.1";
     const EVEBOX_PORT: &str = "5636";
     const EVEBOX_ACCESS_URL: &str = "http://127.0.0.1:5636";
+    const EVEBOX_DESKTOP_SHORTCUT_URL: &str = "http://127.0.0.1:5636";
     const SURICATA_READY_TIMEOUT: Duration = Duration::from_secs(5);
     const EVEBOX_STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(750);
     const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -138,6 +139,9 @@ mod imp {
         /// Stop the Windows-managed Suricata and EveBox stack.
         Stop,
 
+        /// Add desktop shortcuts for starting the Windows stack and opening EveBox.
+        AddShortcuts,
+
         /// Manage evectl configuration.
         Config {
             #[command(subcommand)]
@@ -204,6 +208,7 @@ mod imp {
             Commands::ListInterfaces => list_interfaces(),
             Commands::Start { background, guid } => start_stack(background, guid),
             Commands::Stop => stop_stack(),
+            Commands::AddShortcuts => add_shortcuts(),
             Commands::Config { command } => match command {
                 ConfigCommands::SetInterface => config_set_interface(),
             },
@@ -1014,10 +1019,10 @@ mod imp {
         let suricata_install_dir = data_root.join("suricata").join("install");
         let suricata_log_dir = data_root.join("suricata").join("log");
         let suricata_run_dir = data_root.join("suricata").join("run");
-        let evebox_data_dir = data_root.join("evebox");
-        let evebox_run_dir = evebox_data_dir.join("run");
-        let evebox_log_dir = evebox_data_dir.join("log");
-        let evebox_exe = find_evebox_exe(&evebox_data_dir)?;
+        let evebox_root_dir = get_evebox_root_dir()?;
+        let evebox_install_dir = get_evebox_install_dir()?;
+        let evebox_data_dir = get_evebox_data_dir()?;
+        let evebox_exe = find_evebox_exe(&evebox_install_dir)?;
         let evectl_exe = std::env::current_exe().ok();
 
         println!("Windows path-based directories:");
@@ -1070,15 +1075,26 @@ mod imp {
         println!();
 
         println!("Other Windows data paths:");
+        println!("  EveBox root directory:     {}", evebox_root_dir.display());
+        println!(
+            "  EveBox install directory:  {}",
+            evebox_install_dir.display()
+        );
         println!("  EveBox data directory:     {}", evebox_data_dir.display());
-        println!("  EveBox runtime files:      {}", evebox_run_dir.display());
-        println!("  EveBox logs:               {}", evebox_log_dir.display());
+        println!(
+            "  EveBox PID file:           {}",
+            get_evebox_pid_path()?.display()
+        );
+        println!(
+            "  EveBox runtime metadata:   {}",
+            get_evebox_runtime_path()?.display()
+        );
         if let Some(evebox_exe) = evebox_exe {
             println!("  Current EveBox binary:     {}", evebox_exe.display());
         } else {
             println!(
                 "  Current EveBox binary:     {} (not installed)",
-                evebox_data_dir.join("evebox.exe").display()
+                evebox_install_dir.join("evebox.exe").display()
             );
         }
 
@@ -1255,6 +1271,43 @@ mod imp {
     }
 
     #[cfg(windows)]
+    fn get_desktop_dir() -> Result<PathBuf> {
+        dirs::desktop_dir().ok_or_else(|| anyhow!("Could not find desktop directory"))
+    }
+
+    #[cfg(windows)]
+    fn add_shortcuts() -> Result<()> {
+        let desktop_dir = get_desktop_dir()?;
+        let evectl_exe =
+            std::env::current_exe().context("Failed to locate current EveCtl executable")?;
+
+        let start_shortcut = desktop_dir.join("EveCtl Start.cmd");
+        let evebox_shortcut = desktop_dir.join("EveBox.url");
+
+        let start_contents = format!("@echo off\r\n\"{}\" start\r\n", evectl_exe.display());
+        std::fs::write(&start_shortcut, start_contents).context(format!(
+            "Failed to write desktop shortcut {}",
+            start_shortcut.display()
+        ))?;
+
+        let evebox_contents = format!(
+            "[InternetShortcut]\r\nURL={}\r\n",
+            EVEBOX_DESKTOP_SHORTCUT_URL
+        );
+        std::fs::write(&evebox_shortcut, evebox_contents).context(format!(
+            "Failed to write desktop shortcut {}",
+            evebox_shortcut.display()
+        ))?;
+
+        println!("Created desktop shortcuts:");
+        println!("  Start:  {}", start_shortcut.display());
+        println!("  EveBox: {}", evebox_shortcut.display());
+        println!("  EveBox URL: {}", EVEBOX_DESKTOP_SHORTCUT_URL);
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
     fn load_evectl_config() -> Result<crate::config::Config> {
         let config_path = get_evectl_config_path()?;
         if config_path.exists() {
@@ -1359,6 +1412,28 @@ mod imp {
     #[cfg(windows)]
     fn get_suricata_eve_json_path() -> Result<PathBuf> {
         Ok(get_suricata_log_dir()?.join("eve.json"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_threshold_config_path() -> Result<PathBuf> {
+        Ok(get_suricata_run_dir()?.join("threshold.config"))
+    }
+
+    #[cfg(windows)]
+    fn ensure_suricata_threshold_config() -> Result<PathBuf> {
+        let path = get_suricata_threshold_config_path()?;
+        if let Some(parent) = path.parent() {
+            ensure_dir(parent)?;
+        }
+
+        if !path.exists() {
+            std::fs::write(&path, b"").context(format!(
+                "Failed to create Suricata threshold config {}",
+                path.display()
+            ))?;
+        }
+
+        Ok(path)
     }
 
     #[cfg(windows)]
@@ -1666,7 +1741,7 @@ exit $process.ExitCode
 
         install_suricata()?;
 
-        let evebox_installed = find_evebox_exe(&get_evebox_data_dir()?)?.is_some();
+        let evebox_installed = find_evebox_exe(&get_evebox_install_dir()?)?.is_some();
 
         let should_install_evebox = if evebox {
             true
@@ -1750,7 +1825,7 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn evebox_upgrade_needed() -> Result<bool> {
-        if find_evebox_exe(&get_evebox_data_dir()?)?.is_none() {
+        if find_evebox_exe(&get_evebox_install_dir()?)?.is_none() {
             return Ok(true);
         }
 
@@ -2111,7 +2186,7 @@ if ($entry -and $entry.DisplayVersion) {
 
     #[cfg(windows)]
     fn maybe_upgrade_evebox() -> Result<()> {
-        if find_evebox_exe(&get_evebox_data_dir()?)?.is_none() {
+        if find_evebox_exe(&get_evebox_install_dir()?)?.is_none() {
             info!(
                 "EveBox was not detected. Installing version {}...",
                 EVEBOX_VERSION
@@ -2282,9 +2357,9 @@ if ($entry -and $entry.DisplayVersion) {
         let suricata_exe_path = get_suricata_exe_path()?;
         log_processes_in_dir("suricata", &suricata_install_dir, Some(&suricata_exe_path))?;
 
-        let evebox_data_dir = get_evebox_data_dir()?;
-        let evebox_exe_path = find_evebox_exe(&evebox_data_dir)?;
-        log_processes_in_dir("evebox", &evebox_data_dir, evebox_exe_path.as_deref())?;
+        let evebox_install_dir = get_evebox_install_dir()?;
+        let evebox_exe_path = find_evebox_exe(&evebox_install_dir)?;
+        log_processes_in_dir("evebox", &evebox_install_dir, evebox_exe_path.as_deref())?;
 
         Ok(())
     }
@@ -2422,8 +2497,18 @@ exit $process.ExitCode
     }
 
     #[cfg(windows)]
-    fn get_evebox_data_dir() -> Result<std::path::PathBuf> {
+    fn get_evebox_root_dir() -> Result<std::path::PathBuf> {
         Ok(get_evectl_data_dir()?.join("evebox"))
+    }
+
+    #[cfg(windows)]
+    fn get_evebox_install_dir() -> Result<std::path::PathBuf> {
+        Ok(get_evebox_root_dir()?.join("install"))
+    }
+
+    #[cfg(windows)]
+    fn get_evebox_data_dir() -> Result<std::path::PathBuf> {
+        Ok(get_evebox_root_dir()?.join("data"))
     }
 
     #[cfg(windows)]
@@ -2455,88 +2540,33 @@ exit $process.ExitCode
     }
 
     #[cfg(windows)]
-    fn get_evebox_run_dir() -> Result<PathBuf> {
-        Ok(get_evebox_data_dir()?.join("run"))
-    }
-
-    #[cfg(windows)]
-    fn get_evebox_log_dir() -> Result<PathBuf> {
-        Ok(get_evebox_data_dir()?.join("log"))
-    }
-
-    #[cfg(windows)]
     fn get_evebox_exe_path() -> Result<PathBuf> {
-        find_evebox_exe(&get_evebox_data_dir()?)?
+        find_evebox_exe(&get_evebox_install_dir()?)?
             .ok_or_else(|| anyhow!("EveBox is not installed. Run 'evectl install --evebox' first."))
     }
 
     #[cfg(windows)]
     fn get_evebox_version_marker_path() -> Result<PathBuf> {
-        Ok(get_evebox_data_dir()?.join(EVEBOX_VERSION_MARKER))
-    }
-
-    #[cfg(windows)]
-    fn is_evebox_install_dir_name(name: &str) -> bool {
-        name.strip_prefix("evebox-")
-            .and_then(|rest| rest.strip_suffix("-windows-x64"))
-            .is_some_and(|version| !version.is_empty())
-    }
-
-    #[cfg(windows)]
-    fn find_evebox_install_root(data_dir: &Path, exe_path: &Path) -> Option<PathBuf> {
-        let mut current = exe_path.parent();
-        while let Some(dir) = current {
-            if dir == data_dir {
-                break;
-            }
-
-            if dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(is_evebox_install_dir_name)
-            {
-                return Some(dir.to_path_buf());
-            }
-
-            current = dir.parent();
-        }
-
-        exe_path.parent().and_then(|parent| {
-            if parent != data_dir && parent.starts_with(data_dir) {
-                Some(parent.to_path_buf())
-            } else {
-                None
-            }
-        })
+        Ok(get_evebox_install_dir()?.join(EVEBOX_VERSION_MARKER))
     }
 
     #[cfg(windows)]
     fn remove_existing_evebox_installation() -> Result<()> {
-        let data_dir = get_evebox_data_dir()?;
-        let Some(exe_path) = find_evebox_exe(&data_dir)? else {
+        let install_dir = get_evebox_install_dir()?;
+        if !install_dir.exists() {
             return Ok(());
-        };
-
-        if let Some(install_root) = find_evebox_install_root(&data_dir, &exe_path) {
-            std::fs::remove_dir_all(&install_root).context(format!(
-                "Failed to remove existing EveBox install directory {}",
-                install_root.display()
-            ))?;
-            info!(
-                "Removed previous EveBox install files from {} while preserving data in {}",
-                install_root.display(),
-                data_dir.display()
-            );
-        } else {
-            remove_file_if_exists(&exe_path)?;
-            info!(
-                "Removed previous EveBox executable {} while preserving data in {}",
-                exe_path.display(),
-                data_dir.display()
-            );
         }
 
-        remove_file_if_exists(&get_evebox_version_marker_path()?)?;
+        std::fs::remove_dir_all(&install_dir).context(format!(
+            "Failed to remove existing EveBox install directory {}",
+            install_dir.display()
+        ))?;
+        info!(
+            "Removed previous EveBox install files from {} while preserving data in {}",
+            install_dir.display(),
+            get_evebox_data_dir()?.display()
+        );
+
         Ok(())
     }
 
@@ -2571,7 +2601,7 @@ exit $process.ExitCode
             }
         }
 
-        let Some(exe_path) = find_evebox_exe(&get_evebox_data_dir()?)? else {
+        let Some(exe_path) = find_evebox_exe(&get_evebox_install_dir()?)? else {
             return Ok(None);
         };
 
@@ -2580,39 +2610,29 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn get_evebox_pid_path() -> Result<PathBuf> {
-        Ok(get_evebox_run_dir()?.join("evebox.pid"))
+        Ok(get_evebox_root_dir()?.join("evebox.pid"))
     }
 
     #[cfg(windows)]
     fn get_evebox_runtime_path() -> Result<PathBuf> {
-        Ok(get_evebox_run_dir()?.join("evebox.runtime.json"))
-    }
-
-    #[cfg(windows)]
-    fn get_evebox_stdout_log_path() -> Result<PathBuf> {
-        Ok(get_evebox_log_dir()?.join("evebox-stdout.log"))
-    }
-
-    #[cfg(windows)]
-    fn get_evebox_stderr_log_path() -> Result<PathBuf> {
-        Ok(get_evebox_log_dir()?.join("evebox-stderr.log"))
+        Ok(get_evebox_root_dir()?.join("evebox.runtime.json"))
     }
 
     #[cfg(windows)]
     fn uninstall_evebox() -> Result<()> {
-        let data_dir = get_evebox_data_dir()?;
+        let root_dir = get_evebox_root_dir()?;
 
-        if !data_dir.exists() {
+        if !root_dir.exists() {
             info!(
                 "EveBox is not installed in {:?}. Skipping EveBox uninstall.",
-                data_dir
+                root_dir
             );
             return Ok(());
         }
 
-        std::fs::remove_dir_all(&data_dir)
-            .context(format!("Failed to remove EveBox directory {:?}", data_dir))?;
-        info!("EveBox uninstalled from {:?}", data_dir);
+        std::fs::remove_dir_all(&root_dir)
+            .context(format!("Failed to remove EveBox directory {:?}", root_dir))?;
+        info!("EveBox uninstalled from {:?}", root_dir);
         Ok(())
     }
 
@@ -2641,9 +2661,9 @@ exit $process.ExitCode
         let suricata_exe_path = get_suricata_exe_path()?;
         stop_named_processes_in_dir("suricata", &suricata_install_dir, Some(&suricata_exe_path))?;
 
-        let evebox_data_dir = get_evebox_data_dir()?;
-        let evebox_exe_path = find_evebox_exe(&evebox_data_dir)?;
-        stop_named_processes_in_dir("evebox", &evebox_data_dir, evebox_exe_path.as_deref())?;
+        let evebox_install_dir = get_evebox_install_dir()?;
+        let evebox_exe_path = find_evebox_exe(&evebox_install_dir)?;
+        stop_named_processes_in_dir("evebox", &evebox_install_dir, evebox_exe_path.as_deref())?;
 
         Ok(())
     }
@@ -2688,25 +2708,25 @@ exit $process.ExitCode
     fn install_or_upgrade_evebox(upgrade: bool) -> Result<()> {
         let url = EVEBOX_URL;
 
-        // Create project-specific data directory
+        let root_dir = get_evebox_root_dir()?;
+        let install_dir = get_evebox_install_dir()?;
         let data_dir = get_evebox_data_dir()?;
 
-        // Create directory if it doesn't exist
+        std::fs::create_dir_all(&root_dir).context("Failed to create EveBox root directory")?;
         std::fs::create_dir_all(&data_dir).context("Failed to create EveBox data directory")?;
 
-        // Check if EveBox is already installed in the data directory
-        if find_evebox_exe(&data_dir)?.is_some() {
+        if find_evebox_exe(&install_dir)?.is_some() {
             if !upgrade {
                 info!("EveBox is already installed in the evectl-managed directory.");
                 return Ok(());
             }
 
             remove_existing_evebox_installation()?;
-            std::fs::create_dir_all(&data_dir)
-                .context("Failed to ensure EveBox data directory after upgrade cleanup")?;
         }
 
-        // Download to temp directory
+        std::fs::create_dir_all(&install_dir)
+            .context("Failed to ensure EveBox install directory after upgrade cleanup")?;
+
         let temp_dir = tempfile::tempdir()?;
         let zip_path = temp_dir
             .path()
@@ -2714,18 +2734,16 @@ exit $process.ExitCode
 
         download_file(url, &zip_path, "EveBox")?;
 
-        info!("Extracting EveBox to {:?}", data_dir);
+        info!("Extracting EveBox to {:?}", install_dir);
 
-        // Extract the zip file
         let zip_file =
             std::fs::File::open(&zip_path).context("Failed to open downloaded EveBox zip file")?;
         let mut archive =
             zip::ZipArchive::new(zip_file).context("Failed to read EveBox zip archive")?;
 
-        // Extract all files to the data directory
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let outpath = data_dir.join(file.mangled_name());
+            let outpath = install_dir.join(file.mangled_name());
 
             if file.name().ends_with('/') {
                 std::fs::create_dir_all(&outpath)?;
@@ -2748,7 +2766,7 @@ exit $process.ExitCode
         ))?;
         info!(
             "EveBox {} installed successfully at {:?}",
-            EVEBOX_VERSION, data_dir
+            EVEBOX_VERSION, install_dir
         );
 
         Ok(())
@@ -2793,6 +2811,7 @@ exit $process.ExitCode
 
         let suricata_log_dir = get_suricata_log_dir()?;
         ensure_dir(&suricata_log_dir)?;
+        let threshold_config = ensure_suricata_threshold_config()?;
 
         let npcap_device = format!("\\Device\\NPF_{{{}}}", guid.trim_matches(['{', '}']));
         let rules_include_path = write_suricata_rules_include_stub()?;
@@ -2810,6 +2829,8 @@ exit $process.ExitCode
         command.arg(&npcap_device);
         command.arg("-l");
         command.arg(&suricata_log_dir);
+        command.arg("--set");
+        command.arg(format!("threshold-file={}", threshold_config.display()));
 
         if let Some(classification_file) =
             find_suricata_install_file(&suricata_dir, "classification.config")
@@ -3028,10 +3049,10 @@ exit $process.ExitCode
     fn build_evebox_command() -> Result<Command> {
         let evebox_exe = get_evebox_exe_path()?;
 
+        let evebox_root_dir = get_evebox_root_dir()?;
         let evebox_data_dir = get_evebox_data_dir()?;
+        ensure_dir(&evebox_root_dir)?;
         ensure_dir(&evebox_data_dir)?;
-        ensure_dir(&get_evebox_log_dir()?)?;
-        ensure_dir(&get_evebox_run_dir()?)?;
 
         let mut command = Command::new(&evebox_exe);
         command.current_dir(&evebox_data_dir);
@@ -3160,11 +3181,11 @@ exit $process.ExitCode
         }
 
         println!("Windows stack started in background");
-        println!("  Suricata PID: {}", suricata.pid);
-        println!("  EveBox PID:   {}", evebox.pid);
-        println!("  Suricata log: {}", get_suricata_log_dir()?.display());
-        println!("  EveBox log:   {}", get_evebox_log_dir()?.display());
-        println!("  EveBox URL:   {}", EVEBOX_ACCESS_URL);
+        println!("  Suricata PID:  {}", suricata.pid);
+        println!("  EveBox PID:    {}", evebox.pid);
+        println!("  Suricata log:  {}", get_suricata_log_dir()?.display());
+        println!("  EveBox data:   {}", get_evebox_data_dir()?.display());
+        println!("  EveBox URL:    {}", EVEBOX_ACCESS_URL);
 
         Ok(())
     }
