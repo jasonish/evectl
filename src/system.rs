@@ -68,6 +68,12 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
     let output = Command::new("ip")
         .args(["--brief", "address", "show"])
         .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "'ip address show' failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let stdout = String::from_utf8(output.stdout)?;
     let mut interfaces = vec![];
     for line in stdout.split('\n') {

@@ -3,6 +3,7 @@
 
 use crate::prelude::*;
 
+use crate::container::CommandExt;
 use std::io::Write;
 
 const TEMPLATE: &str = r#"
@@ -50,14 +51,17 @@ pub(crate) fn install() -> Result<()> {
     let mut tmp = tempfile::NamedTempFile::new()?;
     tmp.write_all(template.as_bytes())?;
 
-    sudo_command(uid, "cp").arg(tmp.path()).arg(PATH).status()?;
+    sudo_command(uid, "cp")
+        .arg(tmp.path())
+        .arg(PATH)
+        .status_ok()?;
     sudo_command(uid, "systemctl")
         .arg("daemon-reload")
-        .status()?;
+        .status_ok()?;
     sudo_command(uid, "systemctl")
         .arg("enable")
         .arg("evectl")
-        .status()?;
+        .status_ok()?;
     Ok(())
 }
 
@@ -70,16 +74,19 @@ pub(crate) fn remove() {
     if let Err(err) = sudo_command(uid, "systemctl")
         .arg("disable")
         .arg("evectl")
-        .status()
+        .status_ok()
     {
         error!("Failed to disable evectl: {}", err);
     }
 
-    if let Err(err) = sudo_command(uid, "rm").arg(PATH).status() {
+    if let Err(err) = sudo_command(uid, "rm").arg(PATH).status_ok() {
         error!("Failed to remove evectl.service: {}", err);
     }
 
-    if let Err(err) = sudo_command(uid, "systemctl").arg("daemon-reload").status() {
+    if let Err(err) = sudo_command(uid, "systemctl")
+        .arg("daemon-reload")
+        .status_ok()
+    {
         error!("Failed to reload systemd: {}", err);
     }
 }

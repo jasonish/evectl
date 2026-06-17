@@ -44,8 +44,8 @@ pub(crate) fn get_enabled_ruleset(context: &Context) -> Result<HashSet<String>> 
         .run()
         .args(&["suricata-update", "list-sources", "--enabled"])
         .build()
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        .status_output()?;
+    let stdout = String::from_utf8_lossy(&output);
     let re = regex::Regex::new(r"^[\s]*\-\s*(.*)").unwrap();
     for line in stdout.lines() {
         if let Some(caps) = re.captures(line) {
