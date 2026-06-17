@@ -97,7 +97,7 @@ pub(crate) fn is_enabled() -> bool {
 
 fn sudo_command(uid: u32, prog: &str) -> std::process::Command {
     if uid == 0 {
-        std::process::Command::new("prog")
+        std::process::Command::new(prog)
     } else {
         let mut command = std::process::Command::new("sudo");
         command.arg(prog);
