@@ -1,0 +1,5 @@
+# The release version stamp is computed on the host by the deploy script and
+# passed in via EVECTL_VERSION, because git is not available inside the cross
+# build images. Forward it into the container. See build.rs.
+[build.env]
+passthrough = ["EVECTL_VERSION"]

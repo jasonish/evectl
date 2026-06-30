@@ -1,5 +1,7 @@
 [package]
 name = "evectl"
+# major.minor is the release "generation"; the patch is synthesized at build
+# time as the commit date (see build.rs). Bump only at generation boundaries.
 version = "0.2.0"
 authors = ["Jason Ish <jason@codemonkey.net>"]
 edition = "2024"

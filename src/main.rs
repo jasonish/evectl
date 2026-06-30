@@ -333,7 +333,7 @@ fn main() -> Result<()> {
             },
             Commands::Version => {
                 // Display version and exit.
-                println!("{}", env!("CARGO_PKG_VERSION"));
+                println!("{}", env!("EVECTL_VERSION"));
                 0
             }
             Commands::Print { what } => {
