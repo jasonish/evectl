@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::process::Command;
 
 pub const DEFAULT_SURICATA_IMAGE: &str = "docker.io/jasonish/suricata:latest";
-pub const DEFAULT_EVEBOX_IMAGE: &str = "docker.io/jasonish/evebox:master";
+pub const DEFAULT_EVEBOX_IMAGE: &str = "docker.io/jasonish/evebox:main";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ContainerManager {
