@@ -5,23 +5,24 @@ use std::{
     env,
     fs::{self, File},
     io::{self, Seek, SeekFrom},
-    path::Path,
-    process,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
-// Ok, the return type is a bit odd as this handles a lot of the error
-// handling itself. An `Err` is an error that should be logged by the
-// caller.  Ok(true) is success, but Ok(false) is an error that was
-// logged by this function.
-pub(crate) fn self_update() -> Result<()> {
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum SelfUpdate {
+    Unchanged,
+    Updated(PathBuf),
+}
+
+pub(crate) fn self_update() -> Result<SelfUpdate> {
     // If we're running from cargo, don't self update.
     if env::var("CARGO").is_ok() {
         info!("Not self updating as we are running from Cargo");
-        return Ok(());
+        return Ok(SelfUpdate::Unchanged);
     }
 
     let target = env!("TARGET");
@@ -51,7 +52,7 @@ pub(crate) fn self_update() -> Result<()> {
             "Failed to fetch remote checksum: HTTP status code={}",
             response.status(),
         );
-        return Ok(());
+        bail!("Failed to fetch remote checksum");
     }
     let remote_hash = response.text()?.trim().to_lowercase();
     debug!("Remote SHA256 checksum: {}", &remote_hash);
@@ -65,7 +66,7 @@ pub(crate) fn self_update() -> Result<()> {
                 info!("Remote checksum different than current exe, will update");
             } else {
                 info!("No update available");
-                return Ok(());
+                return Ok(SelfUpdate::Unchanged);
             }
         }
     }
@@ -82,7 +83,7 @@ pub(crate) fn self_update() -> Result<()> {
     if hash != remote_hash {
         tracing::error!("Downloaded file has invalid checksum, not updating");
         tracing::error!("- Expected {}", remote_hash);
-        return Ok(());
+        bail!("Downloaded file has invalid checksum");
     }
 
     info!("Replacing current executable");
@@ -97,11 +98,8 @@ pub(crate) fn self_update() -> Result<()> {
     let mut final_exec = fs::File::create(&current_exe)?;
     io::copy(&mut download_exe, &mut final_exec)?;
     make_executable(&current_exe)?;
-    warn!("The EveCtl program has been updated. Please restart.");
-
-    // Re-execute self.
-
-    process::exit(0);
+    warn!("The EveCtl program has been updated.");
+    Ok(SelfUpdate::Updated(current_exe))
 }
 
 fn download_release(url: &str) -> Result<File> {

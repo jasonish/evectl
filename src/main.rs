@@ -3,6 +3,7 @@
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
+    path::Path,
     process::{self, Child, Stdio},
     sync::mpsc::Sender,
     thread,
@@ -12,7 +13,7 @@ use prelude::*;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use container::{Container, SuricataContainer};
+use container::{Container, ContainerManager, SuricataContainer};
 use logs::LogArgs;
 
 mod actions;
@@ -79,7 +80,12 @@ enum Commands {
     UpdateRules,
 
     /// Update containers and EveCtl itself.
-    Update,
+    Update {
+        #[arg(long, hide = true)]
+        containers_only: bool,
+        #[arg(long, hide = true)]
+        return_to_menu: bool,
+    },
 
     /// View the container logs
     Logs(LogArgs),
@@ -117,7 +123,10 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Restart => false,
             Commands::Status => false,
             Commands::UpdateRules => false,
-            Commands::Update => false,
+            Commands::Update {
+                containers_only,
+                return_to_menu,
+            } => *containers_only && *return_to_menu,
             Commands::Logs(_) => false,
             Commands::Menu { menu: _ } => true,
             Commands::Version => false,
@@ -125,6 +134,52 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Systemd { command: _ } => false,
         },
         None => true,
+    }
+}
+
+fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
+    !matches!(
+        command,
+        Some(Commands::Update {
+            containers_only: _,
+            return_to_menu: _,
+        })
+    )
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct UpdateContinuationArgs {
+    podman: bool,
+    no_root: bool,
+    verbose: u8,
+}
+
+impl UpdateContinuationArgs {
+    fn new(manager: ContainerManager, args: &Args) -> Self {
+        Self {
+            podman: manager.is_podman(),
+            no_root: args.no_root,
+            verbose: args.verbose,
+        }
+    }
+
+    fn to_args(&self, return_to_menu: bool) -> Vec<String> {
+        let mut args = vec![];
+        if self.podman {
+            args.push("--podman".to_string());
+        }
+        if self.no_root {
+            args.push("--no-root".to_string());
+        }
+        for _ in 0..self.verbose {
+            args.push("-v".to_string());
+        }
+        args.push("update".to_string());
+        args.push("--containers-only".to_string());
+        if return_to_menu {
+            args.push("--return-to-menu".to_string());
+        }
+        args
     }
 }
 
@@ -149,6 +204,7 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     info!("Found container manager {manager}");
+    let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
 
     let root = std::env::current_dir()?;
 
@@ -174,7 +230,7 @@ fn main() -> Result<()> {
         context
     };
 
-    let prompt_for_update = {
+    let prompt_for_update = should_prompt_for_missing_images(&args.command) && {
         let mut not_found = false;
         if !manager.has_image(&context.suricata_image) {
             info!("Suricata image {} not found", &context.suricata_image);
@@ -192,7 +248,7 @@ fn main() -> Result<()> {
             inquire::Confirm::new("Required container images not found, download now?")
                 .with_default(true)
                 .prompt()
-        && !update(&context)
+        && !update(&context, &update_continuation_args, false, false)
     {
         error!("Failed to downloading container images");
         prompt::enter();
@@ -224,8 +280,21 @@ fn main() -> Result<()> {
                     1
                 }
             }
-            Commands::Update => {
-                if update(&context) {
+            Commands::Update {
+                containers_only,
+                return_to_menu,
+            } => {
+                let ok = update(
+                    &context,
+                    &update_continuation_args,
+                    containers_only,
+                    return_to_menu,
+                );
+                if return_to_menu {
+                    prompt::enter();
+                    menu_main(context, &update_continuation_args)?;
+                    0
+                } else if ok {
                     0
                 } else {
                     1
@@ -281,7 +350,7 @@ fn main() -> Result<()> {
         };
         std::process::exit(code);
     } else {
-        menu_main(context)?;
+        menu_main(context, &update_continuation_args)?;
     }
 
     Ok(())
@@ -760,7 +829,10 @@ fn log_status(context: &Context) {
     }
 }
 
-fn menu_main(mut context: Context) -> Result<()> {
+fn menu_main(
+    mut context: Context,
+    update_continuation_args: &UpdateContinuationArgs,
+) -> Result<()> {
     let mut original_config = context.config.clone();
 
     'outer: loop {
@@ -834,7 +906,7 @@ fn menu_main(mut context: Context) -> Result<()> {
                         original_config = context.config.clone();
                     }
                     Main::Update => {
-                        update(&context);
+                        update(&context, update_continuation_args, false, true);
                         prompt::enter();
                     }
                     Main::Other => menu::other::menu(&context),
@@ -1198,7 +1270,33 @@ fn start_evebox_agent_detached(context: &Context) -> Result<()> {
     actions::start_evebox_agent(context)
 }
 
-fn update(context: &Context) -> bool {
+fn update(
+    context: &Context,
+    update_continuation_args: &UpdateContinuationArgs,
+    containers_only: bool,
+    return_to_menu: bool,
+) -> bool {
+    if containers_only {
+        return update_containers(context);
+    }
+
+    match selfupdate::self_update() {
+        Ok(selfupdate::SelfUpdate::Unchanged) => update_containers(context),
+        Ok(selfupdate::SelfUpdate::Updated(current_exe)) => {
+            std::process::exit(continue_update_with_new_binary(
+                &current_exe,
+                update_continuation_args,
+                return_to_menu,
+            ));
+        }
+        Err(err) => {
+            error!("Failed to update EveCtl: {err}");
+            false
+        }
+    }
+}
+
+fn update_containers(context: &Context) -> bool {
     let mut ok = true;
     for image in [
         context.image_name(Container::Suricata),
@@ -1215,11 +1313,25 @@ fn update(context: &Context) -> bool {
         error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
         ok = false;
     }
-    if let Err(err) = selfupdate::self_update() {
-        error!("Failed to update EveCtl: {err}");
-        ok = false;
-    }
     ok
+}
+
+fn continue_update_with_new_binary(
+    current_exe: &Path,
+    update_continuation_args: &UpdateContinuationArgs,
+    return_to_menu: bool,
+) -> i32 {
+    let args = update_continuation_args.to_args(return_to_menu);
+    info!("Continuing update with {}", current_exe.display());
+    let status = process::Command::new(current_exe).args(&args).status();
+    match status {
+        Ok(status) if status.success() => 0,
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => {
+            error!("Failed to continue update with new EveCtl: {err}");
+            1
+        }
+    }
 }
 
 /// Utility for building arguments for commands.
@@ -1309,4 +1421,107 @@ fn print(what: String) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn update_continuation_args_preserve_runtime_flags() {
+        let args =
+            Args::try_parse_from(["evectl", "--no-root", "-vv", "update"]).expect("parse args");
+        let manager = ContainerManager::Podman(container::PodmanManager::new());
+
+        assert_eq!(
+            UpdateContinuationArgs::new(manager, &args),
+            UpdateContinuationArgs {
+                podman: true,
+                no_root: true,
+                verbose: 2,
+            }
+        );
+        assert_eq!(
+            UpdateContinuationArgs::new(manager, &args).to_args(false),
+            vec![
+                "--podman",
+                "--no-root",
+                "-v",
+                "-v",
+                "update",
+                "--containers-only",
+            ]
+        );
+    }
+
+    #[test]
+    fn update_continuation_args_omit_default_flags() {
+        let args = UpdateContinuationArgs {
+            podman: false,
+            no_root: false,
+            verbose: 0,
+        };
+
+        assert_eq!(args.to_args(false), vec!["update", "--containers-only"]);
+        assert_eq!(
+            args.to_args(true),
+            vec!["update", "--containers-only", "--return-to-menu"]
+        );
+    }
+
+    #[test]
+    fn update_commands_skip_missing_image_prompt() {
+        assert!(!should_prompt_for_missing_images(&Some(Commands::Update {
+            containers_only: false,
+            return_to_menu: false,
+        })));
+        assert!(!should_prompt_for_missing_images(&Some(Commands::Update {
+            containers_only: true,
+            return_to_menu: true,
+        })));
+        assert!(should_prompt_for_missing_images(&Some(Commands::Status)));
+        assert!(should_prompt_for_missing_images(&None));
+    }
+
+    #[test]
+    fn containers_only_flag_parses_but_is_hidden() {
+        let args =
+            Args::try_parse_from(["evectl", "update", "--containers-only", "--return-to-menu"])
+                .expect("parse args");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Update {
+                containers_only: true,
+                return_to_menu: true,
+            })
+        ));
+
+        let mut command = Args::command();
+        let update = command
+            .find_subcommand_mut("update")
+            .expect("update subcommand");
+        let mut help = Vec::new();
+        update.write_long_help(&mut help).expect("write help");
+        let help = String::from_utf8(help).expect("help is utf8");
+
+        assert!(!help.contains("containers-only"));
+        assert!(!help.contains("return-to-menu"));
+    }
+
+    #[test]
+    fn update_menu_continuation_is_interactive() {
+        assert!(is_interactive(&Some(Commands::Update {
+            containers_only: true,
+            return_to_menu: true,
+        })));
+        assert!(!is_interactive(&Some(Commands::Update {
+            containers_only: true,
+            return_to_menu: false,
+        })));
+        assert!(!is_interactive(&Some(Commands::Update {
+            containers_only: false,
+            return_to_menu: true,
+        })));
+    }
 }
