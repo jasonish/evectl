@@ -20,9 +20,18 @@ jobs:
       - run: |
           echo "$HOME/.cargo/bin"
           ls "$HOME/.cargo/bin"
-      - run: |
+      - if: matrix.target != 'x86_64-pc-windows-gnu'
+        run: |
           curl -OL https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz
           tar xvf cross-x86_64-unknown-linux-musl.tar.gz
           mv cross $HOME/.cargo/bin
       - uses: actions/checkout@v4
-      - run: cross build --target ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+          rustup target add ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: cargo build --target ${{ matrix.target }}
+      - if: matrix.target != 'x86_64-pc-windows-gnu'
+        run: cross build --target ${{ matrix.target }}
