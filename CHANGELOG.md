@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Enable DHCP extended Eve output and Suricata version fields by default
+
+### Fixed
+
+- Apply generated JA4 Suricata overrides when starting Suricata
+- Restart services in detached mode instead of foreground debug mode
+
 ## [0.3.0] - 2026-06-30
 
 ### Added
