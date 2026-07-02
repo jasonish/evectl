@@ -267,7 +267,7 @@ fn main() -> Result<()> {
             }
             Commands::Restart => {
                 stop_all(&context);
-                command_start(&context, true)
+                command_start(&context, false)
             }
             Commands::Status => {
                 log_status(&context);
