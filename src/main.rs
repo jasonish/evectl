@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::{
+    collections::BTreeSet,
     io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{self, Child, Stdio},
@@ -982,16 +983,31 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
         "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
         "app-layer.protocols.quic.ja4-fingerprints=true".to_string(),
     ];
+    let mut eve_log_paths = BTreeSet::new();
+    let eve_log_pattern = regex::Regex::new(r"(outputs\.\d+\.eve-log)(?:\s|\.)")?;
     let patterns = &[
         regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.tls)\s")?,
         regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.quic)\s")?,
+        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.dhcp)\s")?,
     ];
     for line in &config {
+        if let Some(c) = eve_log_pattern.captures(line) {
+            eve_log_paths.insert(c[1].to_string());
+        }
+
         for r in patterns {
             if let Some(c) = r.captures(line) {
-                set_args.push(format!("{}.ja4=true", &c[1]));
+                let path = &c[1];
+                if path.ends_with(".dhcp") {
+                    set_args.push(format!("{path}.extended=true"));
+                } else {
+                    set_args.push(format!("{path}.ja4=true"));
+                }
             }
         }
+    }
+    for path in eve_log_paths {
+        set_args.push(format!("{path}.suricata-version=true"));
     }
 
     let interface = match context.config.suricata.interfaces.first() {
