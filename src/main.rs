@@ -1033,6 +1033,11 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     args.add("--include");
     args.add("/config/af-packet.yaml");
 
+    for set_arg in set_args {
+        args.add("--set");
+        args.add(set_arg);
+    }
+
     if let Some(sensor_name) = &context.config.suricata.sensor_name {
         args.add("--set");
         args.add(format!("sensor-name={sensor_name}"));
