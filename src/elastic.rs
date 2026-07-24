@@ -30,6 +30,11 @@ pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command
     command.arg("--name");
     command.arg(container_name(context));
     command.arg("--rm");
+    // Without a memory limit Elasticsearch sizes its heap to half of
+    // all host memory, which on a large host can be OOM killed while
+    // pre-allocating the heap on startup. With a limit, the heap is
+    // sized to half the limit.
+    command.arg("--memory=2g");
     command.arg("-v");
     command.arg(format!(
         "{}/elastic:/usr/share/elasticsearch/data",
