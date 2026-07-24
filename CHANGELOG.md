@@ -9,6 +9,7 @@
   trust store merged with the bundled Mozilla roots, so locally installed
   CAs are honored and hosts without ca-certificates still work
 - Update sha2 to 0.11 and toml to 1.1
+- Update Elasticsearch to 8.19.19
 
 ### Fixed
 
