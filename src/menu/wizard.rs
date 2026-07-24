@@ -81,11 +81,16 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
 
     // EveBox server questions.
     if has_server {
-        let use_elasticsearch =
-            inquire::Confirm::new("EveBox Server: Use bundled Elasticsearch server?")
+        let search_engine =
+            if inquire::Confirm::new("EveBox Server: Use OpenSearch or Elasticsearch?")
                 .with_default(false)
-                .with_help_message("Recommended for larger systems, avoid if memory is limited")
-                .prompt()?;
+                .with_help_message("Only use on systems with larger memory")
+                .prompt()?
+            {
+                crate::menu::elastic::select_engine()?
+            } else {
+                None
+            };
 
         let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
             .with_default(false)
@@ -107,8 +112,9 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         context.config.evebox_server.no_tls = disable_https;
         context.config.evebox_server.no_auth = disable_auth;
 
-        if use_elasticsearch {
+        if let Some(engine) = search_engine {
             context.config.elasticsearch.enabled = true;
+            context.config.elasticsearch.engine = engine;
         }
     }
 
@@ -136,8 +142,13 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         .pull(&context.image_name(Container::EveBox))?;
 
     if context.config.elasticsearch.enabled {
-        info!("Pulling Elasticsearch image...");
-        context.manager.pull(crate::elastic::DOCKER_IMAGE)?;
+        info!(
+            "Pulling {} image...",
+            context.config.elasticsearch.engine.name()
+        );
+        context
+            .manager
+            .pull(crate::elastic::docker_image(context))?;
     }
 
     if has_suricata {
@@ -163,13 +174,15 @@ fn install_type_help() {
         "
 {:11      } Suricata and EveBox all-in-one. Suitable for single
             host deployments, or if you come from Simple-IDS. You
-            have the choice of using SQLite or Elasticsearch.
+            have the choice of using SQLite, OpenSearch or
+            Elasticsearch.
 
 {:11      } Suricata and EveBox Agent. Useful if you already 
             have an EveBox server and need to deploy another
             Suricata instance.
 
-{:11      } EveBox server only. Choice of SQLite or Elasticsearch.
+{:11      } EveBox server only. Choice of SQLite, OpenSearch or
+            Elasticsearch.
 
 {:11      } Exit the wizard and perform manual configuration.
 ",

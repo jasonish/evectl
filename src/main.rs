@@ -486,13 +486,13 @@ fn start_foreground(context: &Context) -> Result<()> {
     }
 
     if context.config.elasticsearch.enabled {
-        let data_directory = context.data_dir().join("elastic");
-        if let Err(err) = std::fs::create_dir_all(&data_directory) {
-            error!("Failed to create data directory for Elasticsearch: {}", err);
-            return Err(err.into());
+        let engine = context.config.elasticsearch.engine.name();
+        if let Err(err) = elastic::create_data_dir(context) {
+            error!("Failed to create data directory for {}: {}", engine, err);
+            return Err(err);
         }
         let mut command = elastic::build_docker_command(context, &[]);
-        debug!("Starting Elasticsearch: {:?}", &command);
+        debug!("Starting {}: {:?}", engine, &command);
         let mut child = match command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -500,15 +500,15 @@ fn start_foreground(context: &Context) -> Result<()> {
         {
             Ok(process) => process,
             Err(err) => {
-                error!("Failed to spawn Elasticsearch process: {}", err);
+                error!("Failed to spawn {} process: {}", engine, err);
                 return Err(err.into());
             }
         };
-        process_output_handler(&mut child, "elasticsearch", tx.clone());
-        children.push(("elasticsearch", child));
+        process_output_handler(&mut child, engine, tx.clone());
+        children.push((engine, child));
     }
 
-    // Sleep for a moment to give the Elasticsearch container a chance
+    // Sleep for a moment to give the search engine container a chance
     // to be created.
     std::thread::sleep(std::time::Duration::from_secs(1));
 
@@ -682,8 +682,8 @@ fn stop_all(context: &Context) -> bool {
         );
     }
 
-    // Stop Elasticsearch
-    info!("Stoping Elasticsearch");
+    // Stop the search engine.
+    info!("Stopping {}", context.config.elasticsearch.engine.name());
     elastic::stop_elasticsearch(context);
 
     ok
@@ -809,18 +809,19 @@ fn log_status(context: &Context) {
         status.push(("debug", "EveBox Agent", "not enabled".to_string()));
     }
 
+    let engine = context.config.elasticsearch.engine.name();
     if context.config.elasticsearch.enabled {
         enabled += 1;
         if context
             .manager
             .is_running(&elastic::container_name(context))
         {
-            status.push(("info", "Elasticsearch", "running".to_string()));
+            status.push(("info", engine, "running".to_string()));
         } else {
-            status.push(("warn", "Elasticsearch", "not running".to_string()));
+            status.push(("warn", engine, "not running".to_string()));
         }
     } else {
-        status.push(("debug", "Elasticsearch", "not enabled".to_string()));
+        status.push(("debug", engine, "not enabled".to_string()));
     }
 
     for (level, label, state) in &status {
@@ -958,9 +959,10 @@ fn start(context: &Context) -> bool {
     }
 
     if context.config.elasticsearch.enabled {
-        info!("Starting Elasticsearch");
+        let engine = context.config.elasticsearch.engine.name();
+        info!("Starting {}", engine);
         if let Err(err) = elastic::start_elasticsearch(context) {
-            error!("Failed to start Elasticsearch: {}", err);
+            error!("Failed to start {}: {}", engine, err);
             ok = false;
         }
     }
@@ -1337,11 +1339,12 @@ fn update_containers(context: &Context) -> bool {
             ok = false;
         }
     }
-    if context.config.elasticsearch.enabled
-        && let Err(err) = context.manager.pull(elastic::DOCKER_IMAGE)
-    {
-        error!("Failed to pull {}: {err}", elastic::DOCKER_IMAGE);
-        ok = false;
+    if context.config.elasticsearch.enabled {
+        let image = elastic::docker_image(context);
+        if let Err(err) = context.manager.pull(image) {
+            error!("Failed to pull {image}: {err}");
+            ok = false;
+        }
     }
     ok
 }

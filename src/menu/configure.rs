@@ -63,7 +63,8 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
             selections.push(
                 Options::Elasticsearch,
                 format!(
-                    "Configure Elasticsearch [memory={}GB]",
+                    "Configure {} [memory={}GB]",
+                    context.config.elasticsearch.engine.name(),
                     crate::elastic::memory_gb(context)
                 ),
             );

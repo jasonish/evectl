@@ -41,11 +41,14 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 
         if context.config.evebox_server.enabled {
             let database = if context.config.evebox_server.use_external_elasticsearch {
-                "external elasticsearch"
+                "external elasticsearch".to_string()
             } else if context.config.elasticsearch.enabled {
-                "managed elasticsearch"
+                format!(
+                    "managed {}",
+                    context.config.elasticsearch.engine.name().to_lowercase()
+                )
             } else {
-                "embedded sqlite"
+                "embedded sqlite".to_string()
             };
             selections.push(
                 Options::EnableToggle,
@@ -94,17 +97,20 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             ),
         );
 
-        selections.push(
-            Options::ToggleElasticsearch,
-            format!(
-                "Use Managed Elasticsearch [{}]",
-                if context.config.elasticsearch.enabled {
-                    "true"
-                } else {
-                    "false"
-                }
-            ),
-        );
+        if context.config.elasticsearch.enabled {
+            selections.push(
+                Options::ToggleElasticsearch,
+                format!(
+                    "Disable Managed {} [enabled]",
+                    context.config.elasticsearch.engine.name()
+                ),
+            );
+        } else {
+            selections.push(
+                Options::ToggleElasticsearch,
+                "Enable Managed OpenSearch/Elasticsearch [disabled]",
+            );
+        }
 
         selections.push(
             Options::UseExternalElasticsearch,
@@ -167,8 +173,15 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 }
 
 fn toggle_elasticsearch(context: &mut Context) -> Result<()> {
+    if context.config.elasticsearch.enabled {
+        context.config.elasticsearch.enabled = false;
+        return Ok(());
+    }
+
     if context.config.evebox_server.use_external_elasticsearch {
-        warn!("Using managed Elasticsearch will disable use of the external Elasticsearch server.");
+        warn!(
+            "Using a managed search engine will disable use of the external Elasticsearch server."
+        );
         if !inquire::Confirm::new("Continue?")
             .with_default(true)
             .prompt()?
@@ -176,8 +189,10 @@ fn toggle_elasticsearch(context: &mut Context) -> Result<()> {
             return Ok(());
         }
     }
-    context.config.elasticsearch.enabled = !context.config.elasticsearch.enabled;
-    if context.config.elasticsearch.enabled {
+
+    if let Some(engine) = crate::menu::elastic::select_engine()? {
+        context.config.elasticsearch.engine = engine;
+        context.config.elasticsearch.enabled = true;
         context.config.evebox_server.use_external_elasticsearch = false;
     }
     Ok(())
@@ -189,7 +204,8 @@ fn use_external_elasticsearch(context: &mut Context) -> Result<()> {
     } else {
         if context.config.elasticsearch.enabled {
             warn!(
-                "Using external Elasticsearch will disable use of the managed Elasticsearch server."
+                "Using external Elasticsearch will disable use of the managed {} server.",
+                context.config.elasticsearch.engine.name()
             );
             if !inquire::Confirm::new("Continue?")
                 .with_default(true)

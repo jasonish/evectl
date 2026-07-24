@@ -4,6 +4,8 @@
 
 ### Added
 
+- OpenSearch as a bundled search-engine option alongside
+  Elasticsearch, with OpenSearch now the recommended engine
 - Elasticsearch configuration menu with a configurable container
   memory limit (default 2GB)
 

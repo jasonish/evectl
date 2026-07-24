@@ -114,10 +114,34 @@ pub(crate) struct ElasticsearchConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub enabled: bool,
 
-    /// Container memory limit in gigabytes. Elasticsearch sizes its
-    /// heap to half of this. None means the default of 2.
+    /// Which search engine to run. Defaults to Elasticsearch as
+    /// configurations that predate this option were Elasticsearch
+    /// only.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub engine: SearchEngine,
+
+    /// Container memory limit in gigabytes. The search engine sizes
+    /// its heap to half of this. None means the default of 2.
     #[serde(default, skip_serializing_if = "is_default")]
     pub memory: Option<u32>,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SearchEngine {
+    #[default]
+    #[serde(rename = "elasticsearch")]
+    Elasticsearch,
+    #[serde(rename = "opensearch")]
+    OpenSearch,
+}
+
+impl SearchEngine {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            SearchEngine::Elasticsearch => "Elasticsearch",
+            SearchEngine::OpenSearch => "OpenSearch",
+        }
+    }
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -191,11 +215,36 @@ mod tests {
         config.evebox_server.enabled = true;
         config.evebox_server.no_tls = true;
         config.evebox_server.bind_address = Some("192.168.1.10".to_string());
+        config.elasticsearch.engine = SearchEngine::OpenSearch;
         config.elasticsearch.memory = Some(4);
 
         let toml = toml::to_string(&config).unwrap();
         let parsed = Config::parse_toml(&toml).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn test_parse_search_engine() {
+        // Configurations from before the engine option default to
+        // Elasticsearch.
+        let config = Config::parse_toml(
+            r#"
+            [elasticsearch]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.elasticsearch.engine, SearchEngine::Elasticsearch);
+
+        let config = Config::parse_toml(
+            r#"
+            [elasticsearch]
+            enabled = true
+            engine = "opensearch"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.elasticsearch.engine, SearchEngine::OpenSearch);
     }
 
     #[test]
