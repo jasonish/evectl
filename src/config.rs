@@ -173,3 +173,42 @@ impl Config {
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_roundtrip() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.suricata.interfaces = vec!["br0".to_string()];
+        config.evebox_server.enabled = true;
+        config.evebox_server.no_tls = true;
+        config.evebox_server.bind_address = Some("192.168.1.10".to_string());
+
+        let toml = toml::to_string(&config).unwrap();
+        let parsed = Config::parse_toml(&toml).unwrap();
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn test_parse_config() {
+        let config = Config::parse_toml(
+            r#"
+            [suricata]
+            enabled = true
+            interfaces = ["br0"]
+
+            [evebox-server]
+            enabled = true
+            no-tls = true
+            no-auth = true
+            "#,
+        )
+        .unwrap();
+        assert!(config.suricata.enabled);
+        assert_eq!(config.suricata.interfaces, vec!["br0".to_string()]);
+        assert!(config.evebox_server.no_tls);
+    }
+}

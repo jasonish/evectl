@@ -4,7 +4,7 @@
 use std::{
     env,
     fs::{self, File},
-    io::{self, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -46,7 +46,10 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
     };
 
     info!("Downloading {}", &hash_url);
-    let response = reqwest::blocking::get(&hash_url)?;
+    let response = crate::http::client_builder()
+        .build()?
+        .get(&hash_url)
+        .send()?;
     if response.status().as_u16() != 200 {
         error!(
             "Failed to fetch remote checksum: HTTP status code={}",
@@ -103,7 +106,7 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
 }
 
 fn download_release(url: &str) -> Result<File> {
-    let mut response = reqwest::blocking::get(url)?;
+    let mut response = crate::http::client_builder().build()?.get(url).send()?;
     let mut dest = tempfile::tempfile()?;
     io::copy(&mut response, &mut dest)?;
     dest.seek(SeekFrom::Start(0))?;
@@ -112,9 +115,15 @@ fn download_release(url: &str) -> Result<File> {
 
 fn file_checksum(file: &mut File) -> Result<String> {
     let mut hash = Sha256::new();
-    io::copy(file, &mut hash)?;
-    let hash = hash.finalize();
-    Ok(format!("{:x}", hash))
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn current_checksum(path: &Path) -> Result<String> {

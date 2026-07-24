@@ -24,6 +24,7 @@ mod container;
 mod context;
 mod elastic;
 mod evebox;
+mod http;
 mod logs;
 mod menu;
 mod prelude;
@@ -185,6 +186,12 @@ impl UpdateContinuationArgs {
 }
 
 fn main() -> Result<()> {
+    // Reqwest's rustls-no-provider feature requires installing a crypto
+    // provider before any client is built (see Cargo.toml for why ring).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     // Mainly for use when developing...
     let _ = std::process::Command::new("stty").args(["sane"]).status();
 

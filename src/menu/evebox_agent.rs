@@ -123,7 +123,7 @@ pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, b
 }
 
 fn test_url(url: reqwest::Url, with_certificate_validation: bool) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
+    let client = crate::http::client_builder()
         .danger_accept_invalid_certs(!with_certificate_validation)
         .build()?;
     let response = client.get(url).send()?;

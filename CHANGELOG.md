@@ -5,6 +5,10 @@
 ### Changed
 
 - Enable DHCP extended Eve output and Suricata version fields by default
+- Update reqwest to 0.13: TLS certificate verification now uses the system
+  trust store merged with the bundled Mozilla roots, so locally installed
+  CAs are honored and hosts without ca-certificates still work
+- Update sha2 to 0.11 and toml to 1.1
 
 ### Fixed
 

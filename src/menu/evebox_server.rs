@@ -384,7 +384,7 @@ fn set_elasticsearch_url(context: &mut Context) -> Result<()> {
             false
         };
 
-        let client = reqwest::blocking::Client::builder()
+        let client = crate::http::client_builder()
             .danger_accept_invalid_certs(disable_certificate_validation)
             .build()?;
         let mut request = client.get(&url);
