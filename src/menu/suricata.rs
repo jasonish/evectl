@@ -38,7 +38,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 Options::Interface,
                 format!(
                     "Select Interface (current: {})",
-                    &config.suricata.interfaces[0]
+                    config.suricata.interfaces[0]
                 ),
             );
         }

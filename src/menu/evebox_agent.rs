@@ -29,7 +29,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 
         selections.push(
             Options::Server,
-            format!("EveBox Server URL [{}]", &config.evebox_agent.server),
+            format!("EveBox Server URL [{}]", config.evebox_agent.server),
         );
 
         selections.push(Options::Exit, "Return");
@@ -106,7 +106,7 @@ pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, b
                     }
                 }
 
-                if inquire::Confirm::new(&format!("Do you wish to use {} anyway?", &server))
+                if inquire::Confirm::new(&format!("Do you wish to use {} anyway?", server))
                     .with_default(false)
                     .prompt()?
                 {

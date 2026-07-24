@@ -51,7 +51,7 @@ pub(crate) fn logs(ctx: &Context, args: LogArgs) {
                     let label = container.clone();
                     let handle = thread::spawn(move || {
                         log_line_printer(
-                            format!("{:width$} | stdout", &label, width = max_container_name_len),
+                            format!("{:width$} | stdout", label, width = max_container_name_len),
                             stdout,
                         );
                     });

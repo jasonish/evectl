@@ -1433,7 +1433,7 @@ fn print(what: String) -> Result<()> {
                 let mut addrs = interface.addr4.clone();
                 addrs.extend(interface.addr6.clone());
                 let addrs = addrs.join(", ");
-                println!("{} {} {}", interface.name, interface.status, &addrs);
+                println!("{} {} {}", interface.name, interface.status, addrs);
             }
         }
         "systemd" => {
