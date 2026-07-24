@@ -274,7 +274,7 @@ fn main() -> Result<()> {
                 0
             }
             Commands::UpdateRules => {
-                if let Err(err) = actions::update_rules(&context) {
+                if let Err(err) = actions::update_rules(&context, &[]) {
                     error!("Failed to update rules: {}", err);
                     0
                 } else {
@@ -913,7 +913,7 @@ fn menu_main(
                     Main::Other => menu::other::menu(&context),
                     Main::Configure => menu::configure::main(&mut context)?,
                     Main::UpdateRules => {
-                        if let Err(err) = actions::update_rules(&context) {
+                        if let Err(err) = actions::update_rules(&context, &[]) {
                             error!("{}", err);
                         }
                         prompt::enter();

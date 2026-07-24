@@ -65,8 +65,7 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
             context.config.suricata.interfaces = vec![interface];
             info!("Updating Suricata Rules");
             crate::suricata::mkdirs(context)?;
-            crate::actions::update_rules(context)?;
-            info!("Note: You can ignore the \"Reload command\" error above.");
+            crate::actions::update_rules(context, &["--no-reload", "--no-test"])?;
         }
         _ => {}
     }

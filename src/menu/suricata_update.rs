@@ -55,7 +55,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
 }
 
 fn update_rules(context: &Context) -> Result<()> {
-    if let Err(err) = crate::actions::update_rules(context) {
+    if let Err(err) = crate::actions::update_rules(context, &[]) {
         error!("{}", err);
     }
     prompt::enter();
@@ -92,7 +92,7 @@ fn disable_ruleset(context: &Context) -> Result<()> {
             "Would you like to update your rules now?",
             Some("A rule update is required to complete disabling this ruleset"),
         ) {
-            crate::actions::update_rules(context)?;
+            crate::actions::update_rules(context, &[])?;
         }
 
         prompt::enter();
@@ -135,7 +135,7 @@ fn enable_ruleset(context: &Context) -> Result<()> {
             "Would you like to update your rules now?",
             Some("A rule update is require to make the new ruleset active"),
         ) {
-            crate::actions::update_rules(context)?;
+            crate::actions::update_rules(context, &[])?;
         }
 
         prompt::enter();

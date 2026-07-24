@@ -75,7 +75,7 @@ pub(crate) fn disable_ruleset(context: &Context, ruleset: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn update_rules(context: &Context) -> Result<()> {
+pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()> {
     if !context.config.suricata.enabled {
         bail!("Suricata is not enabled.");
     }
@@ -106,12 +106,14 @@ pub(crate) fn update_rules(context: &Context) -> Result<()> {
     }
 
     info!("Updating Suricata rules...");
+    let mut args = vec!["suricata-update"];
+    args.extend_from_slice(extra_args);
     if let Err(err) = container
         .run()
         .rm()
         .it()
         .volumes(&volumes)
-        .args(&["suricata-update"])
+        .args(&args)
         .build()
         .status_ok()
     {
