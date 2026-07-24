@@ -1312,6 +1312,8 @@ fn update(
         }
         Err(err) => {
             error!("Failed to update EveCtl: {err}");
+            info!("Continuing with container updates");
+            update_containers(context);
             false
         }
     }
