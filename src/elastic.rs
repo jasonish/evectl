@@ -7,6 +7,18 @@ use crate::prelude::*;
 
 pub(crate) const DOCKER_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.19.19";
 
+/// Default container memory limit in gigabytes.
+pub(crate) const DEFAULT_MEMORY_GB: u32 = 2;
+
+/// The configured container memory limit in gigabytes.
+pub(crate) fn memory_gb(context: &Context) -> u32 {
+    context
+        .config
+        .elasticsearch
+        .memory
+        .unwrap_or(DEFAULT_MEMORY_GB)
+}
+
 const BIN: &str = "bin/elasticsearch";
 
 const ARGS: &[&str] = &[
@@ -34,7 +46,7 @@ pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command
     // all host memory, which on a large host can be OOM killed while
     // pre-allocating the heap on startup. With a limit, the heap is
     // sized to half the limit.
-    command.arg("--memory=2g");
+    command.arg(format!("--memory={}g", memory_gb(context)));
     command.arg("-v");
     command.arg(format!(
         "{}/elastic:/usr/share/elasticsearch/data",

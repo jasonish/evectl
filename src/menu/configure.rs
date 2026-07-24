@@ -12,6 +12,7 @@ enum Options {
     Return,
     EveBoxAgent,
     EveBoxServer,
+    Elasticsearch,
     StartOnBoot,
 }
 
@@ -58,6 +59,16 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
             ),
         );
 
+        if context.config.elasticsearch.enabled {
+            selections.push(
+                Options::Elasticsearch,
+                format!(
+                    "Configure Elasticsearch [memory={}GB]",
+                    crate::elastic::memory_gb(context)
+                ),
+            );
+        }
+
         selections.push(Options::ContainerImages, "Containers Images");
 
         if crate::systemd::is_enabled() {
@@ -74,6 +85,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
                 Options::Suricata => crate::menu::suricata::menu(context)?,
                 Options::EveBoxAgent => crate::menu::evebox_agent::menu(context)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
+                Options::Elasticsearch => crate::menu::elastic::menu(context)?,
                 Options::StartOnBoot => start_on_boot()?,
                 Options::Return => return Ok(()),
             },

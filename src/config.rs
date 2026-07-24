@@ -113,6 +113,11 @@ pub(crate) struct ElasticsearchClientConfig {
 pub(crate) struct ElasticsearchConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub enabled: bool,
+
+    /// Container memory limit in gigabytes. Elasticsearch sizes its
+    /// heap to half of this. None means the default of 2.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub memory: Option<u32>,
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -186,6 +191,7 @@ mod tests {
         config.evebox_server.enabled = true;
         config.evebox_server.no_tls = true;
         config.evebox_server.bind_address = Some("192.168.1.10".to_string());
+        config.elasticsearch.memory = Some(4);
 
         let toml = toml::to_string(&config).unwrap();
         let parsed = Config::parse_toml(&toml).unwrap();

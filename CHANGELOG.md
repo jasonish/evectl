@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Elasticsearch configuration menu with a configurable container
+  memory limit (default 2GB)
+
 ### Changed
 
 - Enable DHCP extended Eve output and Suricata version fields by default
