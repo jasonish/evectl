@@ -81,16 +81,10 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
 
     // EveBox server questions.
     if has_server {
-        let search_engine =
-            if inquire::Confirm::new("EveBox Server: Use OpenSearch or Elasticsearch?")
-                .with_default(false)
-                .with_help_message("Only use on systems with larger memory")
-                .prompt()?
-            {
-                crate::menu::elastic::select_engine()?
-            } else {
-                None
-            };
+        let datastore = match crate::menu::evebox_server::select_datastore(false)? {
+            Some(datastore) => datastore,
+            None => bail!("Aborting configuration wizard. Bye!"),
+        };
 
         let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
             .with_default(false)
@@ -112,7 +106,7 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         context.config.evebox_server.no_tls = disable_https;
         context.config.evebox_server.no_auth = disable_auth;
 
-        if let Some(engine) = search_engine {
+        if let Some(engine) = datastore.engine() {
             context.config.elasticsearch.enabled = true;
             context.config.elasticsearch.engine = engine;
         }
@@ -141,7 +135,7 @@ pub(crate) fn wizard(context: &mut Context) -> Result<()> {
         .manager
         .pull(&context.image_name(Container::EveBox))?;
 
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         info!(
             "Pulling {} image...",
             context.config.elasticsearch.engine.name()

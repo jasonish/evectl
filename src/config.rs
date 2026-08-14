@@ -179,6 +179,16 @@ pub(crate) struct EveBoxAgentConfig {
 }
 
 impl Config {
+    /// True if the managed search engine (Elasticsearch/OpenSearch)
+    /// should be running. The engine only exists as a datastore for
+    /// the EveBox server, so it is implicitly disabled when the
+    /// server is disabled or using an external datastore.
+    pub(crate) fn elasticsearch_enabled(&self) -> bool {
+        self.evebox_server.enabled
+            && !self.evebox_server.use_external_elasticsearch
+            && self.elasticsearch.enabled
+    }
+
     pub(crate) fn default_with_filename(filename: &Path) -> Self {
         Self {
             filename: filename.to_path_buf(),
@@ -266,6 +276,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.elasticsearch.engine, SearchEngine::OpenSearch);
+    }
+
+    #[test]
+    fn test_elasticsearch_enabled_requires_server() {
+        let mut config = Config::default();
+        config.elasticsearch.enabled = true;
+        assert!(!config.elasticsearch_enabled());
+
+        config.evebox_server.enabled = true;
+        assert!(config.elasticsearch_enabled());
+
+        config.evebox_server.use_external_elasticsearch = true;
+        assert!(!config.elasticsearch_enabled());
     }
 
     #[test]

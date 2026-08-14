@@ -3,7 +3,6 @@
 
 pub(crate) mod configure;
 pub(crate) mod containers;
-pub(crate) mod elastic;
 pub(crate) mod evebox_agent;
 pub(crate) mod evebox_server;
 pub(crate) mod other;

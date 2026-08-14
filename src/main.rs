@@ -475,7 +475,7 @@ fn start_foreground(context: &Context) -> Result<()> {
 
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
 
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         let engine = context.config.elasticsearch.engine.name();
         if let Err(err) = elastic::create_data_dir(context) {
             error!("Failed to create data directory for {}: {}", engine, err);
@@ -831,7 +831,7 @@ fn log_status(context: &Context) {
     }
 
     let engine = context.config.elasticsearch.engine.name();
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         enabled += 1;
         if context
             .manager
@@ -976,7 +976,7 @@ fn start(context: &Context) -> bool {
 
     let mut ok = true;
 
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         let engine = context.config.elasticsearch.engine.name();
         info!("Starting {}", engine);
         if let Err(err) = elastic::start_elasticsearch(context) {
@@ -1209,7 +1209,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         command.arg("--detach");
     }
 
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         command.arg(format!(
             "--link={}",
             crate::elastic::container_name(context)
@@ -1270,7 +1270,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
                 .as_deref()
                 .unwrap_or("evebox")
         ));
-    } else if context.config.elasticsearch.enabled {
+    } else if context.config.elasticsearch_enabled() {
         // Internal Elasticsearch server.
         command.arg("--env");
         command.arg("EVEBOX_ELASTICSEARCH_INDEX=evebox");
@@ -1301,7 +1301,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         if config.elasticsearch_client.disable_certificate_validation {
             command.arg("--no-check-certificate");
         }
-    } else if context.config.elasticsearch.enabled {
+    } else if context.config.elasticsearch_enabled() {
         command.arg("--elasticsearch");
         command.arg(format!(
             "http://{}:9200",
@@ -1431,7 +1431,7 @@ fn update_containers(context: &Context) -> bool {
             ok = false;
         }
     }
-    if context.config.elasticsearch.enabled {
+    if context.config.elasticsearch_enabled() {
         let image = elastic::docker_image(context);
         if let Err(err) = context.manager.pull(image) {
             error!("Failed to pull {image}: {err}");

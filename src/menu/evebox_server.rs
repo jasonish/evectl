@@ -3,7 +3,11 @@
 
 use crate::prelude::*;
 
-use crate::{config::EveBoxServerConfig, context::Context, term};
+use crate::{
+    config::{EveBoxServerConfig, SearchEngine},
+    context::Context,
+    term,
+};
 
 #[derive(Clone)]
 enum Options {
@@ -14,10 +18,29 @@ enum Options {
     EnableRemote,
     DisableRemote,
     SetBindAddress,
-    ToggleElasticsearch,
-    UseExternalElasticsearch,
+    Datastore,
+    Memory,
     ElasticsearchUrl,
     Return,
+}
+
+/// The datastore choices for the EveBox server.
+#[derive(Clone)]
+pub(crate) enum Datastore {
+    Sqlite,
+    OpenSearch,
+    Elasticsearch,
+    ExternalElasticsearch,
+}
+
+impl Datastore {
+    pub(crate) fn engine(&self) -> Option<SearchEngine> {
+        match self {
+            Datastore::OpenSearch => Some(SearchEngine::OpenSearch),
+            Datastore::Elasticsearch => Some(SearchEngine::Elasticsearch),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -40,20 +63,7 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         let mut selections = crate::prompt::Selections::with_index();
 
         if context.config.evebox_server.enabled {
-            let database = if context.config.evebox_server.use_external_elasticsearch {
-                "external elasticsearch".to_string()
-            } else if context.config.elasticsearch.enabled {
-                format!(
-                    "managed {}",
-                    context.config.elasticsearch.engine.name().to_lowercase()
-                )
-            } else {
-                "embedded sqlite".to_string()
-            };
-            selections.push(
-                Options::EnableToggle,
-                format!("Disable EveBox Server [enabled, {}]", database),
-            );
+            selections.push(Options::EnableToggle, "Disable EveBox Server [enabled]");
         } else {
             selections.push(Options::EnableToggle, "Enable EveBox Server [disabled]");
         }
@@ -97,37 +107,20 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             ),
         );
 
-        if context.config.elasticsearch.enabled {
-            selections.push(
-                Options::ToggleElasticsearch,
-                format!(
-                    "Disable Managed {} [enabled]",
-                    context.config.elasticsearch.engine.name()
-                ),
-            );
+        let datastore = if context.config.evebox_server.use_external_elasticsearch {
+            "External OpenSearch or Elasticsearch".to_string()
+        } else if context.config.elasticsearch.enabled {
+            context.config.elasticsearch.engine.name().to_string()
         } else {
-            selections.push(
-                Options::ToggleElasticsearch,
-                "Enable Managed OpenSearch/Elasticsearch [disabled]",
-            );
-        }
-
-        selections.push(
-            Options::UseExternalElasticsearch,
-            format!("Use External Elasticsearch [{}]", {
-                if context.config.evebox_server.use_external_elasticsearch {
-                    "true"
-                } else {
-                    "false"
-                }
-            }),
-        );
+            "SQLite".to_string()
+        };
+        selections.push(Options::Datastore, format!("Datastore [{}]", datastore));
 
         if context.config.evebox_server.use_external_elasticsearch {
             selections.push(
                 Options::ElasticsearchUrl,
                 format!(
-                    "External Elasticsearch URL: [{}]",
+                    "External Server URL: [{}]",
                     context
                         .config
                         .evebox_server
@@ -135,6 +128,15 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                         .url
                         .as_deref()
                         .unwrap_or("not set")
+                ),
+            );
+        } else if context.config.elasticsearch.enabled {
+            selections.push(
+                Options::Memory,
+                format!(
+                    "{} Memory Limit [{}GB]",
+                    context.config.elasticsearch.engine.name(),
+                    crate::elastic::memory_gb(context)
                 ),
             );
         }
@@ -157,8 +159,8 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 Options::EnableRemote => enable_remote_access(context),
                 Options::DisableRemote => disable_remote_access(context),
                 Options::SetBindAddress => set_bind_address(context),
-                Options::ToggleElasticsearch => toggle_elasticsearch(context)?,
-                Options::UseExternalElasticsearch => use_external_elasticsearch(context)?,
+                Options::Datastore => set_datastore(context)?,
+                Options::Memory => set_memory(context)?,
                 Options::ElasticsearchUrl => {
                     set_elasticsearch_url(context)?;
                 }
@@ -172,50 +174,86 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
     Ok(())
 }
 
-fn toggle_elasticsearch(context: &mut Context) -> Result<()> {
-    if context.config.elasticsearch.enabled {
-        context.config.elasticsearch.enabled = false;
-        return Ok(());
-    }
-
-    if context.config.evebox_server.use_external_elasticsearch {
-        warn!(
-            "Using a managed search engine will disable use of the external Elasticsearch server."
+/// Prompt for a datastore, returning None if the prompt was
+/// cancelled.
+pub(crate) fn select_datastore(include_external: bool) -> Result<Option<Datastore>> {
+    let mut selections = crate::prompt::Selections::new();
+    selections.push(Datastore::Sqlite, "SQLite (recommended)");
+    selections.push(Datastore::OpenSearch, "OpenSearch (managed by EveCtl)");
+    selections.push(
+        Datastore::Elasticsearch,
+        "Elasticsearch (managed by EveCtl)",
+    );
+    if include_external {
+        selections.push(
+            Datastore::ExternalElasticsearch,
+            "External OpenSearch or Elasticsearch",
         );
-        if !inquire::Confirm::new("Continue?")
-            .with_default(true)
-            .prompt()?
-        {
-            return Ok(());
+    }
+    let selection = inquire::Select::new("Which datastore should EveBox use?", selections.to_vec())
+        .with_help_message(
+            "SQLite is suitable for most systems, OpenSearch and Elasticsearch require more memory",
+        )
+        .prompt_skippable()?;
+    Ok(selection.map(|selection| selection.tag))
+}
+
+fn set_datastore(context: &mut Context) -> Result<()> {
+    let Some(datastore) = select_datastore(true)? else {
+        return Ok(());
+    };
+
+    let previous = (
+        context.config.elasticsearch.enabled,
+        context.config.elasticsearch.engine,
+        context.config.evebox_server.use_external_elasticsearch,
+    );
+
+    if let Datastore::ExternalElasticsearch = datastore {
+        context.config.elasticsearch.enabled = false;
+        context.config.evebox_server.use_external_elasticsearch = true;
+        set_elasticsearch_url(context)?;
+    } else {
+        context.config.evebox_server.use_external_elasticsearch = false;
+        if let Some(engine) = datastore.engine() {
+            context.config.elasticsearch.enabled = true;
+            context.config.elasticsearch.engine = engine;
+        } else {
+            context.config.elasticsearch.enabled = false;
         }
     }
 
-    if let Some(engine) = crate::menu::elastic::select_engine()? {
-        context.config.elasticsearch.engine = engine;
-        context.config.elasticsearch.enabled = true;
-        context.config.evebox_server.use_external_elasticsearch = false;
+    let current = (
+        context.config.elasticsearch.enabled,
+        context.config.elasticsearch.engine,
+        context.config.evebox_server.use_external_elasticsearch,
+    );
+    if current != previous {
+        warn!("Existing events will not be migrated to the new datastore.");
+        crate::prompt::enter();
     }
+
     Ok(())
 }
 
-fn use_external_elasticsearch(context: &mut Context) -> Result<()> {
-    if context.config.evebox_server.use_external_elasticsearch {
-        context.config.evebox_server.use_external_elasticsearch = false;
-    } else {
-        if context.config.elasticsearch.enabled {
-            warn!(
-                "Using external Elasticsearch will disable use of the managed {} server.",
-                context.config.elasticsearch.engine.name()
-            );
-            if !inquire::Confirm::new("Continue?")
-                .with_default(true)
-                .prompt()?
-            {
-                return Ok(());
-            }
+fn set_memory(context: &mut Context) -> Result<()> {
+    let memory = inquire::CustomType::<u32>::new("Memory limit in gigabytes:")
+        .with_default(crate::elastic::memory_gb(context))
+        .with_help_message("The search engine will use half of this for its heap. ESC to cancel.")
+        .prompt_skippable()?;
+    match memory {
+        None => {}
+        Some(0) => {
+            error!("Memory limit must be at least 1GB");
+            crate::prompt::enter();
         }
-        context.config.evebox_server.use_external_elasticsearch = true;
-        set_elasticsearch_url(context)?;
+        Some(memory) => {
+            context.config.elasticsearch.memory = if memory == crate::elastic::DEFAULT_MEMORY_GB {
+                None
+            } else {
+                Some(memory)
+            };
+        }
     }
     Ok(())
 }
