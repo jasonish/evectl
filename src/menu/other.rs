@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use crate::{actions, context::Context, prompt, term};
+use crate::{context::Context, term};
 
 pub(crate) fn menu(context: &Context) {
     loop {
         term::title("EveCtl: Other Menu Items");
 
         let selections = crate::prompt::Selections::with_index()
-            .push("rotate", "Force Log Rotation")
             .push("suricata-shell", "Suricata Shell")
             .push("evebox-shell", "EveBox Shell")
             .push("return", "Return")
@@ -18,10 +17,6 @@ pub(crate) fn menu(context: &Context) {
             Err(_) => return,
             Ok(selection) => match selection.tag {
                 "return" => return,
-                "rotate" => {
-                    actions::force_suricata_logrotate(context);
-                    prompt::enter();
-                }
                 "suricata-shell" => {
                     let _ = context
                         .manager

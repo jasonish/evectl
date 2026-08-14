@@ -544,6 +544,7 @@ fn start_foreground(context: &Context) -> Result<()> {
 
     if context.config.suricata.enabled {
         suricata::mkdirs(context)?;
+        suricata::remove_engine_log(context);
         let mut command = match build_suricata_command(context, false) {
             Ok(command) => command,
             Err(err) => {
@@ -583,7 +584,7 @@ fn start_foreground(context: &Context) -> Result<()> {
         }
     }
 
-    if context.config.suricata.enabled {
+    if context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::File {
         let now = std::time::Instant::now();
         loop {
             if !context
@@ -592,7 +593,7 @@ fn start_foreground(context: &Context) -> Result<()> {
             {
                 if now.elapsed().as_secs() > 3 {
                     error!(
-                        "Timed out waiting for the Suricata container to start running, not starting log rotation"
+                        "Timed out waiting for the Suricata container to start running, not starting EVE spool pruning"
                     );
                     break;
                 } else {
@@ -600,8 +601,8 @@ fn start_foreground(context: &Context) -> Result<()> {
                 }
             }
 
-            if let Err(err) = start_suricata_logrotate(context) {
-                error!("Failed to start Suricata log rotation: {err}");
+            if let Err(err) = start_suricata_spool_prune(context) {
+                error!("Failed to start EVE spool pruning: {err}");
             }
             break;
         }
@@ -1113,11 +1114,17 @@ fn suricata_set_args(config: &[String], eve_output: EveOutput) -> Result<Vec<Str
     }
     for path in eve_log_paths {
         set_args.push(format!("{path}.suricata-version=true"));
+        set_args.push(format!("{path}.enabled=true"));
         if eve_output == EveOutput::UnixStream {
-            set_args.push(format!("{path}.enabled=true"));
             set_args.push(format!("{path}.threaded=false"));
             set_args.push(format!("{path}.filetype=unix_stream"));
             set_args.push(format!("{path}.filename={EVE_SOCKET_CONTAINER_PATH}"));
+        } else {
+            // Timestamped spool files, rotated by Suricata and
+            // deleted by EveBox once processed.
+            set_args.push(format!("{path}.threaded=true"));
+            set_args.push(format!("{path}.filename=eve.json.%s"));
+            set_args.push(format!("{path}.rotate-interval=minute"));
         }
     }
     Ok(set_args)
@@ -1144,20 +1151,29 @@ fn start_suricata_detached(context: &Context) -> Result<()> {
         .manager
         .quiet_rm(&crate::suricata::container_name(context));
     suricata::mkdirs(context)?;
+    suricata::remove_engine_log(context);
     let mut command = build_suricata_command(context, true)?;
     let output = command.output()?;
     if !output.status.success() {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
-    if let Err(err) = start_suricata_logrotate(context) {
-        error!("{}", err);
+    if context.config.suricata.eve_output == EveOutput::File
+        && let Err(err) = start_suricata_spool_prune(context)
+    {
+        error!("Failed to start EVE spool pruning: {err}");
     }
+
     Ok(())
 }
 
-fn start_suricata_logrotate(context: &Context) -> Result<()> {
-    info!("Starting Suricata log rotation");
+/// Start the EVE spool file pruner in the Suricata container.
+///
+/// EveBox deletes spool files as it processes them, but nothing does
+/// when a local EveBox isn't running (not configured, or died), so as
+/// a disk usage backstop delete spool files older than an hour.
+fn start_suricata_spool_prune(context: &Context) -> Result<()> {
+    info!("Starting Suricata EVE spool pruning");
     match context
         .manager
         .command()
@@ -1167,7 +1183,7 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
             &crate::suricata::container_name(context),
             "bash",
             "-c",
-            "while true; do logrotate -v /etc/logrotate.d/suricata > /tmp/last_logrotate 2>&1; sleep 600; done",
+            "while true; do find /var/log/suricata -name 'eve.json.*' ! -name '*.bookmark' -mmin +60 -delete; sleep 300; done",
         ])
         .output()
     {
@@ -1176,7 +1192,7 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
                 bail!(String::from_utf8_lossy(&output.stderr).to_string());
             }
         }
-        Err(err) => bail!("Failed to initialize log rotation: {err}"),
+        Err(err) => bail!("Failed to initialize EVE spool pruning: {err}"),
     }
     Ok(())
 }
@@ -1236,6 +1252,8 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         configs::write_evebox_server_socket_config(
             &host_config_directory.join("evectl-input.yaml"),
         )?;
+    } else {
+        configs::write_evebox_server_file_config(&host_config_directory.join("evectl-input.yaml"))?;
     }
     command.arg(format!(
         "--volume={}:/config",
@@ -1278,10 +1296,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     command.arg(context.image_name(Container::EveBox));
     command.args(["evebox", "server"]);
-
-    if use_socket {
-        command.args(["--config", "/config/evectl-input.yaml"]);
-    }
+    command.args(["--config", "/config/evectl-input.yaml"]);
 
     if context.config.evebox_server.no_tls {
         command.arg("--no-tls");
@@ -1313,9 +1328,6 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     command.arg("--data-directory=/data");
     command.arg("--config-directory=/config");
-    if !use_socket {
-        command.arg("/var/log/suricata/eve.json");
-    }
 
     Ok(command)
 }
@@ -1343,15 +1355,17 @@ fn build_evebox_agent_command(context: &Context, detatched: bool) -> Result<proc
         format!("{}:/var/lib/evebox", libdir.display()),
     ];
 
+    let configdir = context.config_dir().join("evebox").join("agent");
     if use_socket {
         let rundir = context.data_dir().join("suricata").join("run");
         std::fs::create_dir_all(&rundir)?;
         volumes.push(format!("{}:/var/run/suricata", rundir.display()));
 
-        let configdir = context.config_dir().join("evebox").join("agent");
         configs::write_evebox_agent_socket_config(&configdir.join("evectl-input.yaml"))?;
-        volumes.push(format!("{}:/config", configdir.display()));
+    } else {
+        configs::write_evebox_agent_file_config(&configdir.join("evectl-input.yaml"))?;
     }
+    volumes.push(format!("{}:/config", configdir.display()));
 
     for volume in volumes {
         args.add(format!("--volume={}", volume));
@@ -1363,20 +1377,13 @@ fn build_evebox_agent_command(context: &Context, detatched: bool) -> Result<proc
 
     args.add(context.image_name(Container::EveBox));
     args.extend(&["evebox", "agent"]);
-
-    if use_socket {
-        args.extend(&["--config", "/config/evectl-input.yaml"]);
-    }
+    args.extend(&["--config", "/config/evectl-input.yaml"]);
 
     args.add("--server");
     args.add(&context.config.evebox_agent.server);
 
     if context.config.evebox_agent.disable_certificate_validation {
         args.add("--disable-certificate-check");
-    }
-
-    if !use_socket {
-        args.add("/var/log/suricata/eve.json");
     }
 
     let mut command = context.manager.command();
@@ -1611,15 +1618,17 @@ mod tests {
     }
 
     #[test]
-    fn suricata_file_output_preserves_existing_transport() {
+    fn suricata_file_output_configures_timestamped_spool() {
         let config = ["outputs.3 = eve-log"].map(str::to_string);
 
         let set_args = suricata_set_args(&config, EveOutput::File).unwrap();
 
         assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.enabled=true".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.threaded=true".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.filename=eve.json.%s".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.rotate-interval=minute".to_string()));
         assert!(!set_args.iter().any(|arg| arg.contains(".filetype=")));
-        assert!(!set_args.iter().any(|arg| arg.contains(".filename=")));
-        assert!(!set_args.iter().any(|arg| arg.contains(".threaded=")));
     }
 
     #[test]
@@ -1679,13 +1688,47 @@ mod tests {
         let file_server = build_evebox_server_command(&file_context, true).unwrap();
         let file_args = command_args(&file_server);
         assert!(!file_args.contains(&"--user=0:998".to_string()));
-        assert!(!file_args.contains(&"/config/evectl-input.yaml".to_string()));
-        assert!(file_args.contains(&"/var/log/suricata/eve.json".to_string()));
+        assert!(file_args.contains(&"/config/evectl-input.yaml".to_string()));
+        assert!(!file_args.contains(&"/var/log/suricata/eve.json".to_string()));
         assert!(
             !file_args
                 .iter()
                 .any(|arg| arg.contains("/var/run/suricata"))
         );
+        let server_input = std::fs::read_to_string(
+            file_context
+                .config_dir()
+                .join("evebox")
+                .join("server")
+                .join("evectl-input.yaml"),
+        )
+        .unwrap();
+        assert!(server_input.contains("eve.json.[0-9]*"));
+        assert!(server_input.contains("delete-spool-files: true"));
+
+        let mut file_agent_config = Config::default();
+        file_agent_config.suricata.enabled = true;
+        file_agent_config.suricata.eve_output = EveOutput::File;
+        file_agent_config.evebox_agent.enabled = true;
+        file_agent_config.evebox_agent.server = "https://evebox.example".to_string();
+        let (_file_agent_root, file_agent_context) = docker_context(file_agent_config);
+
+        let file_agent = build_evebox_agent_command(&file_agent_context, true).unwrap();
+        let file_agent_args = command_args(&file_agent);
+        assert!(!file_agent_args.contains(&"--user=0:998".to_string()));
+        assert!(file_agent_args.contains(&"/config/evectl-input.yaml".to_string()));
+        assert!(!file_agent_args.contains(&"/var/log/suricata/eve.json".to_string()));
+        let agent_input = std::fs::read_to_string(
+            file_agent_context
+                .config_dir()
+                .join("evebox")
+                .join("agent")
+                .join("evectl-input.yaml"),
+        )
+        .unwrap();
+        assert!(agent_input.contains("data-directory: /var/lib/evebox"));
+        assert!(agent_input.contains("eve.json.[0-9]*"));
+        assert!(agent_input.contains("delete-spool-files: true"));
     }
 
     #[test]

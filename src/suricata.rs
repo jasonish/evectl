@@ -38,3 +38,19 @@ pub(crate) fn mkdirs(context: &Context) -> Result<()> {
 
     Ok(())
 }
+
+/// Remove the Suricata engine log (suricata.log). Done on each start
+/// of Suricata to keep it from growing unbounded, as log rotation is
+/// no longer used.
+pub(crate) fn remove_engine_log(context: &Context) {
+    let path = context
+        .data_dir()
+        .join("suricata")
+        .join("log")
+        .join("suricata.log");
+    if path.exists()
+        && let Err(err) = std::fs::remove_file(&path)
+    {
+        warn!("Failed to remove {}: {}", path.display(), err);
+    }
+}

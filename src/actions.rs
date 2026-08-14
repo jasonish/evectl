@@ -11,20 +11,6 @@ use crate::container::{CommandExt, SuricataContainer};
 use crate::context::Context;
 use crate::ruleindex::RuleIndex;
 
-pub(crate) fn force_suricata_logrotate(context: &Context) {
-    let _ = context
-        .manager
-        .command()
-        .args([
-            "exec",
-            &crate::suricata::container_name(context),
-            "logrotate",
-            "-fv",
-            "/etc/logrotate.d/suricata",
-        ])
-        .status();
-}
-
 pub(crate) fn load_rule_index(context: &Context) -> Result<RuleIndex> {
     let container = SuricataContainer::new(context.clone());
     let output = container
