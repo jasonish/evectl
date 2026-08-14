@@ -88,15 +88,32 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                     set_bpf_filter(config);
                 }
                 Options::EveOutput => {
-                    config.suricata.eve_output = match config.suricata.eve_output {
-                        EveOutput::UnixStream => EveOutput::File,
-                        EveOutput::File => EveOutput::UnixStream,
-                    };
+                    set_eve_output(config)?;
                 }
                 Options::Exit => break,
             },
             Err(_) => break,
         }
+    }
+
+    Ok(())
+}
+
+fn set_eve_output(config: &mut Config) -> Result<()> {
+    let mut selections = Selections::new();
+    selections.push(EveOutput::UnixStream, EveOutput::UnixStream.name());
+    selections.push(EveOutput::File, EveOutput::File.name());
+
+    let current = match config.suricata.eve_output {
+        EveOutput::UnixStream => 0,
+        EveOutput::File => 1,
+    };
+
+    if let Some(selection) = inquire::Select::new("Select EVE output", selections.to_vec())
+        .with_starting_cursor(current)
+        .prompt_skippable()?
+    {
+        config.suricata.eve_output = selection.tag;
     }
 
     Ok(())
