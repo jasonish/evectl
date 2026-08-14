@@ -138,7 +138,7 @@ pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
     context
         .manager
         .quiet_rm(&crate::evebox::agent::container_name(context));
-    let mut command = build_evebox_agent_command(context, true);
+    let mut command = build_evebox_agent_command(context, true)?;
     let output = command.output()?;
     if !output.status.success() {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());

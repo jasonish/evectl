@@ -14,8 +14,11 @@ use prelude::*;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use config::EveOutput;
 use container::{Container, ContainerManager, SuricataContainer};
 use logs::LogArgs;
+
+const EVE_SOCKET_CONTAINER_PATH: &str = "/var/run/suricata/eve.sock";
 
 mod actions;
 mod config;
@@ -421,11 +424,29 @@ fn command_start(context: &Context, debug: bool) -> i32 {
     0
 }
 
+fn uses_eve_socket(context: &Context) -> bool {
+    context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::UnixStream
+}
+
+fn validate_start_configuration(context: &Context) -> Result<()> {
+    if !uses_eve_socket(context) {
+        return Ok(());
+    }
+
+    if context.config.evebox_server.enabled == context.config.evebox_agent.enabled {
+        bail!(
+            "Unix-stream EVE output requires exactly one local EveBox Server or Agent; enable one or set eve-output = \"file\" under [suricata]"
+        );
+    }
+    Ok(())
+}
+
 /// Start EveCtl in the foreground.
 ///
 /// Typically not done from the menus but instead the command line.
 fn start_foreground(context: &Context) -> Result<()> {
     info!("Starting services in the foreground");
+    validate_start_configuration(context)?;
 
     let _ = context
         .manager
@@ -453,37 +474,6 @@ fn start_foreground(context: &Context) -> Result<()> {
     let mut children = vec![];
 
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
-
-    if context.config.suricata.enabled {
-        suricata::mkdirs(context)?;
-        let mut command = match build_suricata_command(context, false) {
-            Ok(command) => command,
-            Err(err) => {
-                error!("Invalid Suricata configuration: {}", err);
-                return Err(err);
-            }
-        };
-
-        info!("Starting Suricata: {:?}", &command);
-
-        let mut child = match command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(err) => {
-                error!("Failed to spawn Suricata process: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        process_output_handler(&mut child, "suricata", tx.clone());
-
-        children.push(("suricata", child));
-    } else {
-        info!("Suricata not enabled");
-    }
 
     if context.config.elasticsearch.enabled {
         let engine = context.config.elasticsearch.engine.name();
@@ -533,7 +523,7 @@ fn start_foreground(context: &Context) -> Result<()> {
     }
 
     if context.config.evebox_agent.enabled {
-        let mut command = build_evebox_agent_command(context, false);
+        let mut command = build_evebox_agent_command(context, false)?;
         let mut child = match command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -550,6 +540,37 @@ fn start_foreground(context: &Context) -> Result<()> {
         children.push(("evebox-agent", child));
     } else {
         info!("EveBox-Agent not enabled");
+    }
+
+    if context.config.suricata.enabled {
+        suricata::mkdirs(context)?;
+        let mut command = match build_suricata_command(context, false) {
+            Ok(command) => command,
+            Err(err) => {
+                error!("Invalid Suricata configuration: {}", err);
+                return Err(err);
+            }
+        };
+
+        info!("Starting Suricata: {:?}", &command);
+
+        let mut child = match command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(process) => process,
+            Err(err) => {
+                error!("Failed to spawn Suricata process: {}", err);
+                return Err(err.into());
+            }
+        };
+
+        process_output_handler(&mut child, "suricata", tx.clone());
+
+        children.push(("suricata", child));
+    } else {
+        info!("Suricata not enabled");
     }
 
     {
@@ -948,15 +969,12 @@ fn restart(context: &Context) {
 /// Returns true if everything started successfully, otherwise false
 /// is return.
 fn start(context: &Context) -> bool {
-    let mut ok = true;
-
-    if context.config.suricata.enabled {
-        info!("Starting Suricata");
-        if let Err(err) = start_suricata_detached(context) {
-            error!("Failed to start Suricata: {}", err);
-            ok = false;
-        }
+    if let Err(err) = validate_start_configuration(context) {
+        error!("Invalid configuration: {err}");
+        return false;
     }
+
+    let mut ok = true;
 
     if context.config.elasticsearch.enabled {
         let engine = context.config.elasticsearch.engine.name();
@@ -983,12 +1001,20 @@ fn start(context: &Context) -> bool {
         }
     }
 
+    if context.config.suricata.enabled {
+        info!("Starting Suricata");
+        if let Err(err) = start_suricata_detached(context) {
+            error!("Failed to start Suricata: {}", err);
+            ok = false;
+        }
+    }
+
     ok
 }
 
 fn build_suricata_command(context: &Context, detached: bool) -> Result<std::process::Command> {
     let config = suricata_dump_config(context)?;
-    let set_args = suricata_set_args(&config)?;
+    let set_args = suricata_set_args(&config, context.config.suricata.eve_output)?;
 
     let interface = match context.config.suricata.interfaces.first() {
         Some(interface) => interface,
@@ -1048,7 +1074,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     Ok(command)
 }
 
-fn suricata_set_args(config: &[String]) -> Result<Vec<String>> {
+fn suricata_set_args(config: &[String], eve_output: EveOutput) -> Result<Vec<String>> {
     let mut set_args: Vec<String> = vec![
         "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
         "app-layer.protocols.quic.ja4-fingerprints=true".to_string(),
@@ -1087,6 +1113,12 @@ fn suricata_set_args(config: &[String]) -> Result<Vec<String>> {
     }
     for path in eve_log_paths {
         set_args.push(format!("{path}.suricata-version=true"));
+        if eve_output == EveOutput::UnixStream {
+            set_args.push(format!("{path}.enabled=true"));
+            set_args.push(format!("{path}.threaded=false"));
+            set_args.push(format!("{path}.filetype=unix_stream"));
+            set_args.push(format!("{path}.filename={EVE_SOCKET_CONTAINER_PATH}"));
+        }
     }
     Ok(set_args)
 }
@@ -1151,10 +1183,15 @@ fn start_suricata_logrotate(context: &Context) -> Result<()> {
 
 fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<process::Command> {
     let config = &context.config.evebox_server;
+    let use_socket = uses_eve_socket(context);
     let mut command = context.manager.command();
     command.arg("run");
     command.arg("--name");
     command.arg(crate::evebox::server::container_name(context));
+
+    if use_socket {
+        command.arg("--user=0:998");
+    }
 
     let publish_arg = if context.config.evebox_server.allow_remote {
         if let Some(bind_value) = &config.bind_address {
@@ -1184,8 +1221,22 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         context.data_dir().join("suricata").join("log").display()
     ));
 
+    if use_socket {
+        let host_run_directory = context.data_dir().join("suricata").join("run");
+        std::fs::create_dir_all(&host_run_directory)?;
+        command.arg(format!(
+            "--volume={}:/var/run/suricata",
+            host_run_directory.display()
+        ));
+    }
+
     let host_config_directory = context.config_dir().join("evebox").join("server");
     std::fs::create_dir_all(&host_config_directory).unwrap();
+    if use_socket {
+        configs::write_evebox_server_socket_config(
+            &host_config_directory.join("evectl-input.yaml"),
+        )?;
+    }
     command.arg(format!(
         "--volume={}:/config",
         host_config_directory.display()
@@ -1228,6 +1279,10 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     command.arg(context.image_name(Container::EveBox));
     command.args(["evebox", "server"]);
 
+    if use_socket {
+        command.args(["--config", "/config/evectl-input.yaml"]);
+    }
+
     if context.config.evebox_server.no_tls {
         command.arg("--no-tls");
     }
@@ -1258,12 +1313,15 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     command.arg("--data-directory=/data");
     command.arg("--config-directory=/config");
-    command.arg("/var/log/suricata/eve.json");
+    if !use_socket {
+        command.arg("/var/log/suricata/eve.json");
+    }
 
     Ok(command)
 }
 
-fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Command {
+fn build_evebox_agent_command(context: &Context, detatched: bool) -> Result<process::Command> {
+    let use_socket = uses_eve_socket(context);
     let mut args = ArgBuilder::from(&[
         "run",
         "--name",
@@ -1273,13 +1331,27 @@ fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Co
         args.add("-d");
     }
 
+    if use_socket {
+        args.add("--user=0:998");
+    }
+
     let libdir = context.data_dir().join("evebox").join("agent");
     let logdir = context.data_dir().join("suricata").join("log");
 
-    let volumes = vec![
+    let mut volumes = vec![
         format!("{}:/var/log/suricata", logdir.display()),
         format!("{}:/var/lib/evebox", libdir.display()),
     ];
+
+    if use_socket {
+        let rundir = context.data_dir().join("suricata").join("run");
+        std::fs::create_dir_all(&rundir)?;
+        volumes.push(format!("{}:/var/run/suricata", rundir.display()));
+
+        let configdir = context.config_dir().join("evebox").join("agent");
+        configs::write_evebox_agent_socket_config(&configdir.join("evectl-input.yaml"))?;
+        volumes.push(format!("{}:/config", configdir.display()));
+    }
 
     for volume in volumes {
         args.add(format!("--volume={}", volume));
@@ -1292,6 +1364,10 @@ fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Co
     args.add(context.image_name(Container::EveBox));
     args.extend(&["evebox", "agent"]);
 
+    if use_socket {
+        args.extend(&["--config", "/config/evectl-input.yaml"]);
+    }
+
     args.add("--server");
     args.add(&context.config.evebox_agent.server);
 
@@ -1299,11 +1375,13 @@ fn build_evebox_agent_command(context: &Context, detatched: bool) -> process::Co
         args.add("--disable-certificate-check");
     }
 
-    args.add("/var/log/suricata/eve.json");
+    if !use_socket {
+        args.add("/var/log/suricata/eve.json");
+    }
 
     let mut command = context.manager.command();
     command.args(&args.args);
-    command
+    Ok(command)
 }
 
 fn start_evebox_server_detached(context: &Context) -> Result<()> {
@@ -1475,6 +1553,23 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    fn docker_context(config: Config) -> (tempfile::TempDir, Context) {
+        let root = tempfile::tempdir().unwrap();
+        let context = Context::new(
+            config,
+            root.path().to_path_buf(),
+            ContainerManager::Docker(container::DockerManager::new()),
+        );
+        (root, context)
+    }
+
+    fn command_args(command: &process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn suricata_output_overrides_disable_everything_except_eve_log() {
         let config = [
@@ -1491,12 +1586,18 @@ mod tests {
         ]
         .map(str::to_string);
 
-        let set_args = suricata_set_args(&config).unwrap();
+        let set_args = suricata_set_args(&config, EveOutput::UnixStream).unwrap();
 
         assert!(set_args.contains(&"outputs.7.fast.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.12.stats.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.14.pcap-log.enabled=false".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.enabled=true".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.threaded=false".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.filetype=unix_stream".to_string()));
+        assert!(
+            set_args.contains(&"outputs.3.eve-log.filename=/var/run/suricata/eve.sock".to_string())
+        );
         assert!(set_args.contains(&"outputs.3.eve-log.types.8.tls.ja4=true".to_string()));
         assert_eq!(
             set_args
@@ -1507,6 +1608,84 @@ mod tests {
         );
         assert!(!set_args.contains(&"outputs.3.eve-log.enabled=false".to_string()));
         assert!(!set_args.iter().any(|arg| arg.starts_with("logging.")));
+    }
+
+    #[test]
+    fn suricata_file_output_preserves_existing_transport() {
+        let config = ["outputs.3 = eve-log"].map(str::to_string);
+
+        let set_args = suricata_set_args(&config, EveOutput::File).unwrap();
+
+        assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
+        assert!(!set_args.iter().any(|arg| arg.contains(".filetype=")));
+        assert!(!set_args.iter().any(|arg| arg.contains(".filename=")));
+        assert!(!set_args.iter().any(|arg| arg.contains(".threaded=")));
+    }
+
+    #[test]
+    fn unix_stream_requires_exactly_one_local_consumer() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        let (_root, mut context) = docker_context(config);
+
+        assert!(validate_start_configuration(&context).is_err());
+
+        context.config.evebox_server.enabled = true;
+        assert!(validate_start_configuration(&context).is_ok());
+
+        context.config.evebox_agent.enabled = true;
+        assert!(validate_start_configuration(&context).is_err());
+
+        context.config.suricata.eve_output = EveOutput::File;
+        assert!(validate_start_configuration(&context).is_ok());
+    }
+
+    #[test]
+    fn evebox_commands_switch_between_socket_and_file_inputs() {
+        let mut socket_config = Config::default();
+        socket_config.suricata.enabled = true;
+        socket_config.evebox_server.enabled = true;
+        let (_socket_root, socket_context) = docker_context(socket_config);
+
+        let server = build_evebox_server_command(&socket_context, true).unwrap();
+        let server_args = command_args(&server);
+        assert!(server_args.contains(&"--user=0:998".to_string()));
+        assert!(server_args.contains(&"/config/evectl-input.yaml".to_string()));
+        assert!(!server_args.contains(&"/var/log/suricata/eve.json".to_string()));
+        assert!(
+            server_args
+                .iter()
+                .any(|arg| { arg.ends_with("/data/suricata/run:/var/run/suricata") })
+        );
+
+        let mut agent_config = Config::default();
+        agent_config.suricata.enabled = true;
+        agent_config.evebox_agent.enabled = true;
+        agent_config.evebox_agent.server = "https://evebox.example".to_string();
+        let (_agent_root, agent_context) = docker_context(agent_config);
+
+        let agent = build_evebox_agent_command(&agent_context, true).unwrap();
+        let agent_args = command_args(&agent);
+        assert!(agent_args.contains(&"--user=0:998".to_string()));
+        assert!(agent_args.contains(&"/config/evectl-input.yaml".to_string()));
+        assert!(!agent_args.contains(&"/var/log/suricata/eve.json".to_string()));
+
+        let mut file_config = Config::default();
+        file_config.suricata.enabled = true;
+        file_config.suricata.eve_output = EveOutput::File;
+        file_config.evebox_server.enabled = true;
+        let (_file_root, file_context) = docker_context(file_config);
+
+        let file_server = build_evebox_server_command(&file_context, true).unwrap();
+        let file_args = command_args(&file_server);
+        assert!(!file_args.contains(&"--user=0:998".to_string()));
+        assert!(!file_args.contains(&"/config/evectl-input.yaml".to_string()));
+        assert!(file_args.contains(&"/var/log/suricata/eve.json".to_string()));
+        assert!(
+            !file_args
+                .iter()
+                .any(|arg| arg.contains("/var/run/suricata"))
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use colored::Colorize;
 
+use crate::config::EveOutput;
 use crate::context::Context;
 use crate::prelude::*;
 use crate::prompt::Selections;
@@ -14,6 +15,7 @@ enum Options {
     Interface,
     SensorName,
     Bpf,
+    EveOutput,
     Exit,
 }
 
@@ -60,6 +62,14 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
         };
         selections.push(Options::Bpf, format!("BPF filter{}", current_bpf));
 
+        selections.push(
+            Options::EveOutput,
+            format!(
+                "EVE output (current: {})",
+                config.suricata.eve_output.name()
+            ),
+        );
+
         selections.push(Options::Exit, "Return");
 
         match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec()).prompt() {
@@ -76,6 +86,12 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 }
                 Options::Bpf => {
                     set_bpf_filter(config);
+                }
+                Options::EveOutput => {
+                    config.suricata.eve_output = match config.suricata.eve_output {
+                        EveOutput::UnixStream => EveOutput::File,
+                        EveOutput::File => EveOutput::UnixStream,
+                    };
                 }
                 Options::Exit => break,
             },

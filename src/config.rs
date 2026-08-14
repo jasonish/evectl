@@ -46,6 +46,27 @@ pub(crate) struct SuricataConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub sensor_name: Option<String>,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub eve_output: EveOutput,
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum EveOutput {
+    #[default]
+    #[serde(rename = "unix-stream")]
+    UnixStream,
+    #[serde(rename = "file")]
+    File,
+}
+
+impl EveOutput {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::UnixStream => "Unix stream",
+            Self::File => "File",
+        }
+    }
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -245,6 +266,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.elasticsearch.engine, SearchEngine::OpenSearch);
+    }
+
+    #[test]
+    fn eve_output_defaults_to_unix_stream_with_file_opt_out() {
+        let default = Config::parse_toml("[suricata]\nenabled = true\n").unwrap();
+        assert_eq!(default.suricata.eve_output, EveOutput::UnixStream);
+
+        let file = Config::parse_toml(
+            r#"
+            [suricata]
+            eve-output = "file"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(file.suricata.eve_output, EveOutput::File);
+        assert!(
+            toml::to_string(&file)
+                .unwrap()
+                .contains("eve-output = \"file\"")
+        );
     }
 
     #[test]
