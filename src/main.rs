@@ -988,36 +988,7 @@ fn start(context: &Context) -> bool {
 
 fn build_suricata_command(context: &Context, detached: bool) -> Result<std::process::Command> {
     let config = suricata_dump_config(context)?;
-    let mut set_args: Vec<String> = vec![
-        "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
-        "app-layer.protocols.quic.ja4-fingerprints=true".to_string(),
-    ];
-    let mut eve_log_paths = BTreeSet::new();
-    let eve_log_pattern = regex::Regex::new(r"(outputs\.\d+\.eve-log)(?:\s|\.)")?;
-    let patterns = &[
-        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.tls)\s")?,
-        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.quic)\s")?,
-        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.dhcp)\s")?,
-    ];
-    for line in &config {
-        if let Some(c) = eve_log_pattern.captures(line) {
-            eve_log_paths.insert(c[1].to_string());
-        }
-
-        for r in patterns {
-            if let Some(c) = r.captures(line) {
-                let path = &c[1];
-                if path.ends_with(".dhcp") {
-                    set_args.push(format!("{path}.extended=true"));
-                } else {
-                    set_args.push(format!("{path}.ja4=true"));
-                }
-            }
-        }
-    }
-    for path in eve_log_paths {
-        set_args.push(format!("{path}.suricata-version=true"));
-    }
+    let set_args = suricata_set_args(&config)?;
 
     let interface = match context.config.suricata.interfaces.first() {
         Some(interface) => interface,
@@ -1075,6 +1046,49 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     let mut command = context.manager.command();
     command.args(&args.args);
     Ok(command)
+}
+
+fn suricata_set_args(config: &[String]) -> Result<Vec<String>> {
+    let mut set_args: Vec<String> = vec![
+        "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
+        "app-layer.protocols.quic.ja4-fingerprints=true".to_string(),
+    ];
+    let mut eve_log_paths = BTreeSet::new();
+    let mut disabled_output_paths = BTreeSet::new();
+    let output_pattern = regex::Regex::new(r"^(outputs\.\d+) = ([a-zA-Z0-9_-]+)$")?;
+    let patterns = &[
+        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.tls)\s")?,
+        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.quic)\s")?,
+        regex::Regex::new(r"(outputs\.\d+\.eve-log\.types\.\d+\.dhcp)\s")?,
+    ];
+    for line in config {
+        if let Some(c) = output_pattern.captures(line) {
+            let path = format!("{}.{}", &c[1], &c[2]);
+            if &c[2] == "eve-log" {
+                eve_log_paths.insert(path);
+            } else {
+                disabled_output_paths.insert(path);
+            }
+        }
+
+        for r in patterns {
+            if let Some(c) = r.captures(line) {
+                let path = &c[1];
+                if path.ends_with(".dhcp") {
+                    set_args.push(format!("{path}.extended=true"));
+                } else {
+                    set_args.push(format!("{path}.ja4=true"));
+                }
+            }
+        }
+    }
+    for path in disabled_output_paths {
+        set_args.push(format!("{path}.enabled=false"));
+    }
+    for path in eve_log_paths {
+        set_args.push(format!("{path}.suricata-version=true"));
+    }
+    Ok(set_args)
 }
 
 fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
@@ -1460,6 +1474,40 @@ fn print(what: String) -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn suricata_output_overrides_disable_everything_except_eve_log() {
+        let config = [
+            "outputs.7 = fast",
+            "outputs.7.fast.enabled = yes",
+            "outputs.3 = eve-log",
+            "outputs.3.eve-log.types.8.tls = (null)",
+            "outputs.3.eve-log.types.32.stats = (null)",
+            "outputs.12 = stats",
+            "outputs.12.stats.enabled = yes",
+            "outputs.14 = pcap-log",
+            "outputs.14.pcap-log.enabled = no",
+            "logging.outputs.1.file.enabled = yes",
+        ]
+        .map(str::to_string);
+
+        let set_args = suricata_set_args(&config).unwrap();
+
+        assert!(set_args.contains(&"outputs.7.fast.enabled=false".to_string()));
+        assert!(set_args.contains(&"outputs.12.stats.enabled=false".to_string()));
+        assert!(set_args.contains(&"outputs.14.pcap-log.enabled=false".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
+        assert!(set_args.contains(&"outputs.3.eve-log.types.8.tls.ja4=true".to_string()));
+        assert_eq!(
+            set_args
+                .iter()
+                .filter(|arg| arg.ends_with(".enabled=false"))
+                .count(),
+            3
+        );
+        assert!(!set_args.contains(&"outputs.3.eve-log.enabled=false".to_string()));
+        assert!(!set_args.iter().any(|arg| arg.starts_with("logging.")));
+    }
 
     #[test]
     fn update_continuation_args_preserve_runtime_flags() {
