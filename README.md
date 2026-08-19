@@ -3,10 +3,6 @@
 EveCtl is a tool to easily run Suricata and EveBox Linux systems
 using Docker or Podman.
 
-This program is considered experimental and many things may change,
-break, change name (I'm thinking simpleids is better), change repo,
-etc, etc... And I might even force push!
-
 ## System Requirements
 
 - An x86_64 or Aarch64 based Linux distribution with Docker or
