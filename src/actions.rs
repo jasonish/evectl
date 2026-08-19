@@ -92,8 +92,13 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
     }
 
     info!("Updating Suricata rules...");
-    let mut args = vec!["suricata-update"];
-    args.extend_from_slice(extra_args);
+    let suricata_running = context
+        .manager
+        .is_running(&crate::suricata::container_name(context));
+    if !suricata_running && !extra_args.contains(&"--no-reload") {
+        info!("Suricata is not running; skipping rule reload");
+    }
+    let args = build_update_args(extra_args, suricata_running);
     if let Err(err) = container
         .run()
         .rm()
@@ -106,6 +111,15 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
         error!("Rule update did not complete successfully: {err}");
     }
     Ok(())
+}
+
+fn build_update_args<'a>(extra_args: &[&'a str], suricata_running: bool) -> Vec<&'a str> {
+    let mut args = vec!["suricata-update"];
+    args.extend_from_slice(extra_args);
+    if !suricata_running && !args.contains(&"--no-reload") {
+        args.push("--no-reload");
+    }
+    args
 }
 
 pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
@@ -144,4 +158,30 @@ pub(crate) fn _stop_evebox_agent(context: &Context) -> Result<()> {
         &crate::evebox::agent::container_name(context),
         Some("SIGINT"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_update_args;
+
+    #[test]
+    fn update_args_reload_when_suricata_is_running() {
+        assert_eq!(build_update_args(&[], true), vec!["suricata-update"]);
+    }
+
+    #[test]
+    fn update_args_skip_reload_when_suricata_is_stopped() {
+        assert_eq!(
+            build_update_args(&[], false),
+            vec!["suricata-update", "--no-reload"]
+        );
+    }
+
+    #[test]
+    fn update_args_do_not_duplicate_no_reload() {
+        assert_eq!(
+            build_update_args(&["--no-reload", "--no-test"], false),
+            vec!["suricata-update", "--no-reload", "--no-test"]
+        );
+    }
 }

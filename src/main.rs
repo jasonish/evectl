@@ -659,12 +659,12 @@ fn stop_all(context: &Context) -> bool {
         .manager
         .container_exists(&crate::suricata::container_name(context))
     {
-        info!("Stopping {}", crate::suricata::container_name(context));
+        info!("Stopping Suricata");
         if !stop_container(context, &crate::suricata::container_name(context)) {
             ok = false;
         }
     } else {
-        info!(
+        debug!(
             "Container {} is not running",
             crate::suricata::container_name(context)
         );
@@ -674,15 +674,12 @@ fn stop_all(context: &Context) -> bool {
         .manager
         .container_exists(&crate::evebox::server::container_name(context))
     {
-        info!(
-            "Stopping {}",
-            &crate::evebox::server::container_name(context)
-        );
+        info!("Stopping EveBox-Server");
         if actions::stop_evebox_server(context).is_err() {
             ok = false;
         }
     } else {
-        info!(
+        debug!(
             "Container {} is not running",
             &crate::evebox::server::container_name(context)
         );
@@ -693,19 +690,27 @@ fn stop_all(context: &Context) -> bool {
         .manager
         .container_exists(&crate::evebox::agent::container_name(context))
     {
-        info!("Stopping {}", crate::evebox::agent::container_name(context));
+        info!("Stopping EveBox-Agent");
         if !stop_container(context, &crate::evebox::agent::container_name(context)) {
             ok = false;
         }
     } else {
-        info!(
+        debug!(
             "Container {} is not running",
             crate::evebox::agent::container_name(context)
         );
     }
 
-    // Stop the search engine.
-    info!("Stopping {}", context.config.elasticsearch.engine.name());
+    // Stop both search engine container names even when the service is
+    // disabled, in case it was disabled or changed since the last start.
+    let existing_engines = elastic::existing_engines(context);
+    if existing_engines.is_empty() {
+        debug!("No search engine containers are running");
+    } else {
+        for engine in existing_engines {
+            info!("Stopping {}", engine.name());
+        }
+    }
     elastic::stop_elasticsearch(context);
 
     ok

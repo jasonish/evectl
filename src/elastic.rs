@@ -49,11 +49,26 @@ pub(crate) fn docker_image(context: &Context) -> &'static str {
 }
 
 pub(crate) fn container_name(context: &Context) -> String {
+    container_name_for(context, engine(context))
+}
+
+fn container_name_for(context: &Context, engine: SearchEngine) -> String {
     let root = context.root.file_name().unwrap().to_string_lossy();
-    match engine(context) {
+    match engine {
         SearchEngine::Elasticsearch => format!("{}-evectl-elastic", root),
         SearchEngine::OpenSearch => format!("{}-evectl-opensearch", root),
     }
+}
+
+pub(crate) fn existing_engines(context: &Context) -> Vec<SearchEngine> {
+    [SearchEngine::Elasticsearch, SearchEngine::OpenSearch]
+        .into_iter()
+        .filter(|engine| {
+            context
+                .manager
+                .container_exists(&container_name_for(context, *engine))
+        })
+        .collect()
 }
 
 /// The host directory holding the search engine data.
@@ -100,13 +115,11 @@ pub(crate) fn create_data_dir(context: &Context) -> Result<PathBuf> {
 pub(crate) fn stop_elasticsearch(context: &Context) {
     // Stop the container names of both engines so switching engines
     // doesn't leave the previous one running.
-    let root = context.root.file_name().unwrap().to_string_lossy();
-    let _ = context
-        .manager
-        .stop(&format!("{}-evectl-elastic", root), None);
-    let _ = context
-        .manager
-        .stop(&format!("{}-evectl-opensearch", root), None);
+    for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
+        let _ = context
+            .manager
+            .stop(&container_name_for(context, engine), None);
+    }
 }
 
 pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command {
