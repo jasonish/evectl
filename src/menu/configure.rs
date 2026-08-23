@@ -74,7 +74,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
                 Options::Suricata => crate::menu::suricata::menu(context)?,
                 Options::EveBoxAgent => crate::menu::evebox_agent::menu(context)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
-                Options::StartOnBoot => start_on_boot()?,
+                Options::StartOnBoot => start_on_boot(context)?,
                 Options::Return => return Ok(()),
             },
             Err(_) => break,
@@ -84,7 +84,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn start_on_boot() -> Result<()> {
+pub(crate) fn start_on_boot(context: &Context) -> Result<()> {
     if !crate::systemd::is_enabled() {
         info!("Start on boot is enabled by using sudo to install a systemd service file.");
         if !inquire::Confirm::new("Do you wish to continue?")
@@ -93,7 +93,7 @@ pub(crate) fn start_on_boot() -> Result<()> {
         {
             return Ok(());
         }
-        crate::systemd::install()?;
+        crate::systemd::install(&context.root)?;
     } else if inquire::Confirm::new("Do you wish to disable start on boot?")
         .with_default(true)
         .prompt()?

@@ -5,8 +5,7 @@ use crate::container::{CommandExt, SuricataContainer};
 use crate::prelude::*;
 
 pub(crate) fn container_name(context: &Context) -> String {
-    let parent = context.root.file_name().unwrap().to_string_lossy();
-    format!("{}-evectl-suricata", parent)
+    format!("{}-suricata", context.container_prefix())
 }
 
 pub(crate) fn mkdirs(context: &Context) -> Result<()> {

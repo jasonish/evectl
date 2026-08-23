@@ -5,6 +5,7 @@ use crate::prelude::*;
 
 use crate::container::CommandExt;
 use std::io::Write;
+use std::path::Path;
 
 const TEMPLATE: &str = r#"
 [Unit]
@@ -14,9 +15,9 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={current_exe} start
-ExecStop={current_exe} stop
-WorkingDirectory={working_directory}
+ExecStart={current_exe} -D {root} start
+ExecStop={current_exe} -D {root} stop
+WorkingDirectory={root}
 User={username}
 RemainAfterExit=true
 
@@ -26,26 +27,25 @@ WantedBy=default.target
 
 const PATH: &str = "/etc/systemd/system/evectl.service";
 
-pub(crate) fn format_template() -> Result<String> {
+pub(crate) fn format_template(root: &Path) -> Result<String> {
     let whoami = std::process::Command::new("whoami").output()?.stdout;
     let whoami = String::from_utf8(whoami)?;
     let current_exe = std::env::current_exe()?;
-    let working_directory = std::env::current_dir()?;
     let template = TEMPLATE
         .replace("{current_exe}", &current_exe.to_string_lossy())
-        .replace("{working_directory}", &working_directory.to_string_lossy())
+        .replace("{root}", &root.to_string_lossy())
         .replace("{username}", whoami.trim());
     Ok(template.trim().to_string())
 }
 
-pub(crate) fn install() -> Result<()> {
+pub(crate) fn install(root: &Path) -> Result<()> {
     info!("Using sudo to install and active {}", PATH);
     info!("You may be asked for your password to continue...");
 
     let uid = evectl::system::getuid();
 
     // Using sudo, install systemd unit file.
-    let template = format_template()?;
+    let template = format_template(root)?;
 
     // Write out template to tempfile.
     let mut tmp = tempfile::NamedTempFile::new()?;

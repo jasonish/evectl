@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{self, Child, Stdio},
     sync::mpsc::Sender,
     thread,
@@ -61,6 +61,10 @@ struct Args {
 
     #[arg(long)]
     no_root: bool,
+
+    /// Directory holding the configuration and data for an instance
+    #[arg(long, short = 'D', global = true, value_name = "DIR")]
+    data_directory: Option<PathBuf>,
 
     #[arg(long, short, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -175,10 +179,29 @@ fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
     )
 }
 
+/// Resolve the instance root directory.
+///
+/// An explicit --data-directory always wins. Otherwise an
+/// `evectl.toml` in the current directory is respected for
+/// compatibility with existing instances, falling back to the
+/// platform configuration directory (e.g., ~/.config/evectl).
+#[cfg(not(target_os = "windows"))]
+fn resolve_root(data_directory: Option<&Path>) -> Result<PathBuf> {
+    if let Some(directory) = data_directory {
+        return Ok(std::path::absolute(directory)?);
+    }
+    let current_dir = std::env::current_dir()?;
+    if current_dir.join("evectl.toml").exists() {
+        return Ok(current_dir);
+    }
+    context::default_root().ok_or_else(|| anyhow!("Could not find the configuration directory"))
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct UpdateContinuationArgs {
     podman: bool,
     no_root: bool,
+    data_directory: Option<PathBuf>,
     verbose: u8,
 }
 
@@ -188,6 +211,7 @@ impl UpdateContinuationArgs {
         Self {
             podman: manager.is_podman(),
             no_root: args.no_root,
+            data_directory: args.data_directory.clone(),
             verbose: args.verbose,
         }
     }
@@ -199,6 +223,10 @@ impl UpdateContinuationArgs {
         }
         if self.no_root {
             args.push("--no-root".to_string());
+        }
+        if let Some(directory) = &self.data_directory {
+            args.push("--data-directory".to_string());
+            args.push(directory.to_string_lossy().to_string());
         }
         for _ in 0..self.verbose {
             args.push("-v".to_string());
@@ -285,11 +313,7 @@ fn main() -> Result<()> {
     info!("Found container manager {manager}");
     let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
 
-    let root = std::env::current_dir()?;
-
-    // Config file path name. For now we use `evectl.toml` in the
-    // current directory. But the Freedesktop.org way would be
-    // ~/.config/evectl/config.toml.
+    let root = resolve_root(args.data_directory.as_deref())?;
     let config_filename = root.join("evectl.toml");
 
     let mut context = if config_filename.exists() {
@@ -303,6 +327,7 @@ fn main() -> Result<()> {
         if !inquire::Confirm::new(&prompt).with_default(true).prompt()? {
             std::process::exit(0);
         }
+        std::fs::create_dir_all(&root)?;
         let config = crate::config::Config::default_with_filename(&config_filename);
         let mut context = Context::new(config, root, manager);
         menu::wizard::wizard(&mut context)?;
@@ -416,12 +441,12 @@ fn main() -> Result<()> {
                 0
             }
             Commands::Print { what } => {
-                print(what)?;
+                print(&context, what)?;
                 0
             }
             Commands::Systemd { command } => {
                 match command {
-                    SystemdCommands::Install => systemd::install()?,
+                    SystemdCommands::Install => systemd::install(&context.root)?,
                     SystemdCommands::Remove => systemd::remove(),
                 }
                 0
@@ -1611,7 +1636,7 @@ fn init_logging(is_interactive: bool, verbose: u8) {
     }
 }
 
-fn print(what: String) -> Result<()> {
+fn print(context: &Context, what: String) -> Result<()> {
     match what.as_str() {
         "interfaces" => {
             let interfaces = evectl::system::get_interfaces()?;
@@ -1623,7 +1648,7 @@ fn print(what: String) -> Result<()> {
             }
         }
         "systemd" => {
-            println!("{}", systemd::format_template()?);
+            println!("{}", systemd::format_template(&context.root)?);
         }
         _ => {
             error!("Unknown print target: {}", what);
@@ -1810,8 +1835,15 @@ mod tests {
 
     #[test]
     fn update_continuation_args_preserve_runtime_flags() {
-        let args =
-            Args::try_parse_from(["evectl", "--no-root", "-vv", "update"]).expect("parse args");
+        let args = Args::try_parse_from([
+            "evectl",
+            "--no-root",
+            "-vv",
+            "-D",
+            "/var/lib/evectl-test",
+            "update",
+        ])
+        .expect("parse args");
         let manager = ContainerManager::Podman(container::PodmanManager::new());
 
         assert_eq!(
@@ -1819,6 +1851,7 @@ mod tests {
             UpdateContinuationArgs {
                 podman: true,
                 no_root: true,
+                data_directory: Some(PathBuf::from("/var/lib/evectl-test")),
                 verbose: 2,
             }
         );
@@ -1827,6 +1860,8 @@ mod tests {
             vec![
                 "--podman",
                 "--no-root",
+                "--data-directory",
+                "/var/lib/evectl-test",
                 "-v",
                 "-v",
                 "update",
@@ -1840,6 +1875,7 @@ mod tests {
         let args = UpdateContinuationArgs {
             podman: false,
             no_root: false,
+            data_directory: None,
             verbose: 0,
         };
 
@@ -1848,6 +1884,14 @@ mod tests {
             args.to_args(true),
             vec!["update", "--containers-only", "--return-to-menu"]
         );
+    }
+
+    #[test]
+    fn resolve_root_prefers_explicit_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = resolve_root(Some(dir.path())).unwrap();
+        assert_eq!(root, dir.path());
+        assert!(root.is_absolute());
     }
 
     #[test]

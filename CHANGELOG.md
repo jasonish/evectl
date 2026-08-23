@@ -4,6 +4,8 @@
 
 ### Added
 
+- `-D`/`--data-directory` option to select the instance directory,
+  allowing multiple instances on one host
 - OpenSearch as a bundled search-engine option alongside
   Elasticsearch, with OpenSearch now the recommended engine
 - Elasticsearch configuration menu with a configurable container
@@ -11,6 +13,12 @@
 
 ### Changed
 
+- Linux now defaults to storing configuration and data in
+  `~/.config/evectl` instead of the current directory, so it no longer
+  matters where EveCtl is run from. An existing `evectl.toml` in the
+  current directory is still respected. The systemd unit now records
+  the instance directory explicitly instead of relying on the working
+  directory
 - Enable DHCP extended Eve output and Suricata version fields by default
 - Update reqwest to 0.13: TLS certificate verification now uses the system
   trust store merged with the bundled Mozilla roots, so locally installed

@@ -49,6 +49,25 @@ impl Context {
     pub fn data_dir(&self) -> PathBuf {
         self.root.join("data")
     }
+
+    /// Prefix for container names, derived from the instance
+    /// directory name so multiple instances don't collide. The
+    /// default instance directory uses a plain "evectl" prefix.
+    pub(crate) fn container_prefix(&self) -> String {
+        if Some(&self.root) == default_root().as_ref() {
+            return "evectl".to_string();
+        }
+        match self.root.file_name() {
+            Some(name) => format!("{}-evectl", name.to_string_lossy()),
+            None => "evectl".to_string(),
+        }
+    }
+}
+
+/// The default instance root directory, e.g. ~/.config/evectl on
+/// Linux.
+pub(crate) fn default_root() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("evectl"))
 }
 
 /// Given a container type, return the image name.
@@ -69,5 +88,34 @@ pub(crate) fn image_name(config: &Config, container: Container) -> String {
             .as_deref()
             .unwrap_or(DEFAULT_EVEBOX_IMAGE)
             .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::DockerManager;
+
+    fn context_with_root(root: PathBuf) -> Context {
+        Context::new(
+            Config::default(),
+            root,
+            ContainerManager::Docker(DockerManager::new()),
+        )
+    }
+
+    #[test]
+    fn container_prefix_from_directory_name() {
+        let context = context_with_root(PathBuf::from("/home/user/sensor1"));
+        assert_eq!(context.container_prefix(), "sensor1-evectl");
+
+        // Legacy instances named "evectl" keep their prefix.
+        let context = context_with_root(PathBuf::from("/home/user/evectl"));
+        assert_eq!(context.container_prefix(), "evectl-evectl");
+
+        // The default instance directory gets a plain prefix.
+        let default = default_root().unwrap();
+        let context = context_with_root(default);
+        assert_eq!(context.container_prefix(), "evectl");
     }
 }

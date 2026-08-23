@@ -4,8 +4,7 @@
 use crate::{ArgBuilder, container::Container, prelude::*};
 
 pub(crate) fn container_name(context: &Context) -> String {
-    let prefix = context.root.file_name().unwrap().to_string_lossy();
-    format!("{}-evectl-evebox-server", prefix)
+    format!("{}-evebox-server", context.container_prefix())
 }
 
 pub(crate) fn reset_password(context: &mut Context) {

@@ -53,10 +53,10 @@ pub(crate) fn container_name(context: &Context) -> String {
 }
 
 fn container_name_for(context: &Context, engine: SearchEngine) -> String {
-    let root = context.root.file_name().unwrap().to_string_lossy();
+    let prefix = context.container_prefix();
     match engine {
-        SearchEngine::Elasticsearch => format!("{}-evectl-elastic", root),
-        SearchEngine::OpenSearch => format!("{}-evectl-opensearch", root),
+        SearchEngine::Elasticsearch => format!("{}-elastic", prefix),
+        SearchEngine::OpenSearch => format!("{}-opensearch", prefix),
     }
 }
 

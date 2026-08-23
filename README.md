@@ -23,8 +23,6 @@ native Suricata, EveBox, and Npcap installations.
 ### Linux
 
 ```bash
-mkdir ~/evectl
-cd ~/evectl
 curl -sSf https://evebox.org/evectl.sh | sh
 ./evectl
 ```
@@ -45,6 +43,23 @@ https://evebox.org/files/evectl/.
 
 On first run, follow the setup wizard and select your network
 interface, then select "Start" from the main menu.
+
+## Configuration and Data
+
+On Linux, EveCtl stores its configuration and data in
+`~/.config/evectl` by default (note that EveCtl typically runs as
+root, so this is usually `/root/.config/evectl`). On Windows the
+equivalent is `%LOCALAPPDATA%\evectl`.
+
+For compatibility with older versions, if an `evectl.toml` exists in
+the current directory it will be used instead.
+
+To run multiple instances, or to place the configuration and data
+somewhere else, use the `-D`/`--data-directory` option:
+
+```bash
+evectl -D /var/lib/evectl-sensor1
+```
 
 ## Building
 
