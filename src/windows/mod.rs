@@ -19,7 +19,7 @@ mod imp {
     use suricatax_rules::paths::PathProvider;
     use suricatax_rules::sources::SourceManager;
 
-    const NPCAP_VERSION: &str = "1.87";
+    const NPCAP_VERSION: &str = "1.88";
     const NPCAP_INSTALLED_MARKER: &str = ".evectl-npcap-installed";
     const SURICATA_VERSION: &str = "8.0.6-1";
     const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
