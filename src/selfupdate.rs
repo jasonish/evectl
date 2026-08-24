@@ -20,11 +20,9 @@ pub(crate) enum SelfUpdate {
     Updated(PathBuf),
 }
 
-fn should_skip_update_check() -> bool {
-    if env::var("CARGO").is_ok() || env::var_os("EVECTL_SKIP_UPDATE_CHECK").is_some() {
-        return true;
-    }
-
+/// True if the executable lives in this project's Cargo target
+/// directory, i.e. is a development build.
+pub(crate) fn is_cargo_target_exe(exe: &Path) -> bool {
     let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") else {
         return false;
     };
@@ -34,12 +32,35 @@ fn should_skip_update_check() -> bool {
         Err(_) => return false,
     };
 
-    let current_exe = match env::current_exe().and_then(fs::canonicalize) {
-        Ok(path) => path,
-        Err(_) => return false,
-    };
+    match fs::canonicalize(exe) {
+        Ok(exe) => exe.starts_with(&target_dir),
+        Err(_) => false,
+    }
+}
 
-    current_exe.starts_with(&target_dir)
+/// The running executable, if it's one uninstall may remove: a
+/// development build in the Cargo target directory is left alone.
+pub(crate) fn removable_exe() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    if is_cargo_target_exe(&exe) {
+        info!(
+            "Not removing development binary {}, remove it manually",
+            exe.display()
+        );
+        return None;
+    }
+    Some(exe)
+}
+
+fn should_skip_update_check() -> bool {
+    if env::var("CARGO").is_ok() || env::var_os("EVECTL_SKIP_UPDATE_CHECK").is_some() {
+        return true;
+    }
+
+    match env::current_exe() {
+        Ok(exe) => is_cargo_target_exe(&exe),
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn self_update() -> Result<SelfUpdate> {

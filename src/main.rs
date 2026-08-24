@@ -41,6 +41,7 @@ mod selfupdate;
 mod suricata;
 mod systemd;
 mod term;
+mod uninstall;
 mod windows;
 
 fn get_clap_style() -> clap::builder::Styles {
@@ -128,6 +129,22 @@ enum Commands {
         command: SystemdCommands,
     },
 
+    /// Stop all services and remove the instance's data
+    Uninstall {
+        /// Also remove the configuration directory and evectl.toml
+        #[arg(long)]
+        config: bool,
+
+        /// Remove everything: configuration, container images, the
+        /// systemd unit, and the EveCtl binary
+        #[arg(long)]
+        all: bool,
+
+        /// Do not prompt for confirmation
+        #[arg(long, short)]
+        yes: bool,
+    },
+
     #[command(hide = true)]
     Menu { menu: String },
 
@@ -162,6 +179,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
             Commands::Version => false,
             Commands::Print { what: _ } => false,
             Commands::Systemd { command: _ } => false,
+            Commands::Uninstall { .. } => false,
             Commands::Windows(_) => true,
         },
         None => true,
@@ -172,10 +190,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
 fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
     !matches!(
         command,
-        Some(Commands::Update {
-            containers_only: _,
-            return_to_menu: _,
-        })
+        Some(Commands::Update { .. }) | Some(Commands::Uninstall { .. })
     )
 }
 
@@ -302,8 +317,19 @@ fn main() -> Result<()> {
     let is_interactive = is_interactive(&args.command);
     init_logging(is_interactive, args.verbose);
 
+    let is_uninstall = matches!(args.command, Some(Commands::Uninstall { .. }));
     let manager = match container::find_manager(args.podman) {
-        Some(manager) => manager,
+        Some(manager) => {
+            info!("Found container manager {manager}");
+            manager
+        }
+        None if is_uninstall => {
+            // Uninstall can still remove files and the binary; the
+            // placeholder manager's commands simply fail, which the
+            // container and image steps tolerate.
+            warn!("No container manager found, containers and images will not be removed");
+            ContainerManager::Docker(container::DockerManager::new())
+        }
         None => {
             error!("No container manager found. Docker or Podman must be available.");
             error!("See https://evebox.org/runtimes/ for more info.");
@@ -315,11 +341,16 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    info!("Found container manager {manager}");
     let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
 
     let root = resolve_root(args.data_directory.as_deref())?;
     let config_filename = root.join("evectl.toml");
+
+    // Uninstall must not offer to initialize a new instance.
+    if is_uninstall && !config_filename.exists() {
+        error!("No EveCtl instance found at {}", root.display());
+        std::process::exit(1);
+    }
 
     let mut context = if config_filename.exists() {
         let config = crate::config::Config::from_file(&config_filename)?;
@@ -452,9 +483,19 @@ fn main() -> Result<()> {
             Commands::Systemd { command } => {
                 match command {
                     SystemdCommands::Install => systemd::install(&context.root)?,
-                    SystemdCommands::Remove => systemd::remove(),
+                    SystemdCommands::Remove => systemd::remove()?,
                 }
                 0
+            }
+            Commands::Uninstall { config, all, yes } => {
+                match uninstall::uninstall(&context, config, all, yes) {
+                    Ok(true) => 0,
+                    Ok(false) => 1,
+                    Err(err) => {
+                        error!("Uninstall failed: {:#}", err);
+                        1
+                    }
+                }
             }
             Commands::Windows(_) => {
                 error!("The windows command is only available on Windows");
@@ -1902,6 +1943,40 @@ mod tests {
         // Directory names that can't form a container name are
         // rejected up front.
         assert!(resolve_root(Some(&dir.path().join("my sensor"))).is_err());
+    }
+
+    #[test]
+    fn uninstall_command_parses_flags() {
+        let args = Args::try_parse_from(["evectl", "uninstall"]).expect("parse args");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Uninstall {
+                config: false,
+                all: false,
+                yes: false,
+            })
+        ));
+
+        let args = Args::try_parse_from(["evectl", "uninstall", "--config", "--all", "-y"])
+            .expect("parse args");
+        let command = args.command.expect("uninstall command");
+        assert!(matches!(
+            command,
+            Commands::Uninstall {
+                config: true,
+                all: true,
+                yes: true,
+            }
+        ));
+
+        // Uninstall must never prompt to download missing images or
+        // initialize logging as an interactive menu.
+        assert!(!should_prompt_for_missing_images(&Some(command)));
+        assert!(!is_interactive(&Some(Commands::Uninstall {
+            config: false,
+            all: false,
+            yes: false,
+        })));
     }
 
     #[test]

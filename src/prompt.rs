@@ -9,6 +9,15 @@ pub fn enter_with_prefix(prefix: &str) {
     let _ = inquire::Text::new(&format!("{}. Press ENTER to continue:", prefix)).prompt();
 }
 
+/// Confirm a destructive action, defaulting to no. Failure to prompt
+/// (e.g. no terminal) is treated as a no.
+pub fn confirm_destructive(prompt: &str) -> bool {
+    matches!(
+        inquire::Confirm::new(prompt).with_default(false).prompt(),
+        Ok(true)
+    )
+}
+
 pub fn confirm(prompt: &str, help: Option<&str>) -> bool {
     let prompt = inquire::Confirm::new(prompt).with_default(true);
     let prompt = if let Some(help) = help {

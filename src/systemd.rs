@@ -82,29 +82,36 @@ pub(crate) fn install(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn remove() {
+pub(crate) fn remove() -> Result<()> {
     info!("Using sudo to removed and de-activate {}", PATH);
     info!("You may be asked for your password to continue...");
 
     let uid = evectl::system::getuid();
+    let mut errors = vec![];
 
     if let Err(err) = sudo_command(uid, "systemctl")
         .arg("disable")
         .arg("evectl")
         .status_ok()
     {
-        error!("Failed to disable evectl: {}", err);
+        errors.push(format!("failed to disable evectl: {}", err));
     }
 
     if let Err(err) = sudo_command(uid, "rm").arg(PATH).status_ok() {
-        error!("Failed to remove evectl.service: {}", err);
+        errors.push(format!("failed to remove evectl.service: {}", err));
     }
 
     if let Err(err) = sudo_command(uid, "systemctl")
         .arg("daemon-reload")
         .status_ok()
     {
-        error!("Failed to reload systemd: {}", err);
+        errors.push(format!("failed to reload systemd: {}", err));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", errors.join(", "))
     }
 }
 

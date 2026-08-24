@@ -78,7 +78,7 @@ pub(crate) fn default_root() -> Option<PathBuf> {
 /// directory can be spelled differently across invocations
 /// (symlinked $HOME components, XDG_CONFIG_HOME), so fall back to
 /// comparing canonicalized paths.
-fn is_default_root(root: &Path) -> bool {
+pub(crate) fn is_default_root(root: &Path) -> bool {
     let Some(default) = default_root() else {
         return false;
     };

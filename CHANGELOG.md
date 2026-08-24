@@ -10,9 +10,24 @@
   Elasticsearch, with OpenSearch now the recommended engine
 - Elasticsearch configuration menu with a configurable container
   memory limit (default 2GB)
+- `evectl uninstall` command (command line only): stops all services
+  and removes the data files, then interactively offers to also
+  remove the configuration, the instance directory, and finally the
+  EveCtl binary. `--config` removes the configuration without
+  prompting, `--all` performs a full uninstall, additionally removing
+  container images and the systemd unit on Linux, the
+  EveBox/Suricata/Npcap installations and desktop shortcuts on
+  Windows, and the EveCtl binary itself, and `--yes` skips all
+  prompts, removing only what the flags name. Only files EveCtl
+  created are removed; the instance directory itself is left in place
+  if it holds anything else
 
 ### Changed
 
+- Windows: `evectl uninstall` now stops services and removes the data
+  files by default instead of uninstalling the EveBox, Suricata, and
+  Npcap components; the component uninstall is part of
+  `evectl uninstall --all` and remains available from the menu
 - Linux now defaults to storing configuration and data in
   `~/.config/evectl` instead of the current directory, so it no longer
   matters where EveCtl is run from. An existing `evectl.toml` in the

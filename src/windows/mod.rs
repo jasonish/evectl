@@ -39,6 +39,8 @@ mod imp {
     const EVEBOX_PORT: &str = "5636";
     const EVEBOX_ACCESS_URL: &str = "http://127.0.0.1:5636";
     const EVEBOX_DESKTOP_SHORTCUT_URL: &str = "http://127.0.0.1:5636";
+    const START_SHORTCUT_NAME: &str = "EveCtl Start.cmd";
+    const EVEBOX_SHORTCUT_NAME: &str = "EveBox.url";
     const WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS: [&str; 1] = ["file.magic"];
     const SURICATA_READY_TIMEOUT: Duration = Duration::from_secs(5);
     const EVEBOX_STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(750);
@@ -139,8 +141,22 @@ mod imp {
         /// Install and configure EveCtl, running the setup wizard on first use.
         Install,
 
-        /// Uninstall EveBox (if installed), then Suricata, then Npcap.
-        Uninstall,
+        /// Stop all services and remove the EveCtl data files
+        Uninstall {
+            /// Also remove the configuration and Suricata rules
+            #[arg(long)]
+            config: bool,
+
+            /// Remove everything: EveBox, Suricata, evectl-managed
+            /// Npcap, all EveCtl files, desktop shortcuts, and the
+            /// EveCtl binary
+            #[arg(long)]
+            all: bool,
+
+            /// Do not prompt for confirmation
+            #[arg(long, short)]
+            yes: bool,
+        },
 
         /// List network interfaces with their IP addresses and GUIDs
         ListInterfaces,
@@ -222,7 +238,7 @@ mod imp {
             }
             Some(Commands::Info) => project_info(),
             Some(Commands::Install) => install(),
-            Some(Commands::Uninstall) => uninstall_windows_components(),
+            Some(Commands::Uninstall { config, all, yes }) => uninstall(config, all, yes),
             Some(Commands::ListInterfaces) => list_interfaces(),
             Some(Commands::AddShortcuts) => add_shortcuts(),
             Some(Commands::Config { command }) => match command {
@@ -2243,8 +2259,8 @@ mod imp {
         let evectl_exe =
             std::env::current_exe().context("Failed to locate current EveCtl executable")?;
 
-        let start_shortcut = desktop_dir.join("EveCtl Start.cmd");
-        let evebox_shortcut = desktop_dir.join("EveBox.url");
+        let start_shortcut = desktop_dir.join(START_SHORTCUT_NAME);
+        let evebox_shortcut = desktop_dir.join(EVEBOX_SHORTCUT_NAME);
 
         // The shortcut runs the stack in the foreground so the console
         // window shows the logs and closing it stops the stack.
@@ -3723,13 +3739,108 @@ exit $process.ExitCode
         Ok(())
     }
 
+    /// The directories and files holding runtime data: event data,
+    /// logs, pid files, and the installer download cache.
     #[cfg(windows)]
-    fn uninstall_windows_components() -> Result<()> {
-        ensure_managed_services_stopped_for_uninstall()?;
-        ensure_unmanaged_evectl_processes_stopped_for_uninstall()?;
-        log_uninstall_process_diagnostics()?;
+    fn data_paths_for_uninstall() -> Result<Vec<PathBuf>> {
+        Ok(vec![
+            get_suricata_log_dir()?,
+            get_suricata_run_dir()?,
+            get_evebox_data_dir()?,
+            get_evebox_agent_dir()?,
+            get_evebox_pid_path()?,
+            get_evebox_runtime_path()?,
+            get_evectl_data_dir()?.join("downloads"),
+        ])
+    }
 
-        let mut errors: Vec<String> = vec![];
+    /// The configuration paths. Suricata rules and ruleset selections
+    /// count as configuration, matching the Linux layout where rules
+    /// live under the config directory.
+    #[cfg(windows)]
+    fn config_paths_for_uninstall() -> Result<Vec<PathBuf>> {
+        Ok(vec![
+            get_evectl_config_path()?,
+            get_suricata_data_dir()?.join("lib"),
+        ])
+    }
+
+    #[cfg(windows)]
+    fn existing_shortcuts() -> Result<Vec<PathBuf>> {
+        let desktop_dir = get_desktop_dir()?;
+        Ok([START_SHORTCUT_NAME, EVEBOX_SHORTCUT_NAME]
+            .iter()
+            .map(|name| desktop_dir.join(name))
+            .filter(|path| path.exists())
+            .collect())
+    }
+
+    /// A running executable can't delete itself on Windows, so hand
+    /// the deletion to a detached helper that retries until this
+    /// process has exited.
+    #[cfg(windows)]
+    fn schedule_self_delete(exe: &Path) -> Result<()> {
+        // A staged self-update isn't locked and can go right away.
+        if let Some(file_name) = exe.file_name().and_then(|name| name.to_str()) {
+            let staged = exe.with_file_name(format!("{}.new", file_name));
+            if staged.exists() {
+                let _ = std::fs::remove_file(&staged);
+            }
+        }
+
+        let script = r#"
+$target = $env:EVECTL_SELF_DELETE_TARGET
+
+for ($i = 0; $i -lt 120; $i++) {
+    try {
+        Remove-Item -LiteralPath $target -Force
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+exit 1
+"#;
+
+        Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+            .env("EVECTL_SELF_DELETE_TARGET", exe)
+            .spawn()
+            .context("Failed to launch self-delete helper")?;
+
+        info!("{} will be removed after EveCtl exits", exe.display());
+        Ok(())
+    }
+
+    /// Remove a file or directory, collecting any failure.
+    #[cfg(windows)]
+    fn remove_path(path: &Path, errors: &mut Vec<String>) {
+        // The component uninstalls may have already removed it.
+        if !path.exists() {
+            return;
+        }
+        info!("Removing {}", path.display());
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        if let Err(err) = result {
+            errors.push(format!("Failed to remove {}: {}", path.display(), err));
+        }
+    }
+
+    /// Uninstall EveBox, Suricata, and evectl-managed Npcap,
+    /// collecting failures. Returns true if all succeeded.
+    #[cfg(windows)]
+    fn uninstall_components(errors: &mut Vec<String>) -> bool {
+        // Informational only, so not fatal.
+        if let Err(err) = log_uninstall_process_diagnostics() {
+            warn!("Failed to log process diagnostics: {}", err);
+        }
+
+        let before = errors.len();
 
         if let Err(err) = uninstall_evebox() {
             errors.push(format!("EveBox uninstall failed: {}", err));
@@ -3743,7 +3854,171 @@ exit $process.ExitCode
             errors.push(format!("Npcap uninstall failed: {}", err));
         }
 
+        errors.len() == before
+    }
+
+    /// Uninstall the components, then remove the whole EveCtl
+    /// directory. The directory holds the Npcap ownership marker and
+    /// the version markers a retry needs, so it's left in place if any
+    /// component uninstall failed.
+    #[cfg(windows)]
+    fn uninstall_components_and_directory(evectl_dir: &Path, errors: &mut Vec<String>) {
+        if uninstall_components(errors) {
+            remove_path(evectl_dir, errors);
+        } else {
+            warn!(
+                "Leaving {} in place so the uninstall can be retried",
+                evectl_dir.display()
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    fn uninstall(remove_config: bool, all: bool, yes: bool) -> Result<()> {
+        let remove_config = remove_config || all;
+
+        if !yes && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            bail!("No terminal available for confirmation, pass --yes to run without prompting");
+        }
+
+        let evectl_dir = get_evectl_data_dir()?;
+        let mut paths: Vec<PathBuf> = vec![];
+        if !all {
+            paths.extend(data_paths_for_uninstall()?);
+            if remove_config {
+                paths.extend(config_paths_for_uninstall()?);
+            }
+        }
+        paths.retain(|path| path.exists());
+
+        let shortcuts = if all { existing_shortcuts()? } else { vec![] };
+        let mut binary = if all {
+            crate::selfupdate::removable_exe()
+        } else {
+            None
+        };
+
+        println!("The following will be removed:");
+        if all {
+            println!("  EveBox, Suricata, and evectl-managed Npcap installations");
+            println!("  {}", evectl_dir.display());
+        }
+        for path in paths.iter().chain(shortcuts.iter()) {
+            println!("  {}", path.display());
+        }
+        if let Some(binary) = &binary {
+            println!("  {}", binary.display());
+        }
+
+        if !yes && !crate::prompt::confirm_destructive("Proceed with uninstall?") {
+            bail!("Uninstall canceled");
+        }
+
+        ensure_managed_services_stopped_for_uninstall()?;
+        ensure_unmanaged_evectl_processes_stopped_for_uninstall()?;
+
+        let mut errors: Vec<String> = vec![];
+
+        if all {
+            uninstall_components_and_directory(&evectl_dir, &mut errors);
+        }
+
+        for path in paths.iter().chain(shortcuts.iter()) {
+            remove_path(path, &mut errors);
+        }
+
+        // When interactive, keep prompting through the layers the
+        // flags didn't already cover: configuration, the EveCtl
+        // directory, the desktop shortcuts, and finally the binary.
+        if !yes && !all {
+            let mut config_removed = true;
+
+            if !remove_config {
+                let rules_dir = get_suricata_data_dir()?.join("lib");
+                if rules_dir.exists() {
+                    if crate::prompt::confirm_destructive(&format!(
+                        "Also remove the Suricata rules directory {}?",
+                        rules_dir.display()
+                    )) {
+                        remove_path(&rules_dir, &mut errors);
+                    } else {
+                        config_removed = false;
+                    }
+                }
+
+                let config_path = get_evectl_config_path()?;
+                if config_path.exists() {
+                    if crate::prompt::confirm_destructive(&format!(
+                        "Also remove the configuration file {}?",
+                        config_path.display()
+                    )) {
+                        remove_path(&config_path, &mut errors);
+                    } else {
+                        config_removed = false;
+                    }
+                }
+            }
+
+            // Only offer to remove the EveCtl directory once nothing
+            // the user chose to keep remains in it. It holds the
+            // installed components, which are uninstalled first.
+            if config_removed
+                && evectl_dir.exists()
+                && crate::prompt::confirm_destructive(&format!(
+                    "Also remove the EveCtl directory {} including the EveBox, Suricata, and evectl-managed Npcap installations?",
+                    evectl_dir.display()
+                ))
+            {
+                uninstall_components_and_directory(&evectl_dir, &mut errors);
+            }
+
+            let shortcuts = existing_shortcuts()?;
+            if !shortcuts.is_empty()
+                && crate::prompt::confirm_destructive("Also remove the desktop shortcuts?")
+            {
+                for path in &shortcuts {
+                    remove_path(path, &mut errors);
+                }
+            }
+
+            if let Some(exe) = crate::selfupdate::removable_exe()
+                && crate::prompt::confirm_destructive(&format!(
+                    "Also remove the EveCtl binary {}?",
+                    exe.display()
+                ))
+            {
+                binary = Some(exe);
+            }
+        }
+
+        if let Some(binary) = &binary
+            && let Err(err) = schedule_self_delete(binary)
+        {
+            errors.push(format!(
+                "Failed to schedule removal of {}: {}",
+                binary.display(),
+                err
+            ));
+        }
+
         if errors.is_empty() {
+            info!("Uninstall complete");
+            Ok(())
+        } else {
+            bail!(
+                "Uninstall completed with errors:\n- {}",
+                errors.join("\n- ")
+            )
+        }
+    }
+
+    #[cfg(windows)]
+    fn uninstall_windows_components() -> Result<()> {
+        ensure_managed_services_stopped_for_uninstall()?;
+        ensure_unmanaged_evectl_processes_stopped_for_uninstall()?;
+
+        let mut errors: Vec<String> = vec![];
+        if uninstall_components(&mut errors) {
             info!("Windows component uninstall completed");
             Ok(())
         } else {

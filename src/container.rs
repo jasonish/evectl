@@ -107,6 +107,15 @@ impl ContainerManager {
         Ok(())
     }
 
+    /// Remove an image.
+    pub(crate) fn remove_image(&self, name: &str) -> Result<()> {
+        let output = self.command().args(["rmi", name]).output()?;
+        if !output.status.success() {
+            bail!(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        Ok(())
+    }
+
     pub(crate) fn pull(&self, image: &str) -> Result<()> {
         let status = self.command().args(["pull", image]).status()?;
         if status.success() {

@@ -97,8 +97,9 @@ pub(crate) fn start_on_boot(context: &Context) -> Result<()> {
     } else if inquire::Confirm::new("Do you wish to disable start on boot?")
         .with_default(true)
         .prompt()?
+        && let Err(err) = crate::systemd::remove()
     {
-        crate::systemd::remove();
+        tracing::error!("Failed to remove systemd unit: {}", err);
     }
     Ok(())
 }

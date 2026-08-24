@@ -7,8 +7,9 @@ use std::process::Command;
 use crate::config::SearchEngine;
 use crate::prelude::*;
 
-const ELASTICSEARCH_IMAGE: &str = "docker.elastic.co/elasticsearch/elasticsearch:8.19.19";
-const OPENSEARCH_IMAGE: &str = "docker.io/opensearchproject/opensearch:3.7.0";
+pub(crate) const ELASTICSEARCH_IMAGE: &str =
+    "docker.elastic.co/elasticsearch/elasticsearch:8.19.19";
+pub(crate) const OPENSEARCH_IMAGE: &str = "docker.io/opensearchproject/opensearch:3.7.0";
 
 /// Default container memory limit in gigabytes.
 pub(crate) const DEFAULT_MEMORY_GB: u32 = 2;
@@ -52,7 +53,7 @@ pub(crate) fn container_name(context: &Context) -> String {
     container_name_for(context, engine(context))
 }
 
-fn container_name_for(context: &Context, engine: SearchEngine) -> String {
+pub(crate) fn container_name_for(context: &Context, engine: SearchEngine) -> String {
     let prefix = context.container_prefix();
     match engine {
         SearchEngine::Elasticsearch => format!("{}-elastic", prefix),
