@@ -187,14 +187,19 @@ fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
 /// platform configuration directory (e.g., ~/.config/evectl).
 #[cfg(not(target_os = "windows"))]
 fn resolve_root(data_directory: Option<&Path>) -> Result<PathBuf> {
-    if let Some(directory) = data_directory {
-        return Ok(std::path::absolute(directory)?);
-    }
-    let current_dir = std::env::current_dir()?;
-    if current_dir.join("evectl.toml").exists() {
-        return Ok(current_dir);
-    }
-    context::default_root().ok_or_else(|| anyhow!("Could not find the configuration directory"))
+    let root = if let Some(directory) = data_directory {
+        std::path::absolute(directory)?
+    } else {
+        let current_dir = std::env::current_dir()?;
+        if current_dir.join("evectl.toml").exists() {
+            current_dir
+        } else {
+            context::default_root()
+                .ok_or_else(|| anyhow!("Could not find the configuration directory"))?
+        }
+    };
+    context::validate_root(&root)?;
+    Ok(root)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1889,9 +1894,14 @@ mod tests {
     #[test]
     fn resolve_root_prefers_explicit_data_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let root = resolve_root(Some(dir.path())).unwrap();
-        assert_eq!(root, dir.path());
+        let instance = dir.path().join("sensor1");
+        let root = resolve_root(Some(&instance)).unwrap();
+        assert_eq!(root, instance);
         assert!(root.is_absolute());
+
+        // Directory names that can't form a container name are
+        // rejected up front.
+        assert!(resolve_root(Some(&dir.path().join("my sensor"))).is_err());
     }
 
     #[test]

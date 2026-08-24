@@ -54,12 +54,15 @@ equivalent is `%LOCALAPPDATA%\evectl`.
 For compatibility with older versions, if an `evectl.toml` exists in
 the current directory it will be used instead.
 
-To run multiple instances, or to place the configuration and data
-somewhere else, use the `-D`/`--data-directory` option:
+On Linux you can run multiple instances, or place the configuration
+and data somewhere else, with the `-D`/`--data-directory` option:
 
 ```bash
 evectl -D /var/lib/evectl-sensor1
 ```
+
+This option is not available on Windows, where the location is
+fixed.
 
 ## Building
 

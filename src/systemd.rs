@@ -15,8 +15,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={current_exe} -D {root} start
-ExecStop={current_exe} -D {root} stop
+ExecStart={current_exe} -D {exec_root} start
+ExecStop={current_exe} -D {exec_root} stop
 WorkingDirectory={root}
 User={username}
 RemainAfterExit=true
@@ -32,10 +32,27 @@ pub(crate) fn format_template(root: &Path) -> Result<String> {
     let whoami = String::from_utf8(whoami)?;
     let current_exe = std::env::current_exe()?;
     let template = TEMPLATE
-        .replace("{current_exe}", &current_exe.to_string_lossy())
-        .replace("{root}", &root.to_string_lossy())
+        .replace("{current_exe}", &exec_quote(&current_exe.to_string_lossy()))
+        .replace("{exec_root}", &exec_quote(&root.to_string_lossy()))
+        .replace("{root}", &specifier_escape(&root.to_string_lossy()))
         .replace("{username}", whoami.trim());
     Ok(template.trim().to_string())
+}
+
+/// Quote a path for an ExecStart/ExecStop command line: systemd
+/// word-splits on whitespace and expands '%' specifiers.
+fn exec_quote(path: &str) -> String {
+    let escaped = path
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    format!("\"{}\"", escaped)
+}
+
+/// Escape '%' for settings like WorkingDirectory that take a single
+/// path: no word splitting, but specifiers still expand.
+fn specifier_escape(path: &str) -> String {
+    path.replace('%', "%%")
 }
 
 pub(crate) fn install(root: &Path) -> Result<()> {
@@ -109,5 +126,26 @@ fn sudo_command(uid: u32, prog: &str) -> std::process::Command {
         let mut command = std::process::Command::new("sudo");
         command.arg(prog);
         command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exec_quote_escapes_specifiers_and_quotes() {
+        assert_eq!(exec_quote("/srv/sensor1"), "\"/srv/sensor1\"");
+        assert_eq!(exec_quote("/srv/my sensor"), "\"/srv/my sensor\"");
+        assert_eq!(exec_quote("/srv/100%"), "\"/srv/100%%\"");
+        assert_eq!(exec_quote("/srv/a\"b"), "\"/srv/a\\\"b\"");
+    }
+
+    #[test]
+    fn format_template_quotes_instance_directory() {
+        let template = format_template(Path::new("/srv/my sensor")).unwrap();
+        assert!(template.contains(" -D \"/srv/my sensor\" start"));
+        assert!(template.contains(" -D \"/srv/my sensor\" stop"));
+        assert!(template.contains("WorkingDirectory=/srv/my sensor"));
     }
 }

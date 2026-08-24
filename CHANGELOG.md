@@ -4,8 +4,8 @@
 
 ### Added
 
-- `-D`/`--data-directory` option to select the instance directory,
-  allowing multiple instances on one host
+- `-D`/`--data-directory` option (Linux only) to select the instance
+  directory, allowing multiple instances on one host
 - OpenSearch as a bundled search-engine option alongside
   Elasticsearch, with OpenSearch now the recommended engine
 - Elasticsearch configuration menu with a configurable container
