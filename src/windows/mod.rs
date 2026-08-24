@@ -1068,6 +1068,12 @@ mod imp {
             );
         }
 
+        // The updater always rewrites its output, so compare a digest
+        // of the rules directory before and after to tell whether the
+        // rules actually changed.
+        let rules_dir = get_suricatax_paths()?.rules_dir;
+        let before = rules_digest(&rules_dir)?;
+
         with_path_provider(|paths| {
             suricatax_cli::update_rules_with_options(
                 paths,
@@ -1077,7 +1083,79 @@ mod imp {
                 &[],
                 &disable_substrings,
             )
-        })
+        })?;
+
+        if rules_digest(&rules_dir)? == before {
+            info!("Rules unchanged, Suricata does not need to be restarted");
+            return Ok(());
+        }
+
+        restart_suricata_for_rules()
+    }
+
+    /// A digest of every file under the rules directory (the rules
+    /// file and any dataset files), or None if it doesn't exist yet.
+    #[cfg(windows)]
+    fn rules_digest(rules_dir: &Path) -> Result<Option<String>> {
+        use sha2::{Digest, Sha256};
+
+        fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+            for entry in std::fs::read_dir(dir)
+                .with_context(|| format!("Failed to read {}", dir.display()))?
+            {
+                let path = entry?.path();
+                if path.is_dir() {
+                    collect(&path, files)?;
+                } else {
+                    files.push(path);
+                }
+            }
+            Ok(())
+        }
+
+        if !rules_dir.exists() {
+            return Ok(None);
+        }
+
+        let mut files = vec![];
+        collect(rules_dir, &mut files)?;
+        files.sort();
+
+        let mut hash = Sha256::new();
+        for path in files {
+            let relative = path.strip_prefix(rules_dir).unwrap_or(&path);
+            hash.update(relative.to_string_lossy().as_bytes());
+            hash.update([0]);
+            hash.update(
+                std::fs::read(&path)
+                    .with_context(|| format!("Failed to read {}", path.display()))?,
+            );
+            hash.update([0]);
+        }
+        Ok(Some(
+            hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
+        ))
+    }
+
+    /// Suricata on Windows can't reload rules in place, so restart it,
+    /// if running, to load the updated rules.
+    #[cfg(windows)]
+    fn restart_suricata_for_rules() -> Result<()> {
+        let plan = capture_restart_plan()?;
+        if !plan.suricata_running {
+            return Ok(());
+        }
+        let guid = plan.suricata_guid.as_deref().ok_or_else(|| {
+            anyhow!("Failed to determine the interface GUID used by the running Suricata process")
+        })?;
+
+        info!("Restarting Suricata to load the updated rules");
+        let result = (|| {
+            stop_suricata_managed()?;
+            let suricata = start_suricata_background(guid)?;
+            wait_for_suricata_readiness(&suricata)
+        })();
+        result.map_err(|err| anyhow!("Rules updated, but restarting Suricata failed: {}", err))
     }
 
     #[cfg(windows)]
@@ -4911,6 +4989,38 @@ exit 1
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn rules_digest_tracks_content_changes() {
+            let dir = tempfile::tempdir().unwrap();
+            let rules_dir = dir.path().join("rules");
+            assert_eq!(rules_digest(&rules_dir).unwrap(), None);
+
+            std::fs::create_dir_all(rules_dir.join("datasets")).unwrap();
+            std::fs::write(
+                rules_dir.join("suricata.rules"),
+                "alert ip any any -> any any (sid:1;)\n",
+            )
+            .unwrap();
+            std::fs::write(rules_dir.join("datasets").join("a.lst"), "one\n").unwrap();
+            let first = rules_digest(&rules_dir).unwrap();
+            assert!(first.is_some());
+
+            // Rewriting identical content is not a change.
+            std::fs::write(
+                rules_dir.join("suricata.rules"),
+                "alert ip any any -> any any (sid:1;)\n",
+            )
+            .unwrap();
+            assert_eq!(rules_digest(&rules_dir).unwrap(), first);
+
+            // A dataset change counts, as does a rules change.
+            std::fs::write(rules_dir.join("datasets").join("a.lst"), "two\n").unwrap();
+            let second = rules_digest(&rules_dir).unwrap();
+            assert_ne!(second, first);
+            std::fs::write(rules_dir.join("suricata.rules"), "").unwrap();
+            assert_ne!(rules_digest(&rules_dir).unwrap(), second);
+        }
 
         #[test]
         fn command_is_optional_for_interactive_menu() {

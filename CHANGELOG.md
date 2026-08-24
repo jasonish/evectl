@@ -43,6 +43,8 @@
 
 ### Fixed
 
+- Windows: restart Suricata after a rule update changes the rules, as
+  Suricata on Windows can't reload rules in place
 - Apply generated JA4 Suricata overrides when starting Suricata
 - Restart services in detached mode instead of foreground debug mode
 
