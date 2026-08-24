@@ -15,9 +15,9 @@ mod imp {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use suricasta_rules::cli as suricasta_cli;
-    use suricasta_rules::paths::PathProvider;
-    use suricasta_rules::sources::SourceManager;
+    use suricatax_rules::cli as suricatax_cli;
+    use suricatax_rules::paths::PathProvider;
+    use suricatax_rules::sources::SourceManager;
 
     const NPCAP_VERSION: &str = "1.87";
     const NPCAP_INSTALLED_MARKER: &str = ".evectl-npcap-installed";
@@ -1014,7 +1014,7 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn get_suricasta_paths() -> Result<EvectlWindowsPaths> {
+    fn get_suricatax_paths() -> Result<EvectlWindowsPaths> {
         let lib_dir = get_suricata_data_dir()?.join("lib");
         Ok(EvectlWindowsPaths {
             sources_dir: lib_dir.join("update").join("sources"),
@@ -1025,7 +1025,7 @@ mod imp {
 
     #[cfg(windows)]
     fn with_path_provider<T>(f: impl FnOnce(&dyn PathProvider) -> Result<T>) -> Result<T> {
-        let paths = get_suricasta_paths()?;
+        let paths = get_suricatax_paths()?;
         f(&paths)
     }
 
@@ -1041,7 +1041,7 @@ mod imp {
             info!("Selecting rules for Suricata version {}", version);
         } else {
             warn!(
-                "Could not determine Suricata version for rules update; using suricasta-rules default"
+                "Could not determine Suricata version for rules update; using suricatax-rules default"
             );
         }
 
@@ -1053,7 +1053,7 @@ mod imp {
         }
 
         with_path_provider(|paths| {
-            suricasta_cli::update_rules_with_options(
+            suricatax_cli::update_rules_with_options(
                 paths,
                 force,
                 quiet,
@@ -1159,22 +1159,22 @@ mod imp {
 
     #[cfg(windows)]
     fn update_sources() -> Result<()> {
-        with_path_provider(suricasta_cli::update_sources)
+        with_path_provider(suricatax_cli::update_sources)
     }
 
     #[cfg(windows)]
     fn enable_ruleset(name: Option<&str>) -> Result<()> {
         match name {
-            Some(name) => with_path_provider(|paths| suricasta_cli::enable_ruleset(paths, name)),
+            Some(name) => with_path_provider(|paths| suricatax_cli::enable_ruleset(paths, name)),
             None => enable_ruleset_interactive(),
         }
     }
 
     #[cfg(windows)]
     fn enable_ruleset_interactive() -> Result<()> {
-        let paths = get_suricasta_paths()?;
+        let paths = get_suricatax_paths()?;
         let index = SourceManager::new(&paths).get_or_download_index()?;
-        let enabled = suricasta_cli::enabled_rulesets(&paths)?;
+        let enabled = suricatax_cli::enabled_rulesets(&paths)?;
 
         let mut sources: Vec<_> = index.sources.iter().collect();
         sources.sort_by(|a, b| a.0.cmp(b.0));
@@ -1215,13 +1215,13 @@ mod imp {
 
     #[cfg(windows)]
     fn disable_ruleset(name: &str) -> Result<()> {
-        with_path_provider(|paths| suricasta_cli::disable_ruleset(paths, name))
+        with_path_provider(|paths| suricatax_cli::disable_ruleset(paths, name))
     }
 
     #[cfg(windows)]
     fn disable_ruleset_interactive() -> Result<()> {
-        let paths = get_suricasta_paths()?;
-        let enabled = suricasta_cli::enabled_rulesets(&paths)?;
+        let paths = get_suricatax_paths()?;
+        let enabled = suricatax_cli::enabled_rulesets(&paths)?;
         if enabled.is_empty() {
             crate::prompt::enter_with_prefix("No rulesets enabled");
             return Ok(());
@@ -1267,7 +1267,7 @@ mod imp {
 
     #[cfg(windows)]
     fn list_enabled_rulesets() -> Result<()> {
-        let rulesets = with_path_provider(suricasta_cli::enabled_rulesets)?;
+        let rulesets = with_path_provider(suricatax_cli::enabled_rulesets)?;
 
         if rulesets.is_empty() {
             println!("No Suricata rulesets enabled");
@@ -1284,7 +1284,7 @@ mod imp {
 
     #[cfg(windows)]
     fn write_suricata_rules_include_stub() -> Result<std::path::PathBuf> {
-        let paths = get_suricasta_paths()?;
+        let paths = get_suricatax_paths()?;
         std::fs::create_dir_all(&paths.rules_dir).context(format!(
             "Failed to create Suricata rules directory {}",
             paths.rules_dir.display()
