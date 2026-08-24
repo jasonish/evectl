@@ -28,6 +28,7 @@ pub(crate) fn mkdirs(context: &Context) -> Result<()> {
             .join("update")
             .join("cache"),
         context.data_dir().join("suricata").join("log"),
+        context.data_dir().join("suricata").join("log").join("pcap"),
         context.data_dir().join("suricata").join("run"),
     ];
 

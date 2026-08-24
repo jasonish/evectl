@@ -16,7 +16,7 @@ use prelude::*;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use config::EveOutput;
+use config::{EveOutput, FpcConfig};
 #[cfg(not(target_os = "windows"))]
 use container::ContainerManager;
 use container::{Container, SuricataContainer};
@@ -569,6 +569,28 @@ fn command_start(context: &Context, debug: bool) -> i32 {
 
 fn uses_eve_socket(context: &Context) -> bool {
     context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::UnixStream
+}
+
+/// Full packet capture is in use when both the local Suricata and the
+/// local EveBox server are enabled, along with the FPC option.
+fn uses_fpc(context: &Context) -> bool {
+    context.config.suricata.enabled
+        && context.config.fpc.enabled
+        && context.config.evebox_server.enabled
+}
+
+/// The FPC configuration as it applies to this start: capture is only
+/// enabled if the local EveBox server is there to serve it, otherwise
+/// Suricata would fill a spool nothing reads.
+fn effective_fpc_config(context: &Context) -> FpcConfig {
+    let enabled = uses_fpc(context);
+    if context.config.fpc.enabled && !enabled {
+        warn!("Full packet capture is enabled but the EveBox server is not; not capturing");
+    }
+    FpcConfig {
+        enabled,
+        ..context.config.fpc.clone()
+    }
 }
 
 fn validate_start_configuration(context: &Context) -> Result<()> {
@@ -1163,7 +1185,11 @@ fn start(context: &Context) -> bool {
 
 fn build_suricata_command(context: &Context, detached: bool) -> Result<std::process::Command> {
     let config = suricata_dump_config(context)?;
-    let set_args = suricata_set_args(&config, context.config.suricata.eve_output)?;
+    let set_args = suricata_set_args(
+        &config,
+        context.config.suricata.eve_output,
+        &effective_fpc_config(context),
+    )?;
 
     let interface = match context.config.suricata.interfaces.first() {
         Some(interface) => interface,
@@ -1223,12 +1249,22 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     Ok(command)
 }
 
-fn suricata_set_args(config: &[String], eve_output: EveOutput) -> Result<Vec<String>> {
+/// Suricata pcap-log spool directory inside the containers. Shared
+/// with the EveBox server through the Suricata log volume.
+const PCAP_LOG_CONTAINER_DIR: &str = "/var/log/suricata/pcap";
+const PCAP_LOG_PREFIX: &str = "log.";
+
+fn suricata_set_args(
+    config: &[String],
+    eve_output: EveOutput,
+    fpc: &FpcConfig,
+) -> Result<Vec<String>> {
     let mut set_args: Vec<String> = vec![
         "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
         "app-layer.protocols.quic.ja4-fingerprints=true".to_string(),
     ];
     let mut eve_log_paths = BTreeSet::new();
+    let mut pcap_log_paths = BTreeSet::new();
     let mut disabled_output_paths = BTreeSet::new();
     let output_pattern = regex::Regex::new(r"^(outputs\.\d+) = ([a-zA-Z0-9_-]+)$")?;
     let patterns = &[
@@ -1241,6 +1277,8 @@ fn suricata_set_args(config: &[String], eve_output: EveOutput) -> Result<Vec<Str
             let path = format!("{}.{}", &c[1], &c[2]);
             if &c[2] == "eve-log" {
                 eve_log_paths.insert(path);
+            } else if &c[2] == "pcap-log" && fpc.enabled {
+                pcap_log_paths.insert(path);
             } else {
                 disabled_output_paths.insert(path);
             }
@@ -1274,6 +1312,24 @@ fn suricata_set_args(config: &[String], eve_output: EveOutput) -> Result<Vec<Str
             set_args.push(format!("{path}.filename=eve.json.%s"));
             set_args.push(format!("{path}.rotate-interval=minute"));
         }
+    }
+    if fpc.enabled && pcap_log_paths.is_empty() {
+        bail!("full packet capture enabled but Suricata has no pcap-log output");
+    }
+    for path in pcap_log_paths {
+        // Layout expected by EveBox: multi mode with the rotation
+        // timestamp in the filename so it can prune by time.
+        set_args.push(format!("{path}.enabled=true"));
+        set_args.push(format!("{path}.mode=multi"));
+        set_args.push(format!("{path}.dir={PCAP_LOG_CONTAINER_DIR}"));
+        set_args.push(format!("{path}.filename={PCAP_LOG_PREFIX}%n.%t.pcap"));
+        set_args.push(format!("{path}.limit={}", FpcConfig::FILE_SIZE));
+        set_args.push(format!(
+            "{path}.max-files={}",
+            fpc.max_files_per_thread(FpcConfig::capture_threads())
+        ));
+        set_args.push(format!("{path}.use-stream-depth=no"));
+        set_args.push(format!("{path}.honor-pass-rules=no"));
     }
     Ok(set_args)
 }
@@ -1476,6 +1532,11 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     command.arg("--data-directory=/data");
     command.arg("--config-directory=/config");
+
+    if uses_fpc(context) {
+        command.arg(format!("--pcap-directory={PCAP_LOG_CONTAINER_DIR}"));
+        command.arg(format!("--pcap-prefix={PCAP_LOG_PREFIX}"));
+    }
 
     Ok(command)
 }
@@ -1741,7 +1802,8 @@ mod tests {
         ]
         .map(str::to_string);
 
-        let set_args = suricata_set_args(&config, EveOutput::UnixStream).unwrap();
+        let set_args =
+            suricata_set_args(&config, EveOutput::UnixStream, &FpcConfig::default()).unwrap();
 
         assert!(set_args.contains(&"outputs.7.fast.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.12.stats.enabled=false".to_string()));
@@ -1769,7 +1831,7 @@ mod tests {
     fn suricata_file_output_configures_timestamped_spool() {
         let config = ["outputs.3 = eve-log"].map(str::to_string);
 
-        let set_args = suricata_set_args(&config, EveOutput::File).unwrap();
+        let set_args = suricata_set_args(&config, EveOutput::File, &FpcConfig::default()).unwrap();
 
         assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.enabled=true".to_string()));
@@ -1777,6 +1839,70 @@ mod tests {
         assert!(set_args.contains(&"outputs.3.eve-log.filename=eve.json.%s".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.rotate-interval=minute".to_string()));
         assert!(!set_args.iter().any(|arg| arg.contains(".filetype=")));
+    }
+
+    #[test]
+    fn fpc_configures_pcap_log_for_evebox() {
+        let config = [
+            "outputs.3 = eve-log",
+            "outputs.14 = pcap-log",
+            "outputs.14.pcap-log.enabled = no",
+        ]
+        .map(str::to_string);
+        let fpc = FpcConfig {
+            enabled: true,
+            max_files: Some(20),
+        };
+
+        let set_args = suricata_set_args(&config, EveOutput::UnixStream, &fpc).unwrap();
+
+        assert!(set_args.contains(&"outputs.14.pcap-log.enabled=true".to_string()));
+        assert!(set_args.contains(&"outputs.14.pcap-log.mode=multi".to_string()));
+        assert!(set_args.contains(&"outputs.14.pcap-log.dir=/var/log/suricata/pcap".to_string()));
+        assert!(set_args.contains(&"outputs.14.pcap-log.filename=log.%n.%t.pcap".to_string()));
+        assert!(set_args.contains(&"outputs.14.pcap-log.limit=256mb".to_string()));
+        let expected = fpc.max_files_per_thread(FpcConfig::capture_threads());
+        assert!(set_args.contains(&format!("outputs.14.pcap-log.max-files={expected}")));
+        assert!(!set_args.contains(&"outputs.14.pcap-log.enabled=false".to_string()));
+
+        // Without a pcap-log output in the dumped config, FPC can't be set up.
+        let config = ["outputs.3 = eve-log"].map(str::to_string);
+        assert!(suricata_set_args(&config, EveOutput::UnixStream, &fpc).is_err());
+    }
+
+    #[test]
+    fn fpc_requires_local_evebox_server() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.fpc.enabled = true;
+        config.fpc.max_files = Some(20);
+        let (_root, mut context) = docker_context(config);
+
+        // No server: capture is disabled, retention is preserved.
+        let fpc = effective_fpc_config(&context);
+        assert!(!fpc.enabled);
+        assert_eq!(fpc.max_files, Some(20));
+
+        context.config.evebox_server.enabled = true;
+        assert!(effective_fpc_config(&context).enabled);
+    }
+
+    #[test]
+    fn fpc_adds_pcap_flags_to_evebox_server() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.fpc.enabled = true;
+        config.evebox_server.enabled = true;
+        let (_root, context) = docker_context(config);
+
+        let args = command_args(&build_evebox_server_command(&context, true).unwrap());
+        assert!(args.contains(&"--pcap-directory=/var/log/suricata/pcap".to_string()));
+        assert!(args.contains(&"--pcap-prefix=log.".to_string()));
+
+        let mut context = context;
+        context.config.fpc.enabled = false;
+        let args = command_args(&build_evebox_server_command(&context, true).unwrap());
+        assert!(!args.iter().any(|a| a.starts_with("--pcap-")));
     }
 
     #[test]

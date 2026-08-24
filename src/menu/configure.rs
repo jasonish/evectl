@@ -12,6 +12,7 @@ enum Options {
     Return,
     EveBoxAgent,
     EveBoxServer,
+    Fpc,
     StartOnBoot,
 }
 
@@ -58,6 +59,14 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
             ),
         );
 
+        selections.push(
+            Options::Fpc,
+            format!(
+                "Configure Full Packet Capture [enabled={}]",
+                context.config.fpc.enabled
+            ),
+        );
+
         selections.push(Options::ContainerImages, "Containers Images");
 
         if crate::systemd::is_enabled() {
@@ -74,6 +83,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
                 Options::Suricata => crate::menu::suricata::menu(context)?,
                 Options::EveBoxAgent => crate::menu::evebox_agent::menu(context)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
+                Options::Fpc => crate::menu::fpc::menu(context)?,
                 Options::StartOnBoot => start_on_boot(context)?,
                 Options::Return => return Ok(()),
             },

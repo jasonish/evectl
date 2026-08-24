@@ -27,6 +27,9 @@ pub(crate) struct Config {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub elasticsearch: ElasticsearchConfig,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub fpc: FpcConfig,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -49,6 +52,52 @@ pub(crate) struct SuricataConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub eve_output: EveOutput,
+}
+
+/// Full packet capture configuration. When enabled, Suricata writes a
+/// rotating pcap spool that the EveBox server serves through its web UI.
+/// Requires both Suricata and the EveBox server; not supported on Windows.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct FpcConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+
+    /// Maximum total number of pcap files to retain across all
+    /// capture threads.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub max_files: Option<u32>,
+}
+
+impl FpcConfig {
+    pub(crate) const DEFAULT_MAX_FILES: u32 = 100;
+    pub(crate) const FILE_SIZE: &'static str = "256mb";
+
+    pub(crate) fn max_files(&self) -> u32 {
+        self.max_files.unwrap_or(Self::DEFAULT_MAX_FILES)
+    }
+
+    /// Suricata enforces `max-files` per capture thread in multi
+    /// mode, so divide the global cap by the thread count (at least
+    /// one file per thread).
+    pub(crate) fn max_files_per_thread(&self, threads: usize) -> u32 {
+        (self.max_files() / threads.max(1) as u32).max(1)
+    }
+
+    /// Number of capture threads Suricata will use with
+    /// `threads: auto`, assumed to be the number of host CPUs.
+    pub(crate) fn capture_threads() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    }
+
+    /// Approximate maximum disk usage of the pcap spool in GB, taking
+    /// the per-thread rounding into account.
+    pub(crate) fn disk_usage_gb(&self) -> u64 {
+        let threads = Self::capture_threads();
+        self.max_files_per_thread(threads) as u64 * threads as u64 * 256 / 1024
+    }
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Copy, Eq, PartialEq)]
@@ -329,5 +378,24 @@ mod tests {
         assert!(config.suricata.enabled);
         assert_eq!(config.suricata.interfaces, vec!["br0".to_string()]);
         assert!(config.evebox_server.no_tls);
+    }
+}
+
+#[cfg(test)]
+mod fpc_tests {
+    use super::FpcConfig;
+
+    #[test]
+    fn max_files_is_divided_across_threads() {
+        let fpc = FpcConfig {
+            enabled: true,
+            max_files: Some(100),
+        };
+        assert_eq!(fpc.max_files_per_thread(1), 100);
+        assert_eq!(fpc.max_files_per_thread(4), 25);
+        assert_eq!(fpc.max_files_per_thread(16), 6);
+        // Never below one file per thread.
+        assert_eq!(fpc.max_files_per_thread(1000), 1);
+        assert_eq!(fpc.max_files_per_thread(0), 100);
     }
 }
