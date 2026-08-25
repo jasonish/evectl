@@ -295,7 +295,10 @@ fn remove_contents_with_container(context: &Context, directory: &Path) -> Result
         .manager
         .command()
         .args(["run", "--rm", "--user=0", "--entrypoint", "/bin/sh"])
-        .arg(format!("--volume={}:/target", directory.display()))
+        .arg(format!(
+            "--volume={}",
+            context.manager.bind_mount(directory, "/target")
+        ))
         .arg(image)
         .args(["-c", "rm -rf /target/* /target/.[!.]* /target/..?*"])
         .output()?;

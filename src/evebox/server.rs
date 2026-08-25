@@ -15,8 +15,10 @@ pub(crate) fn reset_password(context: &mut Context) {
     let host_config_directory = context.config_dir().join("evebox").join("server");
     std::fs::create_dir_all(&host_config_directory).unwrap();
     args.add(format!(
-        "--volume={}:/config",
-        host_config_directory.display()
+        "--volume={}",
+        context
+            .manager
+            .bind_mount(&host_config_directory, "/config")
     ));
 
     args.extend(&[
@@ -28,8 +30,10 @@ pub(crate) fn reset_password(context: &mut Context) {
     let mut args = ArgBuilder::new();
     args.add("run");
     args.add(format!(
-        "--volume={}:/config",
-        host_config_directory.display()
+        "--volume={}",
+        context
+            .manager
+            .bind_mount(&host_config_directory, "/config")
     ));
     args.extend(&[
         "--rm",

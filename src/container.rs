@@ -4,6 +4,7 @@
 use crate::prelude::*;
 
 use serde::Deserialize;
+use std::path::Path;
 use std::process::Command;
 
 pub const DEFAULT_SURICATA_IMAGE: &str = "docker.io/jasonish/suricata:latest";
@@ -59,6 +60,22 @@ impl ContainerManager {
     /// Return true if the container manager is Docker.
     pub(crate) fn is_docker(&self) -> bool {
         matches!(self, ContainerManager::Docker(_))
+    }
+
+    /// Format a bind mount, adding a shared SELinux label when SELinux is
+    /// enabled on the host.
+    pub(crate) fn bind_mount(&self, source: &Path, target: &str) -> String {
+        self.bind_mount_with_options(source, target, &[])
+    }
+
+    /// Format a bind mount with container-runtime volume options.
+    pub(crate) fn bind_mount_with_options(
+        &self,
+        source: &Path,
+        target: &str,
+        options: &[&str],
+    ) -> String {
+        format_bind_mount(source, target, options, selinux_enabled())
     }
 
     pub(crate) fn version(&self) -> Result<String> {
@@ -265,6 +282,34 @@ pub(crate) struct InspectState {
     pub exit_code: i32,
 }
 
+fn selinux_enabled() -> bool {
+    // This interface exists whenever SELinux is enabled, in both enforcing
+    // and permissive modes. Relabel in either mode so the mounts keep working
+    // if the host is later switched to enforcing mode.
+    Path::new("/sys/fs/selinux/enforce").exists()
+}
+
+fn format_bind_mount(
+    source: &Path,
+    target: &str,
+    options: &[&str],
+    selinux_enabled: bool,
+) -> String {
+    let mut options = options.to_vec();
+    if selinux_enabled && !options.iter().any(|option| matches!(*option, "z" | "Z")) {
+        // EveCtl mounts are shared by long-running and short-lived containers,
+        // so use the shared SELinux label rather than the private `:Z` label.
+        options.push("z");
+    }
+
+    let options = if options.is_empty() {
+        String::new()
+    } else {
+        format!(":{}", options.join(","))
+    };
+    format!("{}:{target}{options}", source.display())
+}
+
 fn command_json<T>(command: &mut Command) -> Result<T>
 where
     T: serde::de::DeserializeOwned + std::fmt::Debug,
@@ -344,9 +389,15 @@ impl SuricataContainer {
         let rundir = self.context.data_dir().join("suricata").join("run");
 
         let volumes = vec![
-            format!("{}:/var/log/suricata", logdir.display()),
-            format!("{}:/var/lib/suricata", libdir.display()),
-            format!("{}:/var/run/suricata", rundir.display()),
+            self.context
+                .manager
+                .bind_mount(&logdir, "/var/log/suricata"),
+            self.context
+                .manager
+                .bind_mount(&libdir, "/var/lib/suricata"),
+            self.context
+                .manager
+                .bind_mount(&rundir, "/var/run/suricata"),
         ];
         volumes
     }
@@ -431,5 +482,35 @@ impl RunCommandBuilder {
         command.arg(&self.image);
         command.args(&self.args);
         command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bind_mount;
+    use std::path::Path;
+
+    #[test]
+    fn bind_mount_without_selinux_has_no_label_option() {
+        assert_eq!(
+            format_bind_mount(Path::new("/host/data"), "/data", &[], false),
+            "/host/data:/data"
+        );
+    }
+
+    #[test]
+    fn bind_mount_with_selinux_uses_shared_label() {
+        assert_eq!(
+            format_bind_mount(Path::new("/host/data"), "/data", &[], true),
+            "/host/data:/data:z"
+        );
+    }
+
+    #[test]
+    fn bind_mount_combines_selinux_and_runtime_options() {
+        assert_eq!(
+            format_bind_mount(Path::new("/host/data"), "/data", &["U"], true),
+            "/host/data:/data:U,z"
+        );
     }
 }

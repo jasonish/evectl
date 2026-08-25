@@ -1289,8 +1289,8 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     } else {
         let path = context.config_dir().join("af-packet.yaml");
         args.add(format!(
-            "--volume={}:/config/af-packet.yaml",
-            path.display()
+            "--volume={}",
+            context.manager.bind_mount(&path, "/config/af-packet.yaml")
         ));
     }
 
@@ -1513,22 +1513,28 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         ));
     }
 
+    let host_log_directory = context.data_dir().join("suricata").join("log");
+    std::fs::create_dir_all(&host_log_directory)?;
     command.arg(format!(
-        "--volume={}:/var/log/suricata",
-        context.data_dir().join("suricata").join("log").display()
+        "--volume={}",
+        context
+            .manager
+            .bind_mount(&host_log_directory, "/var/log/suricata")
     ));
 
     if use_socket {
         let host_run_directory = context.data_dir().join("suricata").join("run");
         std::fs::create_dir_all(&host_run_directory)?;
         command.arg(format!(
-            "--volume={}:/var/run/suricata",
-            host_run_directory.display()
+            "--volume={}",
+            context
+                .manager
+                .bind_mount(&host_run_directory, "/var/run/suricata")
         ));
     }
 
     let host_config_directory = context.config_dir().join("evebox").join("server");
-    std::fs::create_dir_all(&host_config_directory).unwrap();
+    std::fs::create_dir_all(&host_config_directory)?;
     if use_socket {
         configs::write_evebox_server_socket_config(
             &host_config_directory.join("evectl-input.yaml"),
@@ -1537,13 +1543,18 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         configs::write_evebox_server_file_config(&host_config_directory.join("evectl-input.yaml"))?;
     }
     command.arg(format!(
-        "--volume={}:/config",
-        host_config_directory.display()
+        "--volume={}",
+        context
+            .manager
+            .bind_mount(&host_config_directory, "/config")
     ));
 
     let host_data_directory = context.data_dir().join("evebox").join("server");
-    std::fs::create_dir_all(&host_data_directory).unwrap();
-    command.arg(format!("--volume={}:/data", host_data_directory.display()));
+    std::fs::create_dir_all(&host_data_directory)?;
+    command.arg(format!(
+        "--volume={}",
+        context.manager.bind_mount(&host_data_directory, "/data")
+    ));
 
     command.arg("--env");
     command.arg("EVEBOX_CONFIG_DIRECTORY=/config");
@@ -1636,23 +1647,25 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
 
     let libdir = context.data_dir().join("evebox").join("agent");
     let logdir = context.data_dir().join("suricata").join("log");
+    std::fs::create_dir_all(&libdir)?;
+    std::fs::create_dir_all(&logdir)?;
 
     let mut volumes = vec![
-        format!("{}:/var/log/suricata", logdir.display()),
-        format!("{}:/var/lib/evebox", libdir.display()),
+        context.manager.bind_mount(&logdir, "/var/log/suricata"),
+        context.manager.bind_mount(&libdir, "/var/lib/evebox"),
     ];
 
     let configdir = context.config_dir().join("evebox").join("agent");
     if use_socket {
         let rundir = context.data_dir().join("suricata").join("run");
         std::fs::create_dir_all(&rundir)?;
-        volumes.push(format!("{}:/var/run/suricata", rundir.display()));
+        volumes.push(context.manager.bind_mount(&rundir, "/var/run/suricata"));
 
         configs::write_evebox_agent_socket_config(&configdir.join("evectl-input.yaml"))?;
     } else {
         configs::write_evebox_agent_file_config(&configdir.join("evectl-input.yaml"))?;
     }
-    volumes.push(format!("{}:/config", configdir.display()));
+    volumes.push(context.manager.bind_mount(&configdir, "/config"));
 
     for volume in volumes {
         args.add(format!("--volume={}", volume));
@@ -2066,13 +2079,14 @@ mod tests {
 
         let server = build_evebox_server_command(&socket_context, true).unwrap();
         let server_args = command_args(&server);
+        assert!(socket_context.data_dir().join("suricata/log").is_dir());
         assert!(server_args.contains(&"--user=0:998".to_string()));
         assert!(server_args.contains(&"/config/evectl-input.yaml".to_string()));
         assert!(!server_args.contains(&"/var/log/suricata/eve.json".to_string()));
         assert!(
             server_args
                 .iter()
-                .any(|arg| { arg.ends_with("/data/suricata/run:/var/run/suricata") })
+                .any(|arg| arg.contains("/data/suricata/run:/var/run/suricata"))
         );
 
         let mut agent_config = Config::default();
@@ -2123,6 +2137,7 @@ mod tests {
 
         let file_agent = build_evebox_agent_command(&file_agent_context, true).unwrap();
         let file_agent_args = command_args(&file_agent);
+        assert!(file_agent_context.data_dir().join("evebox/agent").is_dir());
         assert!(!file_agent_args.contains(&"--user=0:998".to_string()));
         assert!(file_agent_args.contains(&"/config/evectl-input.yaml".to_string()));
         assert!(!file_agent_args.contains(&"/var/log/suricata/eve.json".to_string()));

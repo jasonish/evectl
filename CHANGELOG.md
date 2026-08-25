@@ -43,6 +43,9 @@
 
 ### Fixed
 
+- Relabel container bind mounts on SELinux hosts so EveBox and Suricata
+  can access their host directories, and create required directories for
+  server-only and agent-only installations
 - Retry failed Linux start-on-boot launches and restart containers that
   exit unexpectedly, without depending on a particular container-runtime
   systemd unit

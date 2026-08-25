@@ -147,17 +147,17 @@ pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command
     // chown to, so have Podman fix up the data directory ownership
     // itself with the ":U" volume option.
     let volume_opts = if context.manager.is_podman() {
-        ":U"
+        &["U"][..]
     } else {
-        ""
+        &[]
     };
     match engine(context) {
         SearchEngine::Elasticsearch => {
             command.arg("-v");
-            command.arg(format!(
-                "{}:/usr/share/elasticsearch/data{}",
-                host_data_dir(context).display(),
-                volume_opts
+            command.arg(context.manager.bind_mount_with_options(
+                &host_data_dir(context),
+                "/usr/share/elasticsearch/data",
+                volume_opts,
             ));
         }
         SearchEngine::OpenSearch => {
@@ -170,10 +170,10 @@ pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command
                 memory_gb(context) * 1024 / 2
             ));
             command.arg("-v");
-            command.arg(format!(
-                "{}:/usr/share/opensearch/data{}",
-                host_data_dir(context).display(),
-                volume_opts
+            command.arg(context.manager.bind_mount_with_options(
+                &host_data_dir(context),
+                "/usr/share/opensearch/data",
+                volume_opts,
             ));
         }
     }

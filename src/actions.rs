@@ -75,7 +75,7 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
         let target = format!("/etc/suricata/{}", filename);
         if source.exists() {
             info!("Bind-mounting {} to {}", source.display(), &target);
-            volumes.push(format!("{}:{}", source.display(), target));
+            volumes.push(context.manager.bind_mount(&source, &target));
         }
     }
 
