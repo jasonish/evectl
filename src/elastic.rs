@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::SearchEngine;
+use crate::container::RESTART_POLICY_ARG;
 use crate::prelude::*;
 
 pub(crate) const ELASTICSEARCH_IMAGE: &str =
@@ -114,21 +115,28 @@ pub(crate) fn create_data_dir(context: &Context) -> Result<PathBuf> {
 }
 
 pub(crate) fn stop_elasticsearch(context: &Context) {
-    // Stop the container names of both engines so switching engines
-    // doesn't leave the previous one running.
+    // Stop and remove the container names of both engines so switching
+    // engines doesn't leave the previous one behind.
     for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
-        let _ = context
-            .manager
-            .stop(&container_name_for(context, engine), None);
+        let name = container_name_for(context, engine);
+        if context.manager.is_active(&name) {
+            let _ = context.manager.stop(&name, None);
+        }
+        context.manager.quiet_rm(&name);
     }
 }
 
-pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command {
+pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command {
     let mut command = context.manager.command();
     command.arg("run");
     command.arg("--name");
     command.arg(container_name(context));
-    command.arg("--rm");
+    if detached {
+        command.arg("--detach");
+        command.arg(RESTART_POLICY_ARG);
+    } else {
+        command.arg("--rm");
+    }
     // Without a memory limit Elasticsearch sizes its heap to half of
     // all host memory, which on a large host can be OOM killed while
     // pre-allocating the heap on startup. With a limit, the heap is
@@ -169,9 +177,6 @@ pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command
             ));
         }
     }
-    if !dargs.is_empty() {
-        command.args(dargs);
-    }
     command.arg(docker_image(context));
     match engine(context) {
         SearchEngine::Elasticsearch => {
@@ -188,11 +193,16 @@ pub(crate) fn build_docker_command(context: &Context, dargs: &[&str]) -> Command
 
 /// Start the search engine detached.
 pub(crate) fn start_elasticsearch(context: &Context) -> Result<()> {
+    let container_name = container_name(context);
+    if context.manager.is_running(&container_name) {
+        info!("{} is already running", engine(context).name());
+        return Ok(());
+    }
+
     stop_elasticsearch(context);
     create_data_dir(context)?;
-    context.manager.quiet_rm(&container_name(context));
 
-    let mut command = build_docker_command(context, &["--detach"]);
+    let mut command = build_docker_command(context, true);
 
     let output = command.output()?;
     if !output.status.success() {

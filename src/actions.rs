@@ -123,9 +123,12 @@ fn build_update_args<'a>(extra_args: &[&'a str], suricata_running: bool) -> Vec<
 }
 
 pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
-    context
-        .manager
-        .quiet_rm(&crate::evebox::server::container_name(context));
+    let container_name = crate::evebox::server::container_name(context);
+    if context.manager.is_running(&container_name) {
+        info!("EveBox-Server is already running");
+        return Ok(());
+    }
+    context.manager.quiet_rm(&container_name);
     let mut command = build_evebox_server_command(context, true)?;
     let output = command.output()?;
     if !output.status.success() {
@@ -135,22 +138,18 @@ pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
 }
 
 pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
-    context
-        .manager
-        .quiet_rm(&crate::evebox::agent::container_name(context));
+    let container_name = crate::evebox::agent::container_name(context);
+    if context.manager.is_running(&container_name) {
+        info!("EveBox-Agent is already running");
+        return Ok(());
+    }
+    context.manager.quiet_rm(&container_name);
     let mut command = build_evebox_agent_command(context, true)?;
     let output = command.output()?;
     if !output.status.success() {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());
     }
     Ok(())
-}
-
-pub(crate) fn stop_evebox_server(context: &Context) -> Result<()> {
-    context.manager.stop(
-        &crate::evebox::server::container_name(context),
-        Some("SIGINT"),
-    )
 }
 
 pub(crate) fn _stop_evebox_agent(context: &Context) -> Result<()> {

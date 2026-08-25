@@ -103,7 +103,7 @@ pub(crate) fn start_on_boot(context: &Context) -> Result<()> {
         {
             return Ok(());
         }
-        crate::systemd::install(&context.root)?;
+        crate::systemd::install(&context.root, context.manager)?;
     } else if inquire::Confirm::new("Do you wish to disable start on boot?")
         .with_default(true)
         .prompt()?

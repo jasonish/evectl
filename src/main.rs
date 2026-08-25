@@ -19,7 +19,7 @@ use colored::Colorize;
 use config::{EveOutput, FpcConfig};
 #[cfg(not(target_os = "windows"))]
 use container::ContainerManager;
-use container::{Container, SuricataContainer};
+use container::{Container, RESTART_POLICY_ARG, SuricataContainer};
 use logs::LogArgs;
 
 const EVE_SOCKET_CONTAINER_PATH: &str = "/var/run/suricata/eve.sock";
@@ -482,7 +482,7 @@ fn main() -> Result<()> {
             }
             Commands::Systemd { command } => {
                 match command {
-                    SystemdCommands::Install => systemd::install(&context.root)?,
+                    SystemdCommands::Install => systemd::install(&context.root, context.manager)?,
                     SystemdCommands::Remove => systemd::remove()?,
                 }
                 0
@@ -561,8 +561,8 @@ fn command_start(context: &Context, debug: bool) -> i32 {
         if start_foreground(context).is_err() {
             return 1;
         }
-    } else {
-        start(context);
+    } else if !start(context) {
+        return 1;
     }
     0
 }
@@ -646,7 +646,7 @@ fn start_foreground(context: &Context) -> Result<()> {
             error!("Failed to create data directory for {}: {}", engine, err);
             return Err(err);
         }
-        let mut command = elastic::build_docker_command(context, &[]);
+        let mut command = elastic::build_docker_command(context, false);
         debug!("Starting {}: {:?}", engine, &command);
         let mut child = match command
             .stdout(Stdio::piped())
@@ -806,9 +806,11 @@ fn start_foreground(context: &Context) -> Result<()> {
     Ok(())
 }
 
-fn stop_container(context: &Context, name: &str) -> bool {
+fn stop_container(context: &Context, name: &str, signal: Option<&str>) -> bool {
     let mut ok = true;
-    if let Err(err) = context.manager.stop(name, None) {
+    if context.manager.is_active(name)
+        && let Err(err) = context.manager.stop(name, signal)
+    {
         error!("Failed to stop container {name}: {err}");
         ok = false;
     }
@@ -825,7 +827,7 @@ fn stop_all(context: &Context) -> bool {
         .container_exists(&crate::suricata::container_name(context))
     {
         info!("Stopping Suricata");
-        if !stop_container(context, &crate::suricata::container_name(context)) {
+        if !stop_container(context, &crate::suricata::container_name(context), None) {
             ok = false;
         }
     } else {
@@ -840,7 +842,11 @@ fn stop_all(context: &Context) -> bool {
         .container_exists(&crate::evebox::server::container_name(context))
     {
         info!("Stopping EveBox-Server");
-        if actions::stop_evebox_server(context).is_err() {
+        if !stop_container(
+            context,
+            &crate::evebox::server::container_name(context),
+            Some("SIGINT"),
+        ) {
             ok = false;
         }
     } else {
@@ -856,7 +862,11 @@ fn stop_all(context: &Context) -> bool {
         .container_exists(&crate::evebox::agent::container_name(context))
     {
         info!("Stopping EveBox-Agent");
-        if !stop_container(context, &crate::evebox::agent::container_name(context)) {
+        if !stop_container(
+            context,
+            &crate::evebox::agent::container_name(context),
+            None,
+        ) {
             ok = false;
         }
     } else {
@@ -1180,6 +1190,68 @@ fn start(context: &Context) -> bool {
         }
     }
 
+    let containers = enabled_containers(context);
+    if !containers.is_empty() {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if !verify_containers_running(context, &containers) {
+            ok = false;
+        }
+    }
+
+    ok
+}
+
+fn enabled_containers(context: &Context) -> Vec<(&'static str, String)> {
+    let mut containers = Vec::new();
+    if context.config.elasticsearch_enabled() {
+        containers.push((
+            context.config.elasticsearch.engine.name(),
+            elastic::container_name(context),
+        ));
+    }
+    if context.config.evebox_server.enabled {
+        containers.push((
+            "EveBox-Server",
+            crate::evebox::server::container_name(context),
+        ));
+    }
+    if context.config.evebox_agent.enabled {
+        containers.push((
+            "EveBox-Agent",
+            crate::evebox::agent::container_name(context),
+        ));
+    }
+    if context.config.suricata.enabled {
+        containers.push(("Suricata", crate::suricata::container_name(context)));
+    }
+    containers
+}
+
+fn verify_containers_running(context: &Context, containers: &[(&str, String)]) -> bool {
+    let mut ok = true;
+    for (label, name) in containers {
+        match context.manager.state(name) {
+            Ok(state) if state.running && !state.restarting => {
+                debug!("{label} container {name} remained running after startup");
+            }
+            Ok(state) => {
+                let detail = if state.error.is_empty() {
+                    String::new()
+                } else {
+                    format!("; error: {}", state.error)
+                };
+                error!(
+                    "{label} container {name} is {}; exit code {}{detail}",
+                    state.status, state.exit_code
+                );
+                ok = false;
+            }
+            Err(err) => {
+                error!("Failed to inspect {label} container {name}: {err}");
+                ok = false;
+            }
+        }
+    }
     ok
 }
 
@@ -1208,6 +1280,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
 
     if detached {
         args.add("--detach");
+        args.add(RESTART_POLICY_ARG);
     }
 
     let path = context.config_dir().join("af-packet.yaml");
@@ -1351,9 +1424,12 @@ fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
 }
 
 fn start_suricata_detached(context: &Context) -> Result<()> {
-    context
-        .manager
-        .quiet_rm(&crate::suricata::container_name(context));
+    let container_name = crate::suricata::container_name(context);
+    if context.manager.is_running(&container_name) {
+        info!("Suricata is already running");
+        return Ok(());
+    }
+    context.manager.quiet_rm(&container_name);
     suricata::mkdirs(context)?;
     suricata::remove_engine_log(context);
     let mut command = build_suricata_command(context, true)?;
@@ -1427,6 +1503,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     if daemon {
         command.arg("--detach");
+        command.arg(RESTART_POLICY_ARG);
     }
 
     if context.config.elasticsearch_enabled() {
@@ -1541,15 +1618,16 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     Ok(command)
 }
 
-fn build_evebox_agent_command(context: &Context, detatched: bool) -> Result<process::Command> {
+fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<process::Command> {
     let use_socket = uses_eve_socket(context);
     let mut args = ArgBuilder::from(&[
         "run",
         "--name",
         &crate::evebox::agent::container_name(context),
     ]);
-    if detatched {
-        args.add("-d");
+    if detached {
+        args.add("--detach");
+        args.add(RESTART_POLICY_ARG);
     }
 
     if use_socket {
@@ -1755,7 +1833,10 @@ fn print(context: &Context, what: String) -> Result<()> {
             }
         }
         "systemd" => {
-            println!("{}", systemd::format_template(&context.root)?);
+            println!(
+                "{}",
+                systemd::format_template(&context.root, context.manager)?
+            );
         }
         _ => {
             error!("Unknown print target: {}", what);
@@ -1885,6 +1966,59 @@ mod tests {
 
         context.config.evebox_server.enabled = true;
         assert!(effective_fpc_config(&context).enabled);
+    }
+
+    #[test]
+    fn detached_service_commands_use_restart_policies() {
+        let mut server_config = Config::default();
+        server_config.evebox_server.enabled = true;
+        let (_server_root, server_context) = docker_context(server_config);
+        let detached = command_args(&build_evebox_server_command(&server_context, true).unwrap());
+        assert!(detached.contains(&RESTART_POLICY_ARG.to_string()));
+        let foreground =
+            command_args(&build_evebox_server_command(&server_context, false).unwrap());
+        assert!(!foreground.contains(&RESTART_POLICY_ARG.to_string()));
+
+        let mut agent_config = Config::default();
+        agent_config.evebox_agent.enabled = true;
+        agent_config.evebox_agent.server = "https://evebox.example".to_string();
+        let (_agent_root, agent_context) = docker_context(agent_config);
+        let agent = command_args(&build_evebox_agent_command(&agent_context, true).unwrap());
+        assert!(agent.contains(&RESTART_POLICY_ARG.to_string()));
+
+        let mut elastic_config = Config::default();
+        elastic_config.evebox_server.enabled = true;
+        elastic_config.elasticsearch.enabled = true;
+        let (_elastic_root, elastic_context) = docker_context(elastic_config);
+        let detached = command_args(&elastic::build_docker_command(&elastic_context, true));
+        assert!(detached.contains(&RESTART_POLICY_ARG.to_string()));
+        assert!(!detached.contains(&"--rm".to_string()));
+        let foreground = command_args(&elastic::build_docker_command(&elastic_context, false));
+        assert!(!foreground.contains(&RESTART_POLICY_ARG.to_string()));
+        assert!(foreground.contains(&"--rm".to_string()));
+    }
+
+    #[test]
+    fn enabled_containers_matches_configuration() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.evebox_server.enabled = true;
+        config.elasticsearch.enabled = true;
+        let (_root, context) = docker_context(config);
+
+        let containers = enabled_containers(&context);
+        assert_eq!(containers.len(), 3);
+        assert!(containers.iter().any(|(label, _)| *label == "Suricata"));
+        assert!(
+            containers
+                .iter()
+                .any(|(label, _)| *label == "EveBox-Server")
+        );
+        assert!(
+            containers
+                .iter()
+                .any(|(label, _)| *label == "Elasticsearch")
+        );
     }
 
     #[test]

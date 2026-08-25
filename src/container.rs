@@ -8,6 +8,11 @@ use std::process::Command;
 
 pub const DEFAULT_SURICATA_IMAGE: &str = "docker.io/jasonish/suricata:latest";
 pub const DEFAULT_EVEBOX_IMAGE: &str = "docker.io/jasonish/evebox:main";
+// Recover a container whose process exits with an error. Note that the
+// container runtime may also restore these containers itself when it
+// starts at boot (before `evectl start` runs), so starting must remain
+// idempotent and tolerate containers that are already running.
+pub(crate) const RESTART_POLICY_ARG: &str = "--restart=on-failure";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ContainerManager {
@@ -80,15 +85,7 @@ impl ContainerManager {
 
     /// Quietly remove container.
     pub(crate) fn quiet_rm(&self, name: &str) {
-        let mut args = vec!["rm"];
-
-        // Podman needs to be a little more agressive here.
-        if self.is_podman() {
-            args.push("--force");
-        }
-
-        args.push(name);
-        let _ = self.command().args(&args).output();
+        let _ = self.command().args(["rm", "--force", name]).output();
     }
 
     pub(crate) fn stop(&self, name: &str, signal: Option<&str>) -> Result<()> {
@@ -140,9 +137,20 @@ impl ContainerManager {
         self.inspect_first(name).is_ok()
     }
 
+    /// Test if a container is running and not in the middle of being
+    /// restarted by the container runtime's restart policy.
     pub(crate) fn is_running(&self, name: &str) -> bool {
         if let Ok(state) = self.state(name) {
-            return state.running;
+            return state.running && !state.restarting;
+        }
+        false
+    }
+
+    /// Test if a container is running or being restarted, that is,
+    /// something a `stop` should be issued for.
+    pub(crate) fn is_active(&self, name: &str) -> bool {
+        if let Ok(state) = self.state(name) {
+            return state.running || state.restarting;
         }
         false
     }
@@ -242,16 +250,19 @@ pub(crate) struct InspectEntry {
 #[derive(Debug, Deserialize)]
 pub(crate) struct InspectState {
     #[serde(rename = "Status")]
-    pub _status: String,
+    pub status: String,
 
     #[serde(rename = "Running")]
     pub running: bool,
 
+    #[serde(rename = "Restarting", default)]
+    pub restarting: bool,
+
     #[serde(rename = "Error")]
-    pub _error: String,
+    pub error: String,
 
     #[serde(rename = "ExitCode")]
-    pub _exit_code: i32,
+    pub exit_code: i32,
 }
 
 fn command_json<T>(command: &mut Command) -> Result<T>

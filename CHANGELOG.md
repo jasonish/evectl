@@ -43,6 +43,10 @@
 
 ### Fixed
 
+- Retry failed Linux start-on-boot launches and restart containers that
+  exit unexpectedly, without depending on a particular container-runtime
+  systemd unit
+- Preserve the selected Docker or Podman runtime in the Linux systemd unit
 - Windows: restart Suricata after a rule update changes the rules, as
   Suricata on Windows can't reload rules in place
 - Apply generated JA4 Suricata overrides when starting Suricata
