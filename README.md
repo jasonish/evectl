@@ -18,25 +18,52 @@ native Suricata, EveBox, and Npcap installations.
 - 64-bit Windows on an x86_64 processor.
 - PowerShell and permission to approve installer elevation prompts.
 
-## Installation the Easy Way
+## Installation
 
 ### Linux
 
+Install EveCtl with the following command:
+
 ```bash
 curl -sSf https://evebox.org/evectl.sh | sh
-./evectl
+```
+
+The installer verifies your platform, downloads `evectl`, and asks
+where to install it:
+
+- `~/.local/bin` (recommended): a per-user install that does not
+  require `sudo`. This directory is on the `PATH` by default on most
+  Linux distributions.
+- `/usr/local/bin`: a system-wide install that requires `sudo`.
+
+To skip the prompt, set `EVECTL_INSTALL_DIR`, for example:
+
+```bash
+curl -sSf https://evebox.org/evectl.sh | EVECTL_INSTALL_DIR=/usr/local/bin sh
+```
+
+Run EveCtl with:
+
+```bash
+evectl
 ```
 
 ### Windows PowerShell
 
+Install EveCtl with the PowerShell equivalent of the Linux `curl`
+command:
+
 ```powershell
 irm https://evebox.org/evectl.ps1 | iex
-evectl.exe
 ```
 
-The Windows installer verifies the download, installs `evectl.exe` in
+The installer verifies the download, installs `evectl.exe` in
 `$env:LOCALAPPDATA\evectl\bin`, and offers to add that directory to your
-user `PATH`.
+user `PATH`. Run it with:
+
+```powershell
+evectl
+```
 
 You can also download EveCtl directly from
 https://evebox.org/files/evectl/.
