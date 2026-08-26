@@ -12,6 +12,24 @@ pub fn getuid() -> u32 {
     0
 }
 
+/// Number of online CPUs, as Suricata counts them for `threads:
+/// auto` (sysconf's _SC_NPROCESSORS_ONLN). Unlike
+/// `available_parallelism`, this ignores any CPU affinity or cgroup
+/// quota applied to this process, which Suricata in its own container
+/// does not share.
+pub fn online_cpus() -> usize {
+    #[cfg(unix)]
+    {
+        let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+        if n > 0 {
+            return n as usize;
+        }
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 /// The system hostname, which is what the EveBox agent identifies
 /// itself as when no agent ID is configured.
 #[cfg(unix)]

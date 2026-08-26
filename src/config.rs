@@ -66,7 +66,9 @@ pub(crate) struct FpcConfig {
     pub enabled: bool,
 
     /// Maximum total number of pcap files to retain across all
-    /// capture threads.
+    /// capture threads. Suricata enforces the limit per thread, so
+    /// the effective total is rounded down to a multiple of the
+    /// thread count, with a minimum of one file per thread.
     #[serde(default, skip_serializing_if = "is_default")]
     pub max_files: Option<u32>,
 }
@@ -74,6 +76,7 @@ pub(crate) struct FpcConfig {
 impl FpcConfig {
     pub(crate) const DEFAULT_MAX_FILES: u32 = 100;
     pub(crate) const FILE_SIZE: &'static str = "256mb";
+    const FILE_SIZE_MB: u64 = 256;
 
     pub(crate) fn max_files(&self) -> u32 {
         self.max_files.unwrap_or(Self::DEFAULT_MAX_FILES)
@@ -86,19 +89,36 @@ impl FpcConfig {
         (self.max_files() / threads.max(1) as u32).max(1)
     }
 
-    /// Number of capture threads Suricata will use with
-    /// `threads: auto`, assumed to be the number of host CPUs.
-    pub(crate) fn capture_threads() -> usize {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
+    /// The total number of files Suricata will actually retain
+    /// across `threads` capture threads.
+    pub(crate) fn effective_max_files_for(&self, threads: usize) -> u32 {
+        self.max_files_per_thread(threads) * threads.max(1) as u32
     }
 
-    /// Approximate maximum disk usage of the pcap spool in GB, taking
-    /// the per-thread rounding into account.
-    pub(crate) fn disk_usage_gb(&self) -> u64 {
-        let threads = Self::capture_threads();
-        self.max_files_per_thread(threads) as u64 * threads as u64 * 256 / 1024
+    pub(crate) fn effective_max_files(&self) -> u32 {
+        self.effective_max_files_for(Self::capture_threads())
+    }
+
+    /// Number of capture threads Suricata will use with
+    /// `threads: auto`: one per online CPU, regardless of any
+    /// affinity or quota applied to EveCtl itself.
+    pub(crate) fn capture_threads() -> usize {
+        evectl::system::online_cpus()
+    }
+
+    /// Approximate maximum disk usage of the pcap spool with
+    /// `threads` capture threads, as a human readable size.
+    pub(crate) fn disk_usage_for(&self, threads: usize) -> String {
+        let mb = self.effective_max_files_for(threads) as u64 * Self::FILE_SIZE_MB;
+        if mb >= 1024 {
+            format!("{} GB", mb / 1024)
+        } else {
+            format!("{mb} MB")
+        }
+    }
+
+    pub(crate) fn disk_usage(&self) -> String {
+        self.disk_usage_for(Self::capture_threads())
     }
 }
 
@@ -416,5 +436,22 @@ mod fpc_tests {
         // Never below one file per thread.
         assert_eq!(fpc.max_files_per_thread(1000), 1);
         assert_eq!(fpc.max_files_per_thread(0), 100);
+
+        // What Suricata really keeps, and what that costs.
+        assert_eq!(fpc.effective_max_files_for(1), 100);
+        assert_eq!(fpc.effective_max_files_for(4), 100);
+        assert_eq!(fpc.effective_max_files_for(16), 96);
+        assert_eq!(fpc.effective_max_files_for(1000), 1000);
+        assert_eq!(fpc.disk_usage_for(1), "25 GB");
+        assert_eq!(fpc.disk_usage_for(16), "24 GB");
+
+        let small = FpcConfig {
+            enabled: true,
+            max_files: Some(2),
+        };
+        assert_eq!(small.effective_max_files_for(1), 2);
+        assert_eq!(small.disk_usage_for(1), "512 MB");
+        assert_eq!(small.effective_max_files_for(8), 8);
+        assert_eq!(small.disk_usage_for(8), "2 GB");
     }
 }

@@ -261,7 +261,7 @@ fn remove_path(context: &Context, path: &Path) -> Result<()> {
 /// remove_dir_all can't always delete. On a permission error, fall
 /// back to deleting the contents with a container, which runs with
 /// the same privileges that created the files.
-fn remove_directory(context: &Context, directory: &Path) -> Result<()> {
+pub(crate) fn remove_directory(context: &Context, directory: &Path) -> Result<()> {
     info!("Removing {}", directory.display());
     let err = match std::fs::remove_dir_all(directory) {
         Ok(()) => return Ok(()),
