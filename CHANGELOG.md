@@ -4,6 +4,16 @@
 
 ### Added
 
+- Opt-in full packet capture (Linux only): Suricata writes a rotating
+  pcap spool that is served through the EveBox web UI, either by the
+  local EveBox server or by the EveBox agent on behalf of a remote
+  server. Configured from the new "Configure Full Packet Capture"
+  menu, with a retention setting as a total file count. Agent
+  installations are prompted for an agent ID and the matching agent
+  key issued on the server (`evebox config agents add <agent-id>`)
+- EveBox agent ID and key settings in the EveBox Agent menu (Linux
+  only); the ID is stamped on the agent's events and identifies it to
+  the server
 - `-D`/`--data-directory` option (Linux only) to select the instance
   directory, allowing multiple instances on one host
 - OpenSearch as a bundled search-engine option alongside

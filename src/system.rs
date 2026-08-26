@@ -12,6 +12,27 @@ pub fn getuid() -> u32 {
     0
 }
 
+/// The system hostname, which is what the EveBox agent identifies
+/// itself as when no agent ID is configured.
+#[cfg(unix)]
+pub fn hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..len]).trim().to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Not needed on Windows, where the agent ID is not configurable
+/// through EveCtl.
+#[cfg(not(unix))]
+pub fn hostname() -> Option<String> {
+    None
+}
+
 #[derive(Debug, Default)]
 pub struct Interface {
     pub name: String,

@@ -571,21 +571,25 @@ fn uses_eve_socket(context: &Context) -> bool {
     context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::UnixStream
 }
 
-/// Full packet capture is in use when both the local Suricata and the
-/// local EveBox server are enabled, along with the FPC option.
+/// Full packet capture is in use when the local Suricata is enabled
+/// along with the FPC option and something local to serve the spool:
+/// the EveBox server directly, or the EveBox agent on behalf of a
+/// remote server.
 fn uses_fpc(context: &Context) -> bool {
     context.config.suricata.enabled
         && context.config.fpc.enabled
-        && context.config.evebox_server.enabled
+        && (context.config.evebox_server.enabled || context.config.evebox_agent.enabled)
 }
 
 /// The FPC configuration as it applies to this start: capture is only
-/// enabled if the local EveBox server is there to serve it, otherwise
-/// Suricata would fill a spool nothing reads.
+/// enabled if a local EveBox server or agent is there to serve it,
+/// otherwise Suricata would fill a spool nothing reads.
 fn effective_fpc_config(context: &Context) -> FpcConfig {
     let enabled = uses_fpc(context);
     if context.config.fpc.enabled && !enabled {
-        warn!("Full packet capture is enabled but the EveBox server is not; not capturing");
+        warn!(
+            "Full packet capture is enabled but neither the EveBox server nor agent is; not capturing"
+        );
     }
     FpcConfig {
         enabled,
@@ -1323,7 +1327,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
 }
 
 /// Suricata pcap-log spool directory inside the containers. Shared
-/// with the EveBox server through the Suricata log volume.
+/// with the EveBox server and agent through the Suricata log volume.
 const PCAP_LOG_CONTAINER_DIR: &str = "/var/log/suricata/pcap";
 const PCAP_LOG_PREFIX: &str = "log.";
 
@@ -1675,6 +1679,24 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
     // may need to connect to localhost of the host system.
     args.add("--net=host");
 
+    let fpc = uses_fpc(context);
+    if fpc {
+        // The agent key authenticates the packet capture channel to
+        // the server. Passed in the environment, like the server's
+        // Elasticsearch credentials, to keep it out of the generated
+        // configuration file.
+        match &context.config.evebox_agent.key {
+            Some(key) => {
+                args.add("--env");
+                args.add(format!("EVEBOX_SERVER_KEY={key}"));
+            }
+            None => warn!(
+                "Full packet capture is enabled but no agent key is set; the EveBox server \
+                 will reject the packet capture channel unless it allows unauthenticated agents"
+            ),
+        }
+    }
+
     args.add(context.image_name(Container::EveBox));
     args.extend(&["evebox", "agent"]);
     args.extend(&["--config", "/config/evectl-input.yaml"]);
@@ -1684,6 +1706,19 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
 
     if context.config.evebox_agent.disable_certificate_validation {
         args.add("--disable-certificate-check");
+    }
+
+    // Stamped on every event and claimed on the packet capture
+    // channel, so the server routes capture requests for this
+    // sensor's events back to this agent.
+    if let Some(agent_id) = &context.config.evebox_agent.agent_id {
+        args.add("--agent-id");
+        args.add(agent_id);
+    }
+
+    if fpc {
+        args.add(format!("--pcap-directory={PCAP_LOG_CONTAINER_DIR}"));
+        args.add(format!("--pcap-prefix={PCAP_LOG_PREFIX}"));
     }
 
     let mut command = context.manager.command();
@@ -1965,20 +2000,39 @@ mod tests {
     }
 
     #[test]
-    fn fpc_requires_local_evebox_server() {
+    fn fpc_requires_local_evebox_server_or_agent() {
         let mut config = Config::default();
         config.suricata.enabled = true;
         config.fpc.enabled = true;
         config.fpc.max_files = Some(20);
         let (_root, mut context) = docker_context(config);
 
-        // No server: capture is disabled, retention is preserved.
+        // No server or agent: capture is disabled, retention is
+        // preserved.
         let fpc = effective_fpc_config(&context);
         assert!(!fpc.enabled);
         assert_eq!(fpc.max_files, Some(20));
 
         context.config.evebox_server.enabled = true;
         assert!(effective_fpc_config(&context).enabled);
+
+        context.config.evebox_server.enabled = false;
+        context.config.evebox_agent.enabled = true;
+        assert!(effective_fpc_config(&context).enabled);
+
+        // Both enabled (file mode): each serves the spool to its own
+        // server.
+        context.config.evebox_server.enabled = true;
+        assert!(effective_fpc_config(&context).enabled);
+        let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
+        assert!(args.contains(&"--pcap-prefix=log.".to_string()));
+        let args = command_args(&build_evebox_server_command(&context, true).unwrap());
+        assert!(args.contains(&"--pcap-prefix=log.".to_string()));
+        context.config.evebox_server.enabled = false;
+
+        // Without Suricata there is nothing to capture.
+        context.config.suricata.enabled = false;
+        assert!(!effective_fpc_config(&context).enabled);
     }
 
     #[test]
@@ -2050,6 +2104,58 @@ mod tests {
         context.config.fpc.enabled = false;
         let args = command_args(&build_evebox_server_command(&context, true).unwrap());
         assert!(!args.iter().any(|a| a.starts_with("--pcap-")));
+    }
+
+    #[test]
+    fn fpc_adds_pcap_flags_and_key_to_evebox_agent() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.fpc.enabled = true;
+        config.evebox_agent.enabled = true;
+        config.evebox_agent.server = "https://evebox.example".to_string();
+        config.evebox_agent.agent_id = Some("sensor-1".to_string());
+        config.evebox_agent.key = Some("secret-key".to_string());
+        let (_root, context) = docker_context(config);
+
+        let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
+        assert!(args.contains(&"--pcap-directory=/var/log/suricata/pcap".to_string()));
+        assert!(args.contains(&"--pcap-prefix=log.".to_string()));
+        let agent_id = args.iter().position(|a| a == "--agent-id").unwrap();
+        assert_eq!(args[agent_id + 1], "sensor-1");
+
+        // The key is a container environment variable, so it must
+        // come before the image name; the agent ID and pcap options
+        // are agent arguments, so they must come after.
+        let image = args.iter().position(|a| a == "evebox").unwrap() - 1;
+        assert!(agent_id > image);
+        let key = args
+            .iter()
+            .position(|a| a == "EVEBOX_SERVER_KEY=secret-key")
+            .unwrap();
+        assert_eq!(args[key - 1], "--env");
+        assert!(key < image);
+        let pcap = args
+            .iter()
+            .position(|a| a == "--pcap-directory=/var/log/suricata/pcap")
+            .unwrap();
+        assert!(pcap > image);
+
+        // The agent ID stamps events even without packet capture, but
+        // the key and pcap options are only passed with it.
+        let mut context = context;
+        context.config.fpc.enabled = false;
+        let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
+        assert!(args.contains(&"--agent-id".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("--pcap-")));
+        assert!(!args.iter().any(|a| a.starts_with("EVEBOX_SERVER_KEY=")));
+
+        // Without a key the channel is still configured; the server
+        // decides whether to accept it.
+        context.config.fpc.enabled = true;
+        context.config.evebox_agent.key = None;
+        let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
+        assert!(args.contains(&"--pcap-prefix=log.".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("EVEBOX_SERVER_KEY=")));
     }
 
     #[test]

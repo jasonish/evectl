@@ -55,8 +55,10 @@ pub(crate) struct SuricataConfig {
 }
 
 /// Full packet capture configuration. When enabled, Suricata writes a
-/// rotating pcap spool that the EveBox server serves through its web UI.
-/// Requires both Suricata and the EveBox server; not supported on Windows.
+/// rotating pcap spool that is served through the EveBox web UI, either
+/// directly by the local EveBox server or by the local EveBox agent on
+/// behalf of a remote server. Requires Suricata and one of the two; not
+/// supported on Windows.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct FpcConfig {
@@ -225,6 +227,19 @@ pub(crate) struct EveBoxAgentConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub disable_certificate_validation: bool,
+
+    /// Identifier the agent presents to the server, stamped on each
+    /// event and claimed on the packet capture channel. EveBox
+    /// defaults to the hostname when unset. Full packet capture
+    /// requires it to match the name of an agent key on the server.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub agent_id: Option<String>,
+
+    /// Agent key issued by the EveBox server (`evebox config agents
+    /// add <agent-id>`), used to authenticate the packet capture
+    /// channel.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub key: Option<String>,
 }
 
 impl Config {
@@ -297,6 +312,10 @@ mod tests {
         config.evebox_server.bind_address = Some("192.168.1.10".to_string());
         config.elasticsearch.engine = SearchEngine::OpenSearch;
         config.elasticsearch.memory = Some(4);
+        config.evebox_agent.agent_id = Some("sensor-1".to_string());
+        config.evebox_agent.key = Some("secret".to_string());
+        config.fpc.enabled = true;
+        config.fpc.max_files = Some(20);
 
         let toml = toml::to_string(&config).unwrap();
         let parsed = Config::parse_toml(&toml).unwrap();
