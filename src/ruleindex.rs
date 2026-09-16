@@ -15,5 +15,5 @@ pub(crate) struct RuleIndex {
 pub(crate) struct RuleSource {
     pub summary: String,
     pub obsolete: Option<String>,
-    pub parameters: Option<HashMap<String, serde_yaml::Value>>,
+    pub parameters: Option<HashMap<String, yaml_serde::Value>>,
 }

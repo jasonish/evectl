@@ -19,7 +19,7 @@ pub(crate) fn load_rule_index(context: &Context) -> Result<RuleIndex> {
         .args(&["cat", "/var/lib/suricata/update/cache/index.yaml"])
         .build()
         .status_output()?;
-    let index: RuleIndex = serde_yaml::from_slice(&output)?;
+    let index: RuleIndex = yaml_serde::from_slice(&output)?;
     Ok(index)
 }
 
