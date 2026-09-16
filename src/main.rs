@@ -21,8 +21,10 @@ use config::{EveOutput, FpcConfig};
 use container::ContainerManager;
 use container::{Container, RESTART_POLICY_ARG, SuricataContainer};
 use logs::LogArgs;
+use semver::Version;
 
 const EVE_SOCKET_CONTAINER_PATH: &str = "/var/run/suricata/eve.sock";
+const MINIMUM_SURICATA_VERSION: &str = "8.0.6";
 
 mod actions;
 mod config;
@@ -1260,6 +1262,7 @@ fn verify_containers_running(context: &Context, containers: &[(&str, String)]) -
 }
 
 fn build_suricata_command(context: &Context, detached: bool) -> Result<std::process::Command> {
+    warn_if_unsupported_suricata_version(context);
     let config = suricata_dump_config(context)?;
     let set_args = suricata_set_args(
         &config,
@@ -1409,6 +1412,51 @@ fn suricata_set_args(
         set_args.push(format!("{path}.honor-pass-rules=no"));
     }
     Ok(set_args)
+}
+
+fn parse_suricata_version(text: &str) -> Option<Version> {
+    let re = regex::Regex::new(
+        r"(?i)\bSuricata(?:\s+version)?\s+([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b",
+    )
+    .expect("valid Suricata version regex");
+    let version = re.captures(text)?.get(1)?.as_str();
+    Version::parse(version).ok()
+}
+
+fn suricata_version(context: &Context) -> Result<Option<Version>> {
+    let mut command = context.manager.command();
+    command.arg("run");
+    command.arg("--rm");
+    command.arg(context.image_name(Container::Suricata));
+    command.arg("-V");
+    let output = command.output()?;
+    if !output.status.success() {
+        let message = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            String::from_utf8_lossy(&output.stderr)
+        };
+        bail!("Failed to query Suricata version: {}", message.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(parse_suricata_version(&stdout).or_else(|| parse_suricata_version(&stderr)))
+}
+
+fn suricata_version_is_supported(version: &Version) -> bool {
+    version >= &Version::new(8, 0, 6)
+}
+
+fn warn_if_unsupported_suricata_version(context: &Context) {
+    match suricata_version(context) {
+        Ok(Some(version)) if !suricata_version_is_supported(&version) => warn!(
+            "Suricata {version} is not supported; update the Suricata image to version {MINIMUM_SURICATA_VERSION} or newer"
+        ),
+        Ok(Some(version)) => debug!("Found Suricata version {version}"),
+        Ok(None) => debug!("Could not determine the Suricata version"),
+        Err(err) => debug!("Failed to determine the Suricata version: {err}"),
+    }
 }
 
 fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
@@ -1913,6 +1961,25 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn parses_and_checks_suricata_versions() {
+        assert_eq!(
+            parse_suricata_version("This is Suricata version 8.0.6 RELEASE"),
+            Some(Version::new(8, 0, 6))
+        );
+        assert_eq!(
+            parse_suricata_version("Suricata 9.0.0-dev"),
+            Some(Version::parse("9.0.0-dev").unwrap())
+        );
+        assert_eq!(parse_suricata_version("unrecognized output"), None);
+
+        assert!(!suricata_version_is_supported(
+            &Version::parse("8.0.6-rc1").unwrap()
+        ));
+        assert!(suricata_version_is_supported(&Version::new(8, 0, 6)));
+        assert!(suricata_version_is_supported(&Version::new(9, 0, 0)));
     }
 
     #[test]
