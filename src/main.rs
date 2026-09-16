@@ -976,28 +976,73 @@ fn log_status(context: &Context) {
 
     if context.config.suricata.enabled {
         enabled += 1;
-        if context
+        let running = context
             .manager
-            .is_running(&crate::suricata::container_name(context))
-        {
-            status.push(("info", "Suricata", "running".to_string()));
+            .is_running(&crate::suricata::container_name(context));
+        let version = if running {
+            suricata_running_version(context)
         } else {
-            status.push(("warn", "Suricata", "not running".to_string()));
+            suricata_image_version(context)
+        };
+        let version = match version {
+            Ok(Some(version)) if !suricata_version_is_supported(&version) => {
+                format!(" ({version}, unsupported)")
+            }
+            Ok(Some(version)) => format!(" ({version})"),
+            Ok(None) => String::new(),
+            Err(err) => {
+                debug!("Failed to determine the Suricata version: {err}");
+                String::new()
+            }
+        };
+        if running {
+            status.push(("info", "Suricata", format!("running{version}")));
+        } else {
+            status.push(("warn", "Suricata", format!("not running{version}")));
+        }
+        match last_rule_update(context) {
+            Some(updated) => status.push(("info", "Rules", format!("updated {updated}"))),
+            None => status.push(("warn", "Rules", "never updated".to_string())),
         }
     } else {
         status.push(("debug", "Suricata", "not enabled".to_string()));
     }
 
+    // The EveBox server and agent share an image, so the image version
+    // is only queried once if neither is running.
+    let mut evebox_image_version: Option<String> = None;
+    let mut evebox_version_suffix = |running: bool, container_name: &str| -> String {
+        let version = if running {
+            evebox_running_version(context, container_name)
+        } else if let Some(version) = &evebox_image_version {
+            Ok(Some(version.clone()))
+        } else {
+            let version = evebox_image_version_query(context);
+            if let Ok(Some(version)) = &version {
+                evebox_image_version = Some(version.clone());
+            }
+            version
+        };
+        match version {
+            Ok(Some(version)) => format!(" ({version})"),
+            Ok(None) => String::new(),
+            Err(err) => {
+                debug!("Failed to determine the EveBox version: {err}");
+                String::new()
+            }
+        }
+    };
+
     if context.config.evebox_server.enabled {
         enabled += 1;
-        if context
-            .manager
-            .is_running(&crate::evebox::server::container_name(context))
-        {
+        let container_name = crate::evebox::server::container_name(context);
+        let running = context.manager.is_running(&container_name);
+        let version = evebox_version_suffix(running, &container_name);
+        if running {
             let url = guess_evebox_url(context);
-            status.push(("info", "EveBox Server", format!("running {}", url)));
+            status.push(("info", "EveBox Server", format!("running{version} {url}")));
         } else {
-            status.push(("warn", "EveBox Server", "not running".to_string()));
+            status.push(("warn", "EveBox Server", format!("not running{version}")));
         }
     } else {
         status.push(("debug", "EveBox Server", "not enabled".to_string()));
@@ -1005,13 +1050,13 @@ fn log_status(context: &Context) {
 
     if context.config.evebox_agent.enabled {
         enabled += 1;
-        if context
-            .manager
-            .is_running(&crate::evebox::agent::container_name(context))
-        {
-            status.push(("info", "EveBox Agent", "running".to_string()));
+        let container_name = crate::evebox::agent::container_name(context);
+        let running = context.manager.is_running(&container_name);
+        let version = evebox_version_suffix(running, &container_name);
+        if running {
+            status.push(("info", "EveBox Agent", format!("running{version}")));
         } else {
-            status.push(("warn", "EveBox Agent", "not running".to_string()));
+            status.push(("warn", "EveBox Agent", format!("not running{version}")));
         }
     } else {
         status.push(("debug", "EveBox Agent", "not enabled".to_string()));
@@ -1414,6 +1459,100 @@ fn suricata_set_args(
     Ok(set_args)
 }
 
+/// Return the time of the last rule update, formatted for display, or
+/// None if the rules have never been updated. The time is taken from
+/// the rules file written by suricata-update.
+fn last_rule_update(context: &Context) -> Option<String> {
+    let path = context
+        .config_dir()
+        .join("suricata")
+        .join("lib")
+        .join("rules")
+        .join("suricata.rules");
+    let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+    Some(format_time_with_age(modified, std::time::SystemTime::now()))
+}
+
+/// Format a time in the local timezone with a short description of
+/// how long ago it was, for example `2026-09-16 00:17 (3 hours ago)`.
+fn format_time_with_age(time: std::time::SystemTime, now: std::time::SystemTime) -> String {
+    let mut datetime = time::OffsetDateTime::from(time);
+    let format = if let Ok(offset) = time::UtcOffset::current_local_offset() {
+        datetime = datetime.to_offset(offset);
+        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]")
+    } else {
+        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute] UTC")
+    };
+    let formatted = datetime
+        .format(format)
+        .unwrap_or_else(|_| datetime.to_string());
+    let age = now.duration_since(time).unwrap_or_default().as_secs();
+    let age = match age {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format_age(age / 60, "minute"),
+        3600..=86399 => format_age(age / 3600, "hour"),
+        _ => format_age(age / 86400, "day"),
+    };
+    format!("{formatted} ({age})")
+}
+
+fn format_age(count: u64, unit: &str) -> String {
+    if count == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{count} {unit}s ago")
+    }
+}
+
+/// Query the version of EveBox in the named running container.
+fn evebox_running_version(context: &Context, container_name: &str) -> Result<Option<String>> {
+    let mut command = context.manager.command();
+    command.args(["exec", container_name, "evebox", "version"]);
+    run_evebox_version_command(command)
+}
+
+/// Query the version of EveBox in the configured image by running a
+/// throwaway container. Returns None if the image is not present, as
+/// running it would trigger a pull.
+fn evebox_image_version_query(context: &Context) -> Result<Option<String>> {
+    let image = context.image_name(Container::EveBox);
+    if !context.manager.has_image(&image) {
+        return Ok(None);
+    }
+    let mut command = context.manager.command();
+    command.args(["run", "--rm", &image, "evebox", "version"]);
+    run_evebox_version_command(command)
+}
+
+fn run_evebox_version_command(mut command: std::process::Command) -> Result<Option<String>> {
+    let output = command.output()?;
+    if !output.status.success() {
+        let message = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            String::from_utf8_lossy(&output.stderr)
+        };
+        bail!("Failed to query EveBox version: {}", message.trim());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_evebox_version(&stdout))
+}
+
+/// Parse the output of `evebox version`, for example
+/// `EveBox Version 0.28.0 (rev abcdef0); x86_64-unknown-linux-musl`.
+/// Development versions include the revision as they share a version
+/// number across builds.
+fn parse_evebox_version(text: &str) -> Option<String> {
+    let re = regex::Regex::new(r"(?i)\bEveBox Version\s+(\S+)(?:\s+\(rev\s+([0-9a-f]+)\))?")
+        .expect("valid EveBox version regex");
+    let captures = re.captures(text)?;
+    let version = captures.get(1)?.as_str().to_string();
+    match captures.get(2) {
+        Some(rev) if version.contains('-') => Some(format!("{version} rev {}", rev.as_str())),
+        _ => Some(version),
+    }
+}
+
 fn parse_suricata_version(text: &str) -> Option<Version> {
     let re = regex::Regex::new(
         r"(?i)\bSuricata(?:\s+version)?\s+([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b",
@@ -1423,12 +1562,46 @@ fn parse_suricata_version(text: &str) -> Option<Version> {
     Version::parse(version).ok()
 }
 
+/// Query the Suricata version. If the Suricata container is running,
+/// the version is taken from the running container, otherwise a
+/// throwaway container is run from the configured image.
 fn suricata_version(context: &Context) -> Result<Option<Version>> {
+    if context
+        .manager
+        .is_running(&crate::suricata::container_name(context))
+    {
+        suricata_running_version(context)
+    } else {
+        suricata_image_version(context)
+    }
+}
+
+/// Query the version of Suricata in the running container.
+fn suricata_running_version(context: &Context) -> Result<Option<Version>> {
     let mut command = context.manager.command();
-    command.arg("run");
-    command.arg("--rm");
-    command.arg(context.image_name(Container::Suricata));
-    command.arg("-V");
+    command.args([
+        "exec",
+        &crate::suricata::container_name(context),
+        "suricata",
+        "-V",
+    ]);
+    run_suricata_version_command(command)
+}
+
+/// Query the version of Suricata in the configured image by running
+/// a throwaway container. Returns None if the image is not present,
+/// as running it would trigger a pull.
+fn suricata_image_version(context: &Context) -> Result<Option<Version>> {
+    let image = context.image_name(Container::Suricata);
+    if !context.manager.has_image(&image) {
+        return Ok(None);
+    }
+    let mut command = context.manager.command();
+    command.args(["run", "--rm", &image, "-V"]);
+    run_suricata_version_command(command)
+}
+
+fn run_suricata_version_command(mut command: std::process::Command) -> Result<Option<Version>> {
     let output = command.output()?;
     if !output.status.success() {
         let message = if output.stderr.is_empty() {
@@ -1789,11 +1962,11 @@ fn update(
     return_to_menu: bool,
 ) -> bool {
     if containers_only {
-        return update_containers(context);
+        return update_containers(context, return_to_menu);
     }
 
     match selfupdate::self_update() {
-        Ok(selfupdate::SelfUpdate::Unchanged) => update_containers(context),
+        Ok(selfupdate::SelfUpdate::Unchanged) => update_containers(context, return_to_menu),
         Ok(selfupdate::SelfUpdate::Updated(current_exe)) => {
             std::process::exit(continue_update_with_new_binary(
                 &current_exe,
@@ -1804,13 +1977,60 @@ fn update(
         Err(err) => {
             error!("Failed to update EveCtl: {err}");
             info!("Continuing with container updates");
-            update_containers(context);
+            update_containers(context, return_to_menu);
             false
         }
     }
 }
 
-fn update_containers(context: &Context) -> bool {
+/// Offer to restart Suricata after an update changed its version.
+fn prompt_restart_for_updated_suricata(context: &Context, running: &Version, image: &Version) {
+    let message = format!("Suricata updated from {running} to {image}, restart now?");
+    if let Ok(Some(true)) = inquire::Confirm::new(&message)
+        .with_default(true)
+        .prompt_skippable()
+    {
+        restart(context);
+    }
+}
+
+/// If Suricata is running and its version differs from the version
+/// in the configured image, return the running and image versions.
+fn suricata_update_pending(context: &Context) -> Option<(Version, Version)> {
+    if !context.config.suricata.enabled
+        || !context
+            .manager
+            .is_running(&crate::suricata::container_name(context))
+    {
+        return None;
+    }
+    let running = match suricata_running_version(context) {
+        Ok(Some(version)) => version,
+        Ok(None) => return None,
+        Err(err) => {
+            debug!("Failed to determine the running Suricata version: {err}");
+            return None;
+        }
+    };
+    let image = match suricata_image_version(context) {
+        Ok(Some(version)) => version,
+        Ok(None) => return None,
+        Err(err) => {
+            debug!("Failed to determine the Suricata image version: {err}");
+            return None;
+        }
+    };
+    if running != image {
+        Some((running, image))
+    } else {
+        None
+    }
+}
+
+/// Pull the container images. If the running Suricata version differs
+/// from the image afterwards, offer a restart when interactive,
+/// otherwise log that a restart is required.
+fn update_containers(context: &Context, interactive: bool) -> bool {
     let mut ok = true;
     for image in [
         context.image_name(Container::Suricata),
@@ -1826,6 +2046,13 @@ fn update_containers(context: &Context) -> bool {
         if let Err(err) = context.manager.pull(image) {
             error!("Failed to pull {image}: {err}");
             ok = false;
+        }
+    }
+    if let Some((running, image)) = suricata_update_pending(context) {
+        if interactive {
+            prompt_restart_for_updated_suricata(context, &running, &image);
+        } else {
+            info!("Suricata updated from {running} to {image}, restart required");
         }
     }
     ok
@@ -1961,6 +2188,43 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn formats_time_with_age() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::now();
+        let ends_with = |t: SystemTime, suffix: &str| {
+            let formatted = format_time_with_age(t, now);
+            assert!(formatted.ends_with(suffix), "{formatted}");
+        };
+        ends_with(now, "(just now)");
+        ends_with(now - Duration::from_secs(60), "(1 minute ago)");
+        ends_with(now - Duration::from_secs(5 * 60), "(5 minutes ago)");
+        ends_with(now - Duration::from_secs(3600), "(1 hour ago)");
+        ends_with(now - Duration::from_secs(3 * 3600), "(3 hours ago)");
+        ends_with(now - Duration::from_secs(2 * 86400), "(2 days ago)");
+        // A file time in the future should not panic.
+        ends_with(now + Duration::from_secs(60), "(just now)");
+    }
+
+    #[test]
+    fn parses_evebox_versions() {
+        assert_eq!(
+            parse_evebox_version("EveBox Version 0.28.0 (rev 4884466d); x86_64-unknown-linux-musl"),
+            Some("0.28.0".to_string())
+        );
+        assert_eq!(
+            parse_evebox_version(
+                "EveBox Version 0.29.0-dev (rev 4884466d); x86_64-unknown-linux-musl"
+            ),
+            Some("0.29.0-dev rev 4884466d".to_string())
+        );
+        assert_eq!(
+            parse_evebox_version("EveBox Version 0.28.0"),
+            Some("0.28.0".to_string())
+        );
+        assert_eq!(parse_evebox_version("unrecognized output"), None);
     }
 
     #[test]
