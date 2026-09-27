@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Result;
 use tracing::info;
 
-pub const AF_PACKET_STUB: &str = "
+pub const SURICATA_STUB: &str = "
 %YAML 1.1
 ---
 
@@ -58,9 +58,9 @@ input:
   delete-spool-files: true
 ";
 
-pub fn write_af_packet_stub(path: &Path) -> Result<()> {
-    info!("Writing af-packet partial to {}", path.display());
-    std::fs::write(path, AF_PACKET_STUB)?;
+pub fn write_suricata_stub(path: &Path) -> Result<()> {
+    info!("Writing Suricata include to {}", path.display());
+    std::fs::write(path, SURICATA_STUB)?;
     Ok(())
 }
 

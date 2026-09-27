@@ -1335,14 +1335,16 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
         args.add(RESTART_POLICY_ARG);
     }
 
-    let path = context.config_dir().join("af-packet.yaml");
-    if let Err(err) = configs::write_af_packet_stub(&path) {
-        error!("Failed to write af-packet stub: {err}");
+    let path = context.config_dir().join("evectl-suricata.yaml");
+    if let Err(err) = configs::write_suricata_stub(&path) {
+        error!("Failed to write Suricata include: {err}");
     } else {
-        let path = context.config_dir().join("af-packet.yaml");
+        let path = context.config_dir().join("evectl-suricata.yaml");
         args.add(format!(
             "--volume={}",
-            context.manager.bind_mount(&path, "/config/af-packet.yaml")
+            context
+                .manager
+                .bind_mount(&path, "/config/evectl-suricata.yaml")
         ));
     }
 
@@ -1353,7 +1355,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     args.add(context.image_name(Container::Suricata));
     args.extend(&["-v", "-i", interface]);
     args.add("--include");
-    args.add("/config/af-packet.yaml");
+    args.add("/config/evectl-suricata.yaml");
 
     for set_arg in set_args {
         args.add("--set");
