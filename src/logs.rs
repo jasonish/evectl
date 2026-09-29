@@ -21,6 +21,7 @@ pub(crate) struct LogArgs {
 pub(crate) fn logs(ctx: &Context, args: LogArgs) {
     let containers = [
         crate::suricata::container_name(ctx),
+        crate::housekeeper::container_name(ctx),
         crate::evebox::server::container_name(ctx),
         crate::evebox::agent::container_name(ctx),
         crate::elastic::container_name(ctx),

@@ -16,7 +16,7 @@ use prelude::*;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use config::{EveOutput, FpcConfig};
+use config::{EveOutput, FileExtractionConfig, FpcConfig};
 #[cfg(not(target_os = "windows"))]
 use container::ContainerManager;
 use container::{Container, RESTART_POLICY_ARG, SuricataContainer};
@@ -33,6 +33,7 @@ mod container;
 mod context;
 mod elastic;
 mod evebox;
+mod housekeeper;
 mod http;
 mod logs;
 mod menu;
@@ -320,16 +321,22 @@ fn main() -> Result<()> {
     init_logging(is_interactive, args.verbose);
 
     let is_uninstall = matches!(args.command, Some(Commands::Uninstall { .. }));
-    let manager = match container::find_manager(args.podman) {
+    let discovered_manager = if is_uninstall {
+        container::find_uninstall_manager(args.podman)?
+    } else {
+        container::find_manager(args.podman)
+    };
+    let filesystem_only_uninstall = is_uninstall && discovered_manager.is_none();
+    let manager = match discovered_manager {
         Some(manager) => {
             info!("Found container manager {manager}");
             manager
         }
         None if is_uninstall => {
-            // Uninstall can still remove files and the binary; the
-            // placeholder manager's commands simply fail, which the
-            // container and image steps tolerate.
-            warn!("No container manager found, containers and images will not be removed");
+            // Both runtime executables are absent, not merely inaccessible.
+            // Keep Context's manager placeholder, but explicitly skip runtime
+            // discovery/removal in the filesystem-only uninstall path.
+            warn!("No container runtime installed; performing filesystem-only uninstall");
             ContainerManager::Docker(container::DockerManager::new())
         }
         None => {
@@ -490,7 +497,7 @@ fn main() -> Result<()> {
                 0
             }
             Commands::Uninstall { config, all, yes } => {
-                match uninstall::uninstall(&context, config, all, yes) {
+                match uninstall::uninstall(&context, config, all, yes, filesystem_only_uninstall) {
                     Ok(true) => 0,
                     Ok(false) => 1,
                     Err(err) => {
@@ -560,7 +567,8 @@ fn process_output_handler(child: &mut Child, label: &'static str, tx: Sender<boo
 /// Run when "start" is run from the command line.
 fn command_start(context: &Context, debug: bool) -> i32 {
     if debug {
-        if start_foreground(context).is_err() {
+        if let Err(err) = start_foreground(context) {
+            error!("Failed to run foreground services: {err:#}");
             return 1;
         }
     } else if !start(context) {
@@ -597,6 +605,11 @@ fn effective_fpc_config(context: &Context) -> FpcConfig {
         enabled,
         ..context.config.fpc.clone()
     }
+}
+
+/// File retrieval follows the local Suricata extraction setting.
+fn uses_file_extraction(context: &Context) -> bool {
+    context.config.suricata.enabled && context.config.suricata.file_extraction.enabled
 }
 
 fn validate_start_configuration(context: &Context) -> Result<()> {
@@ -642,9 +655,18 @@ fn start_foreground(context: &Context) -> Result<()> {
 
     elastic::stop_elasticsearch(context);
 
-    let mut children = vec![];
-
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    {
+        let tx = tx.clone();
+        ctrlc::set_handler(move || {
+            info!("Received shutdown signal, stopping containers");
+            let _ = tx.send(true);
+        })?;
+    }
+    let _housekeeper = housekeeper::ForegroundGuard(context);
+    housekeeper::reconcile(context)?;
+
+    let mut children = vec![];
 
     if context.config.elasticsearch_enabled() {
         let engine = context.config.elasticsearch.engine.name();
@@ -745,17 +767,9 @@ fn start_foreground(context: &Context) -> Result<()> {
         info!("Suricata not enabled");
     }
 
+    if context.config.suricata.enabled
+        && let Some(script) = eve_prune_script_for(context)
     {
-        let tx = tx.clone();
-        if let Err(err) = ctrlc::set_handler(move || {
-            info!("Received Ctrl-C, stopping containers");
-            let _ = tx.send(true);
-        }) {
-            error!("Failed to setup Ctrl-C handler: {}", err);
-        }
-    }
-
-    if context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::File {
         let now = std::time::Instant::now();
         loop {
             if !context
@@ -772,11 +786,21 @@ fn start_foreground(context: &Context) -> Result<()> {
                 }
             }
 
-            if let Err(err) = start_suricata_spool_prune(context) {
+            if let Err(err) = start_eve_prune(context, &script) {
                 error!("Failed to start EVE spool pruning: {err}");
             }
             break;
         }
+    }
+
+    if housekeeper::enabled(context)
+        && !verify_containers_running(
+            context,
+            &[("Housekeeper", housekeeper::container_name(context))],
+        )
+    {
+        stop_all(context);
+        bail!("Housekeeper failed during foreground startup");
     }
 
     if children.is_empty() {
@@ -785,13 +809,9 @@ fn start_foreground(context: &Context) -> Result<()> {
     }
 
     let _ = rx.recv();
-    let _ = context
-        .manager
-        .stop(&crate::suricata::container_name(context), None);
-    let _ = context.manager.stop(
-        &crate::evebox::server::container_name(context),
-        Some("SIGINT"),
-    );
+    // Stop housekeeping before waiting on foreground children, including
+    // agent-only sessions. Waiting first could leave cleanup running forever.
+    let stopped = stop_all(context);
 
     for (process, mut child) in children {
         match child.wait() {
@@ -809,6 +829,9 @@ fn start_foreground(context: &Context) -> Result<()> {
         }
     }
 
+    if !stopped {
+        bail!("Failed to stop foreground services");
+    }
     Ok(())
 }
 
@@ -827,6 +850,11 @@ fn stop_container(context: &Context, name: &str, signal: Option<&str>) -> bool {
 
 fn stop_all(context: &Context) -> bool {
     let mut ok = true;
+
+    if let Err(err) = housekeeper::remove(context) {
+        error!("Failed to stop housekeeping: {err}");
+        ok = false;
+    }
 
     if context
         .manager
@@ -1077,6 +1105,27 @@ fn log_status(context: &Context) {
         status.push(("debug", engine, "not enabled".to_string()));
     }
 
+    if housekeeper::enabled(context) {
+        enabled += 1;
+        if context
+            .manager
+            .is_running(&housekeeper::container_name(context))
+        {
+            status.push(("info", "Housekeeper", "running".to_string()));
+        } else {
+            status.push(("warn", "Housekeeper", "not running".to_string()));
+        }
+    } else if context
+        .manager
+        .is_active(&housekeeper::container_name(context))
+    {
+        status.push((
+            "warn",
+            "Housekeeper",
+            "running but disabled; run evectl start or stop".to_string(),
+        ));
+    }
+
     for (level, label, state) in &status {
         match *level {
             "info" => info!("{label:-13}: {state}"),
@@ -1241,6 +1290,12 @@ fn start(context: &Context) -> bool {
         }
     }
 
+    // Reconcile even if Suricata was already running or cleanup was disabled.
+    if let Err(err) = housekeeper::reconcile(context) {
+        error!("Failed to reconcile housekeeper: {err:#}");
+        ok = false;
+    }
+
     let containers = enabled_containers(context);
     if !containers.is_empty() {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1274,6 +1329,9 @@ fn enabled_containers(context: &Context) -> Vec<(&'static str, String)> {
     }
     if context.config.suricata.enabled {
         containers.push(("Suricata", crate::suricata::container_name(context)));
+    }
+    if housekeeper::enabled(context) {
+        containers.push(("Housekeeper", housekeeper::container_name(context)));
     }
     containers
 }
@@ -1313,6 +1371,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
         &config,
         context.config.suricata.eve_output,
         &effective_fpc_config(context),
+        &context.config.suricata.file_extraction,
     )?;
 
     let interface = match context.config.suricata.interfaces.first() {
@@ -1381,10 +1440,15 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
 const PCAP_LOG_CONTAINER_DIR: &str = "/var/log/suricata/pcap";
 const PCAP_LOG_PREFIX: &str = "log.";
 
+/// Suricata file-store (extracted files) directory inside the
+/// container, on the Suricata log volume.
+const FILESTORE_CONTAINER_DIR: &str = "/var/log/suricata/filestore";
+
 fn suricata_set_args(
     config: &[String],
     eve_output: EveOutput,
     fpc: &FpcConfig,
+    file_extraction: &FileExtractionConfig,
 ) -> Result<Vec<String>> {
     let mut set_args: Vec<String> = vec![
         "app-layer.protocols.tls.ja4-fingerprints=true".to_string(),
@@ -1392,6 +1456,7 @@ fn suricata_set_args(
     ];
     let mut eve_log_paths = BTreeSet::new();
     let mut pcap_log_paths = BTreeSet::new();
+    let mut file_store_paths = BTreeSet::new();
     let mut disabled_output_paths = BTreeSet::new();
     let output_pattern = regex::Regex::new(r"^(outputs\.\d+) = ([a-zA-Z0-9_-]+)$")?;
     let patterns = &[
@@ -1406,6 +1471,8 @@ fn suricata_set_args(
                 eve_log_paths.insert(path);
             } else if &c[2] == "pcap-log" && fpc.enabled {
                 pcap_log_paths.insert(path);
+            } else if &c[2] == "file-store" && file_extraction.enabled {
+                file_store_paths.insert(path);
             } else {
                 disabled_output_paths.insert(path);
             }
@@ -1457,6 +1524,77 @@ fn suricata_set_args(
         ));
         set_args.push(format!("{path}.use-stream-depth=no"));
         set_args.push(format!("{path}.honor-pass-rules=no"));
+    }
+    if file_extraction.enabled {
+        set_args.extend(file_extraction_set_args(
+            config,
+            file_extraction,
+            &file_store_paths,
+        )?);
+    }
+    Ok(set_args)
+}
+
+const HTTP_BODY_LIMITS: [&str; 2] = [
+    "app-layer.protocols.http.libhtp.default-config.request-body-limit",
+    "app-layer.protocols.http.libhtp.default-config.response-body-limit",
+];
+
+/// Overrides to enable the stock file-store output for file
+/// extraction, raising the limits that would truncate files below the
+/// max extract size. Limits are never lowered.
+///
+/// - Rule selected files: the file-store stream-depth applies to
+///   sessions matching a filestore rule, and replaces the HTTP body
+///   limits for them.
+/// - Forced storage: the file-store stream-depth is never applied, so
+///   the global stream depth and HTTP body limits are raised instead.
+fn file_extraction_set_args(
+    config: &[String],
+    file_extraction: &FileExtractionConfig,
+    file_store_paths: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    if file_store_paths.is_empty() {
+        bail!("file extraction enabled but Suricata has no file-store output");
+    }
+
+    let max_size = file_extraction.max_size_bytes();
+    let current = |key: &str| {
+        let prefix = format!("{key} = ");
+        config
+            .iter()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .and_then(FileExtractionConfig::parse_size)
+    };
+    // Unknown values are raised; 0 is unlimited.
+    let below_max = |current: Option<u64>| current.is_none_or(|c| c != 0 && c < max_size);
+    let stream_depth = current("stream.reassembly.depth");
+
+    let mut set_args = vec![];
+    for path in file_store_paths {
+        set_args.push(format!("{path}.enabled=true"));
+        set_args.push(format!("{path}.version=2"));
+        set_args.push(format!("{path}.dir={FILESTORE_CONTAINER_DIR}"));
+        set_args.push(format!(
+            "{path}.force-filestore={}",
+            file_extraction.force_filestore
+        ));
+        // Redundant with the EVE fileinfo records.
+        set_args.push(format!("{path}.write-fileinfo=false"));
+        // Suricata ignores a file-store depth not above the global one.
+        if !file_extraction.force_filestore && below_max(stream_depth) {
+            set_args.push(format!("{path}.stream-depth={max_size}"));
+        }
+    }
+    if file_extraction.force_filestore {
+        if below_max(stream_depth) {
+            set_args.push(format!("stream.reassembly.depth={max_size}"));
+        }
+        for key in HTTP_BODY_LIMITS {
+            if below_max(current(key)) {
+                set_args.push(format!("{key}={max_size}"));
+            }
+        }
     }
     Ok(set_args)
 }
@@ -1665,8 +1803,8 @@ fn start_suricata_detached(context: &Context) -> Result<()> {
         bail!(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
-    if context.config.suricata.eve_output == EveOutput::File
-        && let Err(err) = start_suricata_spool_prune(context)
+    if let Some(script) = eve_prune_script_for(context)
+        && let Err(err) = start_eve_prune(context, &script)
     {
         error!("Failed to start EVE spool pruning: {err}");
     }
@@ -1674,13 +1812,22 @@ fn start_suricata_detached(context: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Start the EVE spool file pruner in the Suricata container.
+/// EVE-only spool backstop. Extracted files are exclusively managed by
+/// the housekeeping worker. EveBox normally deletes processed spool files;
+/// retain the one-hour backstop for periods without a working consumer.
+fn eve_prune_script_for(context: &Context) -> Option<String> {
+    (context.config.suricata.eve_output == EveOutput::File).then(|| {
+        "while true; do find /var/log/suricata -maxdepth 1 -name 'eve.json.*' ! -name '*.bookmark' -mmin +60 -delete; sleep 300; done".to_string()
+    })
+}
+
+/// Start the EVE-only spool pruning loop in the Suricata container.
 ///
-/// EveBox deletes spool files as it processes them, but nothing does
-/// when a local EveBox isn't running (not configured, or died), so as
-/// a disk usage backstop delete spool files older than an hour.
-fn start_suricata_spool_prune(context: &Context) -> Result<()> {
-    info!("Starting Suricata EVE spool pruning");
+/// The loop is an exec'd process, so it does not survive a restart of
+/// the container by the container runtime (restart policy); it is only
+/// started again when EveCtl (re)starts Suricata.
+fn start_eve_prune(context: &Context, script: &str) -> Result<()> {
+    info!("Starting EVE spool pruning");
     match context
         .manager
         .command()
@@ -1690,7 +1837,7 @@ fn start_suricata_spool_prune(context: &Context) -> Result<()> {
             &crate::suricata::container_name(context),
             "bash",
             "-c",
-            "while true; do find /var/log/suricata -name 'eve.json.*' ! -name '*.bookmark' -mmin +60 -delete; sleep 300; done",
+            script,
         ])
         .output()
     {
@@ -1853,6 +2000,10 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
         command.arg(format!("--pcap-prefix={PCAP_LOG_PREFIX}"));
     }
 
+    if uses_file_extraction(context) {
+        command.arg(format!("--filestore-directory={FILESTORE_CONTAINER_DIR}"));
+    }
+
     Ok(command)
 }
 
@@ -1903,8 +2054,9 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
     args.add("--net=host");
 
     let fpc = uses_fpc(context);
-    if fpc {
-        // The agent key authenticates the packet capture channel to
+    let file_extraction = uses_file_extraction(context);
+    if fpc || file_extraction {
+        // The agent key authenticates the file and packet retrieval channel to
         // the server. Passed in the environment, like the server's
         // Elasticsearch credentials, to keep it out of the generated
         // configuration file.
@@ -1914,8 +2066,8 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
                 args.add(format!("EVEBOX_SERVER_KEY={key}"));
             }
             None => warn!(
-                "Full packet capture is enabled but no agent key is set; the EveBox server \
-                 will reject the packet capture channel unless it allows unauthenticated agents"
+                "File or packet retrieval is enabled but no agent key is set; the EveBox server \
+                 will reject the retrieval channel unless it allows unauthenticated agents"
             ),
         }
     }
@@ -1931,8 +2083,8 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
         args.add("--disable-certificate-check");
     }
 
-    // Stamped on every event and claimed on the packet capture
-    // channel, so the server routes capture requests for this
+    // Stamped on every event and claimed on the retrieval
+    // channel, so the server routes file and packet requests for this
     // sensor's events back to this agent.
     if let Some(agent_id) = &context.config.evebox_agent.agent_id {
         args.add("--agent-id");
@@ -1942,6 +2094,10 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
     if fpc {
         args.add(format!("--pcap-directory={PCAP_LOG_CONTAINER_DIR}"));
         args.add(format!("--pcap-prefix={PCAP_LOG_PREFIX}"));
+    }
+
+    if file_extraction {
+        args.add(format!("--filestore-directory={FILESTORE_CONTAINER_DIR}"));
     }
 
     let mut command = context.manager.command();
@@ -2049,6 +2205,9 @@ fn update_containers(context: &Context, interactive: bool) -> bool {
             error!("Failed to pull {image}: {err}");
             ok = false;
         }
+    }
+    if housekeeper::enabled(context) {
+        info!("Housekeeper will use the updated Suricata image on the next evectl start/restart");
     }
     if let Some((running, image)) = suricata_update_pending(context) {
         if interactive {
@@ -2260,16 +2419,26 @@ mod tests {
             "outputs.12.stats.enabled = yes",
             "outputs.14 = pcap-log",
             "outputs.14.pcap-log.enabled = no",
+            "outputs.15 = file-store",
+            "outputs.15.file-store.enabled = no",
             "logging.outputs.1.file.enabled = yes",
+            "stream.reassembly.depth = 1 MiB",
+            "app-layer.protocols.http.libhtp.default-config.request-body-limit = 100 KiB",
         ]
         .map(str::to_string);
 
-        let set_args =
-            suricata_set_args(&config, EveOutput::UnixStream, &FpcConfig::default()).unwrap();
+        let set_args = suricata_set_args(
+            &config,
+            EveOutput::UnixStream,
+            &FpcConfig::default(),
+            &FileExtractionConfig::default(),
+        )
+        .unwrap();
 
         assert!(set_args.contains(&"outputs.7.fast.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.12.stats.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.14.pcap-log.enabled=false".to_string()));
+        assert!(set_args.contains(&"outputs.15.file-store.enabled=false".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.enabled=true".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.threaded=false".to_string()));
@@ -2283,17 +2452,26 @@ mod tests {
                 .iter()
                 .filter(|arg| arg.ends_with(".enabled=false"))
                 .count(),
-            3
+            4
         );
         assert!(!set_args.contains(&"outputs.3.eve-log.enabled=false".to_string()));
         assert!(!set_args.iter().any(|arg| arg.starts_with("logging.")));
+        // Limits are only touched for file extraction.
+        assert!(!set_args.iter().any(|arg| arg.starts_with("stream.")));
+        assert!(!set_args.iter().any(|arg| arg.contains("body-limit")));
     }
 
     #[test]
     fn suricata_file_output_configures_timestamped_spool() {
         let config = ["outputs.3 = eve-log"].map(str::to_string);
 
-        let set_args = suricata_set_args(&config, EveOutput::File, &FpcConfig::default()).unwrap();
+        let set_args = suricata_set_args(
+            &config,
+            EveOutput::File,
+            &FpcConfig::default(),
+            &FileExtractionConfig::default(),
+        )
+        .unwrap();
 
         assert!(set_args.contains(&"outputs.3.eve-log.suricata-version=true".to_string()));
         assert!(set_args.contains(&"outputs.3.eve-log.enabled=true".to_string()));
@@ -2316,7 +2494,13 @@ mod tests {
             max_files: Some(20),
         };
 
-        let set_args = suricata_set_args(&config, EveOutput::UnixStream, &fpc).unwrap();
+        let set_args = suricata_set_args(
+            &config,
+            EveOutput::UnixStream,
+            &fpc,
+            &FileExtractionConfig::default(),
+        )
+        .unwrap();
 
         assert!(set_args.contains(&"outputs.14.pcap-log.enabled=true".to_string()));
         assert!(set_args.contains(&"outputs.14.pcap-log.mode=multi".to_string()));
@@ -2329,7 +2513,137 @@ mod tests {
 
         // Without a pcap-log output in the dumped config, FPC can't be set up.
         let config = ["outputs.3 = eve-log"].map(str::to_string);
-        assert!(suricata_set_args(&config, EveOutput::UnixStream, &fpc).is_err());
+        assert!(
+            suricata_set_args(
+                &config,
+                EveOutput::UnixStream,
+                &fpc,
+                &FileExtractionConfig::default()
+            )
+            .is_err()
+        );
+    }
+
+    const MB: u64 = 1024 * 1024;
+
+    fn file_extraction_args(file_extraction: FileExtractionConfig) -> Vec<String> {
+        let config = [
+            "outputs.1 = eve-log",
+            "outputs.6 = file-store",
+            "outputs.6.file-store.version = 2",
+            "outputs.6.file-store.enabled = no",
+            "stream.reassembly.depth = 1 MiB",
+            "app-layer.protocols.http.libhtp.default-config.request-body-limit = 100 KiB",
+            // Unlimited, must not be lowered.
+            "app-layer.protocols.http.libhtp.default-config.response-body-limit = 0",
+        ]
+        .map(str::to_string);
+        suricata_set_args(
+            &config,
+            EveOutput::UnixStream,
+            &FpcConfig::default(),
+            &FileExtractionConfig {
+                enabled: true,
+                ..file_extraction
+            },
+        )
+        .unwrap()
+    }
+
+    fn has(set_args: &[String], arg: &str) -> bool {
+        set_args.iter().any(|a| a == arg)
+    }
+
+    #[test]
+    fn file_extraction_rule_selected_uses_file_store_depth() {
+        let set_args = file_extraction_args(FileExtractionConfig::default());
+        for expected in [
+            "outputs.6.file-store.enabled=true",
+            "outputs.6.file-store.version=2",
+            "outputs.6.file-store.dir=/var/log/suricata/filestore",
+            "outputs.6.file-store.force-filestore=false",
+            "outputs.6.file-store.write-fileinfo=false",
+            &format!("outputs.6.file-store.stream-depth={}", 4 * MB),
+        ] {
+            assert!(has(&set_args, expected), "missing {expected}");
+        }
+        assert!(!has(&set_args, "outputs.6.file-store.enabled=false"));
+        assert!(!set_args.iter().any(|arg| arg.starts_with("stream.")));
+        assert!(!set_args.iter().any(|arg| arg.contains("body-limit")));
+    }
+
+    #[test]
+    fn file_extraction_forced_raises_global_limits() {
+        let set_args = file_extraction_args(FileExtractionConfig {
+            force_filestore: true,
+            ..Default::default()
+        });
+        let max = 4 * MB;
+        assert!(has(&set_args, "outputs.6.file-store.force-filestore=true"));
+        assert!(has(&set_args, &format!("stream.reassembly.depth={max}")));
+        assert!(has(
+            &set_args,
+            &format!("app-layer.protocols.http.libhtp.default-config.request-body-limit={max}")
+        ));
+        assert!(
+            !set_args
+                .iter()
+                .any(|arg| arg.contains("response-body-limit"))
+        );
+        assert!(!set_args.iter().any(|arg| arg.contains("stream-depth")));
+    }
+
+    #[test]
+    fn file_extraction_never_lowers_limits() {
+        for force_filestore in [false, true] {
+            let set_args = file_extraction_args(FileExtractionConfig {
+                force_filestore,
+                max_size: Some("512kb".to_string()),
+                ..Default::default()
+            });
+            assert!(!set_args.iter().any(|arg| arg.contains("stream-depth")));
+            assert!(!set_args.iter().any(|arg| arg.starts_with("stream.")));
+        }
+    }
+
+    #[test]
+    fn file_extraction_requires_file_store_output() {
+        let config = ["outputs.1 = eve-log"].map(str::to_string);
+        let file_extraction = FileExtractionConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(
+            suricata_set_args(
+                &config,
+                EveOutput::UnixStream,
+                &FpcConfig::default(),
+                &file_extraction
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prune_script_only_covers_eve_spool() {
+        let (_root, mut context) = docker_context(Config::default());
+        for extraction in [false, true] {
+            for retention in [None, Some(0), Some(19)] {
+                context.config.suricata.file_extraction.enabled = extraction;
+                context.config.suricata.file_extraction.max_age_days = retention;
+                context.config.suricata.eve_output = EveOutput::UnixStream;
+                assert_eq!(eve_prune_script_for(&context), None);
+                context.config.suricata.eve_output = EveOutput::File;
+                let eve = eve_prune_script_for(&context).unwrap();
+                assert!(eve.starts_with(
+                    "while true; do find /var/log/suricata -maxdepth 1 -name 'eve.json.*'"
+                ));
+                assert!(eve.contains("! -name '*.bookmark' -mmin +60 -delete"));
+                assert!(eve.ends_with("; sleep 300; done"));
+                assert!(!eve.contains("filestore"));
+                assert!(!eve.contains("suricatactl"));
+            }
+        }
     }
 
     #[test]
@@ -2422,6 +2736,26 @@ mod tests {
     }
 
     #[test]
+    fn enabled_containers_includes_housekeeper_only_when_required() {
+        let (_root, mut context) = docker_context(Config::default());
+        for suricata in [false, true] {
+            for extraction in [false, true] {
+                for retention in [0, 7, 19] {
+                    context.config.suricata.enabled = suricata;
+                    context.config.suricata.file_extraction.enabled = extraction;
+                    context.config.suricata.file_extraction.max_age_days = Some(retention);
+                    let names = enabled_containers(&context);
+                    assert_eq!(
+                        names.iter().any(|(label, name)| *label == "Housekeeper"
+                            && *name == housekeeper::container_name(&context)),
+                        suricata && extraction && retention > 0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fpc_adds_pcap_flags_to_evebox_server() {
         let mut config = Config::default();
         config.suricata.enabled = true;
@@ -2489,6 +2823,95 @@ mod tests {
         let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
         assert!(args.contains(&"--pcap-prefix=log.".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("EVEBOX_SERVER_KEY=")));
+    }
+
+    #[test]
+    fn file_extraction_configures_evebox_server() {
+        for eve_output in [EveOutput::File, EveOutput::UnixStream] {
+            for detached in [false, true] {
+                let mut config = Config::default();
+                config.suricata.enabled = true;
+                config.suricata.eve_output = eve_output;
+                config.suricata.file_extraction.enabled = true;
+                config.evebox_server.enabled = true;
+                let (_root, mut context) = docker_context(config);
+
+                let args = command_args(&build_evebox_server_command(&context, detached).unwrap());
+                let filestore = args
+                    .iter()
+                    .position(|a| a == "--filestore-directory=/var/log/suricata/filestore")
+                    .unwrap();
+                assert!(filestore > args.iter().position(|a| a == "server").unwrap());
+                assert!(!args.iter().any(|a| a.starts_with("--pcap-")));
+
+                for (suricata, extraction) in [(false, true), (true, false)] {
+                    context.config.suricata.enabled = suricata;
+                    context.config.suricata.file_extraction.enabled = extraction;
+                    let args =
+                        command_args(&build_evebox_server_command(&context, detached).unwrap());
+                    assert!(!args.iter().any(|a| a.starts_with("--filestore-")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn file_extraction_agent_channel_is_independent_of_fpc() {
+        for eve_output in [EveOutput::File, EveOutput::UnixStream] {
+            for detached in [false, true] {
+                for fpc in [false, true] {
+                    for extraction in [false, true] {
+                        for suricata in [false, true] {
+                            let mut config = Config::default();
+                            config.suricata.enabled = suricata;
+                            config.suricata.eve_output = eve_output;
+                            config.suricata.file_extraction.enabled = extraction;
+                            config.fpc.enabled = fpc;
+                            config.evebox_agent.enabled = true;
+                            config.evebox_agent.agent_id = Some("sensor-1".to_string());
+                            config.evebox_agent.key = Some("secret-key".to_string());
+                            let (_root, mut context) = docker_context(config);
+
+                            let args = command_args(
+                                &build_evebox_agent_command(&context, detached).unwrap(),
+                            );
+                            let agent = args.iter().position(|a| a == "agent").unwrap();
+                            let filestore = args.iter().position(|a| {
+                                a == "--filestore-directory=/var/log/suricata/filestore"
+                            });
+                            assert_eq!(filestore.is_some(), suricata && extraction);
+                            if let Some(position) = filestore {
+                                assert!(position > agent);
+                            }
+                            assert_eq!(
+                                args.iter().any(|a| a.starts_with("--pcap-directory=")),
+                                suricata && fpc
+                            );
+                            let key = args
+                                .iter()
+                                .position(|a| a == "EVEBOX_SERVER_KEY=secret-key");
+                            assert_eq!(key.is_some(), suricata && (fpc || extraction));
+                            if let Some(position) = key {
+                                assert_eq!(args[position - 1], "--env");
+                                assert!(position < agent - 2);
+                            }
+                            let id = args.iter().position(|a| a == "--agent-id").unwrap();
+                            assert_eq!(args[id + 1], "sensor-1");
+
+                            context.config.evebox_agent.key = None;
+                            let args = command_args(
+                                &build_evebox_agent_command(&context, detached).unwrap(),
+                            );
+                            assert!(!args.iter().any(|a| a.starts_with("EVEBOX_SERVER_KEY=")));
+                            assert_eq!(
+                                args.iter().any(|a| a.starts_with("--filestore-directory=")),
+                                suricata && extraction
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

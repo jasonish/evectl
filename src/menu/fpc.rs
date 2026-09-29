@@ -123,7 +123,7 @@ fn spool_size(dir: &Path) -> u64 {
         .sum()
 }
 
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     const GB: u64 = 1024 * MB;
     if bytes >= GB {
@@ -164,7 +164,7 @@ fn toggle_enabled(context: &mut Context) {
     // The agent is given the spool whenever it is enabled, even
     // alongside a local server (see `uses_fpc`), so it always needs
     // its identity and key.
-    if config.evebox_agent.enabled && !setup_agent(config) {
+    if config.evebox_agent.enabled && !crate::menu::evebox_agent::setup_retrieval(config) {
         return;
     }
 
@@ -179,54 +179,6 @@ fn toggle_enabled(context: &mut Context) {
     {
         config.fpc.enabled = true;
     }
-}
-
-/// Collect what the agent needs to serve captures to the server: an
-/// agent ID the server can route capture requests to, and the agent
-/// key issued for that ID. Returns false if the user backed out.
-fn setup_agent(config: &mut Config) -> bool {
-    if config.evebox_agent.agent_id.is_some() && config.evebox_agent.key.is_some() {
-        return true;
-    }
-
-    let agent_id = config
-        .evebox_agent
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| "<agent-id>".to_string());
-    println!(
-        "
-The EveBox agent serves packet captures to the server over an
-authenticated channel. On the server, create an agent key named after
-this agent's ID:
-
-    evebox config agents add {agent_id}
-
-or use the Agents page in the EveBox web UI, then enter the key here.
-"
-    );
-
-    if config.evebox_agent.agent_id.is_none() && !crate::menu::evebox_agent::set_agent_id(config) {
-        error!("Full packet capture on an agent requires an agent ID");
-        crate::prompt::enter();
-        return false;
-    }
-
-    if config.evebox_agent.key.is_none() && !crate::menu::evebox_agent::set_key(config) {
-        warn!(
-            "No agent key set; the server will reject the capture channel unless it allows \
-             unauthenticated agents"
-        );
-        if !inquire::Confirm::new("Continue without an agent key?")
-            .with_default(false)
-            .prompt()
-            .unwrap_or(false)
-        {
-            return false;
-        }
-    }
-
-    true
 }
 
 fn set_max_files(config: &mut Config) {

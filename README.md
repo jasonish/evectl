@@ -91,11 +91,67 @@ evectl -D /var/lib/evectl-sensor1
 This option is not available on Windows, where the location is
 fixed.
 
+## Extracted-file retention (Linux)
+
+When Suricata file extraction is enabled, EveCtl runs a separate
+`<instance-prefix>-housekeeper` container using the configured Suricata
+image. That image must include Python 3.7+ (`python3` on PATH) and
+`suricatactl filestore prune`; EveCtl checks compatibility and mounted
+filestore access before starting cleanup. The executable worker runs directly
+as `evectl-housekeeper` (using a Python shebang), which is also the command
+shown by `docker ps`. On first start, if Suricata has not created its filestore
+yet, the check validates the mounted log directory instead. The worker waits
+for Suricata to create the filestore and retries on its normal schedule; it
+does not change directory ownership or permissions.
+
+Cleanup runs immediately and then every five minutes, pruning the whole
+filestore, **including `tmp/`**, by modification time. The default retention
+is seven days; `suricata.file-extraction.max-age-days = 0` disables cleanup.
+Each command has a four-minute timeout. Failures are logged and retried;
+shutdown terminates the active command, escalating after five seconds.
+A zero command exit status does not guarantee every file was deleted:
+`suricatactl` can log individual deletion failures without failing the command.
+Use `evectl logs` to inspect cleanup activity.
+
+Housekeeping survives Suricata restarts independently. `evectl start`
+restores a missing/stopped worker, replaces it when settings or its image
+change, and removes it when cleanup is disabled. Older `-housekeeping`
+containers are removed automatically on start or stop. Image updates take effect
+on the next start/restart. `evectl stop`, restart, uninstall and foreground
+session shutdown include housekeeping. After upgrading from the old
+exec-based cleaner, run `evectl restart` once to retire the old cleanup loop.
+
+Housekeeping alone uses `unless-stopped`. For boot startup, install EveCtl's
+existing systemd integration (`evectl systemd install`), especially with
+Podman; restart policy alone is not a portable reboot guarantee. A manual
+runtime stop suppresses runtime restart, but a later explicit or systemd
+`evectl start` reconciles all configured services and starts cleanup again.
+
+The EVE JSON spool backstop remains exec-based and is **not** made durable
+by this change. Scheduled rule updates are not implemented.
+
 ## Building
 
 If you just want to use EveCtl you can download a pre-compiled
 binary. The following is only for those who wish to compile EveCtl
 themselves.
+
+### Tests
+
+```bash
+cargo test
+cargo build # Builds the CLI used by isolated fake-runtime tests.
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s src/housekeeper -p 'test_*.py' -v
+```
+
+Default Python tests include temporary fake-runtime CLI tests for uninstall,
+foreground signal shutdown, and same-tag image-ID reconciliation. They never
+invoke Docker/Podman or mutate real images; actual runtime image replacement
+remains outside this simulated coverage.
+
+Container integration tests are opt-in; see
+`src/housekeeper/test_runtime.py` for Docker/Podman commands. They use
+isolated instances and disposable files, never live captures or host reboots.
 
 ### For Host OS
 

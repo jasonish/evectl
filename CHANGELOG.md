@@ -11,6 +11,17 @@
   menu, with a retention setting as a total file count. Agent
   installations are prompted for an agent ID and the matching agent
   key issued on the server (`evebox config agents add <agent-id>`)
+- Opt-in Suricata file extraction (Linux only), disabled by default:
+  "Enable File Extraction" in the Suricata menu stores files seen in
+  HTTP, SMTP, FTP, SMB and NFS traffic under
+  `data/suricata/log/filestore`, named by SHA256. Stores files
+  matching `filestore` rules, or all files with force-filestore.
+  A max extract size (default 4mb) raises the Suricata limits needed
+  to extract files up to that size; larger files are stored
+  truncated. Extracted files are deleted after 7 days by default.
+  The local EveBox server or agent serves extracted files for download
+  from events containing their SHA256; agents use the agent ID and key
+  independently of full packet capture
 - EveBox agent ID and key settings in the EveBox Agent menu (Linux
   only); the ID is stamped on the agent's events and identifies it to
   the server
@@ -53,6 +64,11 @@
 
 ### Fixed
 
+- Extracted-file cleanup now runs in a separate housekeeping container,
+  surviving Suricata restarts. Requires a Suricata image with Python 3 and
+  `suricatactl filestore prune`. Cleanup includes old files in `tmp/`;
+  retention 0 still disables cleanup. Run `evectl restart` after upgrading
+  to retire the previous cleanup loop
 - Relabel container bind mounts on SELinux hosts so EveBox and Suricata
   can access their host directories, and create required directories for
   server-only and agent-only installations

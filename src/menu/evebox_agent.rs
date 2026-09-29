@@ -146,6 +146,53 @@ pub(crate) fn set_key(config: &mut Config) -> bool {
     config.evebox_agent.key.is_some()
 }
 
+/// Collect the identity and key used to serve files and packet captures
+/// over the agent channel. Returns false if the user backed out.
+pub(crate) fn setup_retrieval(config: &mut Config) -> bool {
+    if config.evebox_agent.agent_id.is_some() && config.evebox_agent.key.is_some() {
+        return true;
+    }
+
+    let agent_id = config
+        .evebox_agent
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| "<agent-id>".to_string());
+    println!(
+        "
+The EveBox agent serves extracted files and packet captures to the server
+over an authenticated channel. On the server, create an agent key named
+after this agent's ID:
+
+    evebox config agents add {agent_id}
+
+or use the Agents page in the EveBox web UI, then enter the key here.
+"
+    );
+
+    if config.evebox_agent.agent_id.is_none() && !set_agent_id(config) {
+        error!("File and packet retrieval on an agent requires an agent ID");
+        crate::prompt::enter();
+        return false;
+    }
+
+    if config.evebox_agent.key.is_none() && !set_key(config) {
+        warn!(
+            "No agent key set; the server will reject the retrieval channel unless it allows \
+             unauthenticated agents"
+        );
+        if !inquire::Confirm::new("Continue without an agent key?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 pub(crate) fn set_server(config: &mut Config) -> Result<()> {
     if let Some((server, disable_certificate_validation)) = prompt_for_server_url(config)? {
         config.evebox_agent.server = server;

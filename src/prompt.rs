@@ -87,4 +87,14 @@ where
     pub fn to_vec(&self) -> Vec<SelectItem<T>> {
         self.items.clone()
     }
+
+    /// A page size showing every item, limited to what fits in the
+    /// terminal (leaving room for the prompt and help lines).
+    pub fn page_size(&self) -> usize {
+        let len = self.items.len().max(1);
+        match crossterm::terminal::size() {
+            Ok((_, rows)) => len.min(usize::from(rows).saturating_sub(3).max(1)),
+            Err(_) => len,
+        }
+    }
 }

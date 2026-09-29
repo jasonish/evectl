@@ -52,6 +52,83 @@ pub(crate) struct SuricataConfig {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub eve_output: EveOutput,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub file_extraction: FileExtractionConfig,
+}
+
+/// Suricata file extraction (file-store) configuration. When enabled,
+/// files seen in supported protocols (HTTP, SMTP, FTP, SMB, NFS) are
+/// written to the Suricata log directory, deduplicated by SHA256. Not
+/// supported on Windows.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct FileExtractionConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub enabled: bool,
+
+    /// file-store `force-filestore`: store all files, or when false
+    /// (Suricata's default) only files matched by rules using the
+    /// `filestore` keyword.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub force_filestore: bool,
+
+    /// How much of a file to extract (e.g. "4mb"); larger files are
+    /// stored truncated. Suricata limits are raised to this size, never
+    /// lowered.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub max_size: Option<String>,
+
+    /// Stored files older than this many days are deleted. 0 keeps
+    /// files forever.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub max_age_days: Option<u32>,
+}
+
+impl FileExtractionConfig {
+    pub(crate) const DEFAULT_MAX_SIZE: &'static str = "4mb";
+    pub(crate) const DEFAULT_MAX_AGE_DAYS: u32 = 7;
+
+    pub(crate) fn max_size(&self) -> &str {
+        self.max_size.as_deref().unwrap_or(Self::DEFAULT_MAX_SIZE)
+    }
+
+    /// The max extract size in bytes. Falls back to the default if the
+    /// configured value is invalid (e.g. hand edited).
+    pub(crate) fn max_size_bytes(&self) -> u64 {
+        Some(self.max_size())
+            .filter(|s| Self::is_valid_size(s))
+            .and_then(Self::parse_size)
+            .or_else(|| Self::parse_size(Self::DEFAULT_MAX_SIZE))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn max_age_days(&self) -> u32 {
+        self.max_age_days.unwrap_or(Self::DEFAULT_MAX_AGE_DAYS)
+    }
+
+    /// Parse a Suricata size like "4mb", "1 MiB" or "4096" into bytes.
+    /// Suricata units are binary.
+    pub(crate) fn parse_size(s: &str) -> Option<u64> {
+        let s = s.trim();
+        let digits = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        let (number, unit) = s.split_at(digits);
+        let number: u64 = number.parse().ok()?;
+        let multiplier: u64 = match unit.trim().to_ascii_lowercase().as_str() {
+            "" => 1,
+            "kb" | "kib" => 1024,
+            "mb" | "mib" => 1024 * 1024,
+            "gb" | "gib" => 1024 * 1024 * 1024,
+            _ => return None,
+        };
+        number.checked_mul(multiplier)
+    }
+
+    /// A valid max extract size is non-zero and fits Suricata's 32 bit
+    /// size settings.
+    pub(crate) fn is_valid_size(s: &str) -> bool {
+        Self::parse_size(s).is_some_and(|size| size > 0 && size <= u64::from(u32::MAX))
+    }
 }
 
 /// Full packet capture configuration. When enabled, Suricata writes a
@@ -336,6 +413,10 @@ mod tests {
         config.evebox_agent.key = Some("secret".to_string());
         config.fpc.enabled = true;
         config.fpc.max_files = Some(20);
+        config.suricata.file_extraction.enabled = true;
+        config.suricata.file_extraction.force_filestore = true;
+        config.suricata.file_extraction.max_size = Some("16mb".to_string());
+        config.suricata.file_extraction.max_age_days = Some(0);
 
         let toml = toml::to_string(&config).unwrap();
         let parsed = Config::parse_toml(&toml).unwrap();
@@ -417,6 +498,73 @@ mod tests {
         assert!(config.suricata.enabled);
         assert_eq!(config.suricata.interfaces, vec!["br0".to_string()]);
         assert!(config.evebox_server.no_tls);
+    }
+}
+
+#[cfg(test)]
+mod file_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_to_disabled_and_is_not_serialized() {
+        let config = Config::parse_toml("[suricata]\nenabled = true\n").unwrap();
+        let fe = &config.suricata.file_extraction;
+        assert_eq!(fe, &FileExtractionConfig::default());
+        assert_eq!(fe.max_size(), "4mb");
+        assert_eq!(fe.max_size_bytes(), 4 * 1024 * 1024);
+        assert_eq!(fe.max_age_days(), 7);
+        assert!(
+            !toml::to_string(&config)
+                .unwrap()
+                .contains("file-extraction")
+        );
+    }
+
+    #[test]
+    fn parses_table() {
+        let config = Config::parse_toml(
+            r#"
+            [suricata.file-extraction]
+            enabled = true
+            force-filestore = true
+            max-size = "16mb"
+            max-age-days = 30
+            "#,
+        )
+        .unwrap();
+        let fe = &config.suricata.file_extraction;
+        assert!(fe.enabled);
+        assert!(fe.force_filestore);
+        assert_eq!(fe.max_size_bytes(), 16 * 1024 * 1024);
+        assert_eq!(fe.max_age_days(), 30);
+    }
+
+    #[test]
+    fn validates_sizes() {
+        assert_eq!(FileExtractionConfig::parse_size("4096"), Some(4096));
+        assert_eq!(FileExtractionConfig::parse_size("100 kb"), Some(102400));
+        assert_eq!(FileExtractionConfig::parse_size("1 MiB"), Some(1024 * 1024));
+        assert_eq!(
+            FileExtractionConfig::parse_size(" 5MB "),
+            Some(5 * 1024 * 1024)
+        );
+        assert_eq!(FileExtractionConfig::parse_size("mb"), None);
+        assert_eq!(FileExtractionConfig::parse_size("5tb"), None);
+        assert_eq!(FileExtractionConfig::parse_size("-5mb"), None);
+        assert_eq!(FileExtractionConfig::parse_size("1.5mb"), None);
+
+        assert!(FileExtractionConfig::is_valid_size("4mb"));
+        assert!(FileExtractionConfig::is_valid_size("3gb"));
+        assert!(!FileExtractionConfig::is_valid_size("0"));
+        assert!(!FileExtractionConfig::is_valid_size("4gb"));
+        assert!(!FileExtractionConfig::is_valid_size("lots"));
+
+        // Invalid hand edited values fall back to the default.
+        let fe = FileExtractionConfig {
+            max_size: Some("lots".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(fe.max_size_bytes(), 4 * 1024 * 1024);
     }
 }
 

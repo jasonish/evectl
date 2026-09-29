@@ -326,6 +326,60 @@ where
     }
 }
 
+/// Uninstall must distinguish a missing executable from a broken installed
+/// runtime. Do not fall back to another runtime after a daemon/version error:
+/// the inaccessible runtime may still own running services.
+pub(crate) fn find_uninstall_manager(podman: bool) -> Result<Option<ContainerManager>> {
+    let docker = ContainerManager::Docker(DockerManager::new());
+    let podman_manager = ContainerManager::Podman(PodmanManager::new());
+    let candidates = if podman {
+        [podman_manager, docker]
+    } else {
+        [docker, podman_manager]
+    };
+    for manager in candidates {
+        match manager.command().arg("--version").output() {
+            Err(err) => {
+                // ENOENT can also mean an installed script's interpreter (or
+                // binary's loader) is missing. Confirm the executable itself
+                // is absent before allowing filesystem-only uninstall.
+                if err.kind() == std::io::ErrorKind::NotFound && executable_absent(manager.bin())? {
+                    continue;
+                }
+                return Err(err).with_context(|| format!("Cannot execute {manager}"));
+            }
+            Ok(output) => {
+                if !output.status.success() {
+                    bail!(
+                        "Cannot query installed {manager}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                if podman && manager.is_docker() {
+                    bail!(
+                        "Podman is missing but Docker is installed; refusing filesystem-only uninstall"
+                    );
+                }
+                return Ok(Some(manager));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn executable_absent(name: &str) -> Result<bool> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| anyhow!("PATH is unset; cannot confirm {name} is absent"))?;
+    for directory in std::env::split_paths(&path) {
+        match std::fs::symlink_metadata(directory.join(name)) {
+            Ok(_) => return Ok(false),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context("Cannot search runtime executable path"),
+        }
+    }
+    Ok(true)
+}
+
 pub(crate) fn find_manager(podman: bool) -> Option<ContainerManager> {
     if !podman {
         debug!("Looking for Docker container engine");

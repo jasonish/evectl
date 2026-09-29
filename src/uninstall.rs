@@ -15,12 +15,20 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::config::SearchEngine;
-use crate::container::Container;
+use crate::container::{CommandExt, Container};
 use crate::prelude::*;
 use crate::{elastic, systemd};
 
 /// Returns Ok(false) if the uninstall was canceled at a prompt.
-pub(crate) fn uninstall(context: &Context, config: bool, all: bool, yes: bool) -> Result<bool> {
+/// `filesystem_only` is permitted only after both runtime executables were
+/// found to be absent, never after a runtime query failed.
+pub(crate) fn uninstall(
+    context: &Context,
+    config: bool,
+    all: bool,
+    yes: bool,
+    filesystem_only: bool,
+) -> Result<bool> {
     let remove_config = config || all;
 
     // Resolved up front as the root may no longer exist by the time
@@ -41,7 +49,11 @@ pub(crate) fn uninstall(context: &Context, config: bool, all: bool, yes: bool) -
         bail!("No terminal available for confirmation, pass --yes to run without prompting");
     }
 
-    let containers = existing_containers(context);
+    let containers = if filesystem_only {
+        vec![]
+    } else {
+        existing_containers(context).context("Cannot discover containers, nothing removed")?
+    };
     let mut paths = vec![context.data_dir()];
     if remove_config {
         paths.push(context.config_dir());
@@ -49,7 +61,7 @@ pub(crate) fn uninstall(context: &Context, config: bool, all: bool, yes: bool) -
     }
     paths.retain(|path| path.exists());
     let remove_root = remove_config && root_removable(context);
-    let images = if all {
+    let images = if all && !filesystem_only {
         existing_images(context)
     } else {
         vec![]
@@ -86,11 +98,28 @@ pub(crate) fn uninstall(context: &Context, config: bool, all: bool, yes: bool) -
         return Ok(false);
     }
 
-    if !crate::stop_all(context) {
-        bail!("Failed to stop services, nothing removed");
-    }
+    // Unlike best-effort stop paths, uninstall must confirm every discovered
+    // service is stopped and removed before deleting any files. Propagate
+    // failures even if the runtime becomes inaccessible after discovery.
     for name in &containers {
-        context.manager.quiet_rm(name);
+        let state = context
+            .manager
+            .state(name)
+            .with_context(|| format!("Cannot inspect {name}, filesystem retained"))?;
+        if state.running || state.restarting {
+            let signal =
+                (name == &crate::evebox::server::container_name(context)).then_some("SIGINT");
+            context
+                .manager
+                .stop(name, signal)
+                .with_context(|| format!("Cannot stop {name}, filesystem retained"))?;
+        }
+        context
+            .manager
+            .command()
+            .args(["rm", name])
+            .status_output()
+            .with_context(|| format!("Cannot remove {name}, filesystem retained"))?;
     }
 
     let mut errors: Vec<String> = vec![];
@@ -271,7 +300,10 @@ pub(crate) fn remove_directory(context: &Context, directory: &Path) -> Result<()
         bail!("Failed to remove {}: {}", directory.display(), err);
     }
 
-    info!("Permission denied, removing container-created files with a container");
+    debug!(
+        "Cannot remove {} directly ({err}); retrying with a container",
+        directory.display()
+    );
     remove_contents_with_container(context, directory)
         .with_context(|| format!("Failed to remove {} with a container", directory.display()))?;
     std::fs::remove_dir_all(directory)
@@ -309,8 +341,19 @@ fn remove_contents_with_container(context: &Context, directory: &Path) -> Result
 }
 
 /// This instance's containers that currently exist, running or not.
-fn existing_containers(context: &Context) -> Vec<String> {
+fn existing_containers(context: &Context) -> Result<Vec<String>> {
+    // Listing succeeds with empty output only when absence is confirmed.
+    // Per-container inspect failures cannot distinguish absence from daemon,
+    // socket, or permission errors.
+    let output = context
+        .manager
+        .command()
+        .args(["ps", "--all", "--format", "{{.Names}}"])
+        .status_output()?;
+    let existing = String::from_utf8(output)?;
     let mut names = vec![
+        crate::housekeeper::legacy_container_name(context),
+        crate::housekeeper::container_name(context),
         crate::suricata::container_name(context),
         crate::evebox::server::container_name(context),
         crate::evebox::agent::container_name(context),
@@ -318,8 +361,8 @@ fn existing_containers(context: &Context) -> Vec<String> {
     for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
         names.push(elastic::container_name_for(context, engine));
     }
-    names.retain(|name| context.manager.container_exists(name));
-    names
+    names.retain(|name| existing.lines().any(|existing| existing == name));
+    Ok(names)
 }
 
 /// The container images EveCtl may have pulled.

@@ -40,6 +40,17 @@ pub(crate) fn mkdirs(context: &Context) -> Result<()> {
     Ok(())
 }
 
+/// Host path of the extracted files (file-store) directory, bind
+/// mounted into the Suricata container as /var/log/suricata/filestore.
+/// Created by Suricata when file extraction is enabled.
+pub(crate) fn filestore_dir(context: &Context) -> std::path::PathBuf {
+    context
+        .data_dir()
+        .join("suricata")
+        .join("log")
+        .join("filestore")
+}
+
 /// Remove the Suricata engine log (suricata.log). Done on each start
 /// of Suricata to keep it from growing unbounded, as log rotation is
 /// no longer used.

@@ -5,6 +5,7 @@ use colored::Colorize;
 
 use crate::config::EveOutput;
 use crate::context::Context;
+use crate::menu::file_extraction;
 use crate::prelude::*;
 use crate::prompt::Selections;
 use crate::term;
@@ -16,15 +17,20 @@ enum Options {
     SensorName,
     Bpf,
     EveOutput,
+    FileExtraction,
+    FileExtractionForceFilestore,
+    FileExtractionMaxSize,
+    FileExtractionRetention,
+    FileExtractionRemove,
     Exit,
 }
 
 pub(crate) fn menu(context: &mut Context) -> Result<()> {
-    let config = &mut context.config;
-
     loop {
         term::clear();
 
+        let remove_extracted_label = file_extraction::remove_label(context);
+        let config = &mut context.config;
         let mut selections = crate::prompt::Selections::new();
 
         if config.suricata.enabled {
@@ -70,9 +76,33 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
             ),
         );
 
+        if config.suricata.file_extraction.enabled {
+            selections.push(Options::FileExtraction, "Disable File Extraction");
+            selections.push(
+                Options::FileExtractionForceFilestore,
+                file_extraction::force_filestore_label(config),
+            );
+            selections.push(
+                Options::FileExtractionMaxSize,
+                file_extraction::max_size_label(config),
+            );
+            selections.push(
+                Options::FileExtractionRetention,
+                file_extraction::retention_label(config),
+            );
+        } else {
+            selections.push(Options::FileExtraction, "Enable File Extraction");
+            if let Some(label) = remove_extracted_label {
+                selections.push(Options::FileExtractionRemove, label);
+            }
+        }
+
         selections.push(Options::Exit, "Return");
 
-        match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec()).prompt() {
+        match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
+            .with_page_size(selections.page_size())
+            .prompt()
+        {
             Ok(selection) => match selection.tag {
                 Options::Toggle => {
                     toggle_enabled(config);
@@ -90,6 +120,13 @@ pub(crate) fn menu(context: &mut Context) -> Result<()> {
                 Options::EveOutput => {
                     set_eve_output(config)?;
                 }
+                Options::FileExtraction => file_extraction::toggle(context),
+                Options::FileExtractionForceFilestore => {
+                    file_extraction::set_force_filestore(config)
+                }
+                Options::FileExtractionMaxSize => file_extraction::set_max_size(config),
+                Options::FileExtractionRetention => file_extraction::set_retention(config),
+                Options::FileExtractionRemove => file_extraction::remove_files(context),
                 Options::Exit => break,
             },
             Err(_) => break,
