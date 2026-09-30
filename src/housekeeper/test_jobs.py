@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
 # SPDX-License-Identifier: MIT
 
-"""Run: python3 -m unittest discover -s src/housekeeper -p 'test_*.py' -v"""
+"""Run: make test-housekeeper (disables bytecode caches, including in subprocesses)."""
 
 import contextlib
 import io

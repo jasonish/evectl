@@ -5,8 +5,10 @@
 
 From the checkout root (build target/debug/evectl first):
 
+    PYTHONDONTWRITEBYTECODE=1 \
     EVECTL_TEST_RUNTIME=docker EVECTL_TEST_IMAGE=jasonish/suricata:latest \
         python3 -m unittest discover -s src/housekeeper -p test_runtime.py -v
+    PYTHONDONTWRITEBYTECODE=1 \
     EVECTL_TEST_RUNTIME=podman EVECTL_TEST_IMAGE=docker.io/jasonish/suricata:8.0 \
         python3 -m unittest discover -s src/housekeeper -p test_runtime.py -v
 

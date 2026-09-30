@@ -5,3 +5,8 @@ all:
 clean:
 	find . -name \*~ -delete
 	cargo clean
+
+.PHONY: test-housekeeper
+test-housekeeper:
+	cargo build
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s src/housekeeper -p 'test_*.py' -v

@@ -140,9 +140,11 @@ themselves.
 
 ```bash
 cargo test
-cargo build # Builds the CLI used by isolated fake-runtime tests.
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s src/housekeeper -p 'test_*.py' -v
+make test-housekeeper
 ```
+
+`make test-housekeeper` builds the CLI and disables Python bytecode cache
+creation for the tests and their subprocesses with `PYTHONDONTWRITEBYTECODE=1`.
 
 Default Python tests include temporary fake-runtime CLI tests for uninstall,
 foreground signal shutdown, and same-tag image-ID reconciliation. They never
