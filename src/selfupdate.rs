@@ -151,6 +151,24 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
 }
 
 #[cfg(target_os = "windows")]
+const WINDOWS_UPDATE_SCRIPT: &str = r#"
+$target = $env:EVECTL_SELF_UPDATE_TARGET
+$staged = $env:EVECTL_SELF_UPDATE_STAGED
+
+for ($i = 0; $i -lt 120; $i++) {
+    try {
+        Copy-Item -LiteralPath $staged -Destination $target -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        exit 0
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+exit 1
+"#;
+
+#[cfg(target_os = "windows")]
 pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
     use std::process::Command;
 
@@ -175,25 +193,14 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
         return Ok(false);
     }
 
-    let script = r#"
-$target = $env:EVECTL_SELF_UPDATE_TARGET
-$staged = $env:EVECTL_SELF_UPDATE_STAGED
-
-for ($i = 0; $i -lt 120; $i++) {
-    try {
-        Copy-Item -LiteralPath $staged -Destination $target -Force
-        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-        exit 0
-    } catch {
-        Start-Sleep -Milliseconds 250
-    }
-}
-
-exit 1
-"#;
-
     Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            WINDOWS_UPDATE_SCRIPT,
+        ])
         .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
         .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
         .spawn()
@@ -289,4 +296,45 @@ fn make_executable(path: &Path) -> Result<()> {
 #[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::process::Command;
+
+    #[test]
+    fn staged_update_preserves_download_until_copy_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("evectl.exe");
+        let staged = dir.path().join("evectl.exe.new");
+        fs::write(&target, b"old executable").unwrap();
+        fs::write(&staged, b"new executable").unwrap();
+        // One attempt is enough to test failure without waiting for all retries.
+        let script = WINDOWS_UPDATE_SCRIPT.replace("$i -lt 120", "$i -lt 1");
+        let run = || {
+            Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .env("EVECTL_SELF_UPDATE_TARGET", &target)
+                .env("EVECTL_SELF_UPDATE_STAGED", &staged)
+                .output()
+                .unwrap()
+        };
+
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&target)
+            .unwrap();
+        assert!(!run().status.success());
+        assert_eq!(fs::read(&staged).unwrap(), b"new executable");
+        drop(lock);
+        assert_eq!(fs::read(&target).unwrap(), b"old executable");
+
+        let output = run();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(fs::read(&target).unwrap(), b"new executable");
+        assert!(!staged.exists());
+    }
 }

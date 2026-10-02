@@ -288,18 +288,24 @@ fn main() -> Result<()> {
         argv.remove(1);
     }
 
-    match selfupdate::apply_staged_update_on_startup() {
-        Ok(true) => {
-            eprintln!("Applied staged EveCtl update. Please run your command again.");
-            wait_for_enter_before_exit();
-            std::process::exit(0);
+    let args = Args::parse_from(argv);
+    let is_worker = matches!(&args.command, Some(windows::Commands::Housekeep { .. }));
+    // Internal workers must not consume a staged update instead of doing their job.
+    if !is_worker {
+        match selfupdate::apply_staged_update_on_startup() {
+            Ok(true) => {
+                eprintln!(
+                    "EveCtl update scheduled after this process exits. Please run your command again."
+                );
+                wait_for_enter_before_exit();
+                std::process::exit(0);
+            }
+            Ok(false) => {}
+            Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),
         }
-        Ok(false) => {}
-        Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),
     }
 
-    let args = Args::parse_from(argv);
-    init_logging(true, args.verbose);
+    init_logging(!is_worker, args.verbose);
 
     let windows_args = windows::Args::from_command(args.command);
     windows::main(windows_args)
@@ -1530,6 +1536,7 @@ fn suricata_set_args(
             config,
             file_extraction,
             &file_store_paths,
+            FILESTORE_CONTAINER_DIR,
         )?);
     }
     Ok(set_args)
@@ -1553,6 +1560,7 @@ fn file_extraction_set_args(
     config: &[String],
     file_extraction: &FileExtractionConfig,
     file_store_paths: &BTreeSet<String>,
+    directory: &str,
 ) -> Result<Vec<String>> {
     if file_store_paths.is_empty() {
         bail!("file extraction enabled but Suricata has no file-store output");
@@ -1574,7 +1582,7 @@ fn file_extraction_set_args(
     for path in file_store_paths {
         set_args.push(format!("{path}.enabled=true"));
         set_args.push(format!("{path}.version=2"));
-        set_args.push(format!("{path}.dir={FILESTORE_CONTAINER_DIR}"));
+        set_args.push(format!("{path}.dir={directory}"));
         set_args.push(format!(
             "{path}.force-filestore={}",
             file_extraction.force_filestore

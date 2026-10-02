@@ -89,8 +89,7 @@ pub(crate) struct SuricataConfig {
 
 /// Suricata file extraction (file-store) configuration. When enabled,
 /// files seen in supported protocols (HTTP, SMTP, FTP, SMB, NFS) are
-/// written to the Suricata log directory, deduplicated by SHA256. Not
-/// supported on Windows.
+/// written to the Suricata log directory, deduplicated by SHA256.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct FileExtractionConfig {

@@ -337,7 +337,11 @@ mod tests {
             ] {
                 assert!(args.iter().any(|a| a == arg), "missing {arg}");
             }
-            let mounts: Vec<_> = args.iter().filter(|a| a.starts_with("--volume=")).collect();
+            let mounts: Vec<_> = args
+                .iter()
+                .filter(|a| a.starts_with("--volume="))
+                .map(|a| a.replace('\\', "/"))
+                .collect();
             assert_eq!(mounts.len(), 3);
             assert!(
                 mounts[0]

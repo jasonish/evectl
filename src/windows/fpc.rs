@@ -147,14 +147,14 @@ pub(super) fn configure_agent_command(command: &mut Command, config: &Config, sp
         command.arg("--agent-id").arg(agent_id);
     }
     configure_evebox_command(command, config, spool);
-    if effective_config(config).enabled {
+    if effective_config(config).enabled || super::file_extraction::enabled(config) {
         match &config.evebox_agent.key {
             Some(key) => {
                 // Keep the key out of command logs and runtime metadata.
                 command.env("EVEBOX_SERVER_KEY", key);
             }
             None => warn!(
-                "Packet retrieval is enabled but no agent key is set; the EveBox server \
+                "File or packet retrieval is enabled but no agent key is set; the EveBox server \
                  will reject the retrieval channel unless it allows unauthenticated agents"
             ),
         }

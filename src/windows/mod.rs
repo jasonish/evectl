@@ -4,14 +4,17 @@
 #[cfg(any(windows, test))]
 mod evebox;
 #[cfg(any(windows, test))]
-mod fpc;
+mod file_extraction;
 #[cfg(any(windows, test))]
+mod fpc;
+#[cfg(windows)]
 mod process;
 
 #[cfg(windows)]
 mod imp {
     use super::evebox::Download as EveBoxDownload;
     use crate::config::EveBoxChannel;
+    use crate::menu::file_extraction as extraction_menu;
     use crate::prelude::*;
     use clap::{Parser, Subcommand};
     use colored::Colorize;
@@ -42,6 +45,7 @@ mod imp {
     const ROLE_SURICATA: &str = "suricata";
     const ROLE_EVEBOX: &str = "evebox";
     const ROLE_EVEBOX_AGENT: &str = "evebox-agent";
+    const ROLE_HOUSEKEEPER: &str = "housekeeper";
     const EVEBOX_HOST: &str = "127.0.0.1";
     const EVEBOX_PORT: &str = "5636";
     const EVEBOX_ACCESS_URL: &str = "http://127.0.0.1:5636";
@@ -96,11 +100,15 @@ mod imp {
         suricata_guid: Option<String>,
         evebox_server_running: bool,
         evebox_agent_running: bool,
+        housekeeper_running: bool,
     }
 
     impl RestartPlan {
         fn any(&self) -> bool {
-            self.suricata_running || self.evebox_server_running || self.evebox_agent_running
+            self.suricata_running
+                || self.evebox_server_running
+                || self.evebox_agent_running
+                || self.housekeeper_running
         }
     }
 
@@ -121,6 +129,13 @@ mod imp {
             /// Network interface GUID or name to listen on. If omitted, the saved config is used.
             #[arg(long)]
             guid: Option<String>,
+        },
+
+        /// Internal filestore retention worker; launched and stopped with the stack.
+        #[command(hide = true)]
+        Housekeep {
+            #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+            retention_days: u32,
         },
 
         /// Stop the Suricata and EveBox stack.
@@ -239,6 +254,7 @@ mod imp {
     pub(crate) fn main(args: Args) -> Result<()> {
         match args.command {
             Some(Commands::Start { debug, guid }) => start_stack(debug, guid),
+            Some(Commands::Housekeep { retention_days }) => run_housekeeper(retention_days),
             Some(Commands::Stop) => stop_stack(),
             Some(Commands::Restart) => restart_stack(),
             Some(Commands::Status) => {
@@ -303,6 +319,11 @@ mod imp {
         Interface,
         SensorName,
         Bpf,
+        FileExtraction,
+        FileExtractionForceFilestore,
+        FileExtractionMaxSize,
+        FileExtractionRetention,
+        FileExtractionRemove,
         Return,
     }
 
@@ -350,6 +371,8 @@ mod imp {
         evebox_server_running: bool,
         evebox_agent_enabled: bool,
         evebox_agent_running: bool,
+        housekeeper_enabled: bool,
+        housekeeper_running: bool,
     }
 
     impl WindowsStatus {
@@ -358,7 +381,10 @@ mod imp {
         }
 
         fn any_running(self) -> bool {
-            self.suricata_running || self.evebox_server_running || self.evebox_agent_running
+            self.suricata_running
+                || self.evebox_server_running
+                || self.evebox_agent_running
+                || self.housekeeper_running
         }
 
         fn evebox_enabled(self) -> bool {
@@ -384,10 +410,17 @@ mod imp {
             evebox_server_running: managed_process_is_running(ROLE_EVEBOX)?,
             evebox_agent_enabled: config.evebox_agent.enabled,
             evebox_agent_running: managed_process_is_running(ROLE_EVEBOX_AGENT)?,
+            housekeeper_enabled: super::file_extraction::cleanup_enabled(config),
+            housekeeper_running: managed_process_is_running(ROLE_HOUSEKEEPER)?,
         })
     }
 
     fn log_status(status: WindowsStatus) {
+        if status.housekeeper_running {
+            info!("{:-13}: running", "Housekeeper");
+        } else if status.housekeeper_enabled {
+            warn!("{:-13}: not running", "Housekeeper");
+        }
         if status.suricata_enabled {
             if status.suricata_running {
                 info!("{:-13}: running", "Suricata");
@@ -879,10 +912,39 @@ mod imp {
                 format!("BPF filter{}", current_bpf),
             );
 
+            let filestore = get_suricata_filestore_dir()?;
+            if config.suricata.file_extraction.enabled {
+                selections.push(
+                    ConfigureSuricataMenuOption::FileExtraction,
+                    "Disable File Extraction",
+                );
+                selections.push(
+                    ConfigureSuricataMenuOption::FileExtractionForceFilestore,
+                    extraction_menu::force_filestore_label(config),
+                );
+                selections.push(
+                    ConfigureSuricataMenuOption::FileExtractionMaxSize,
+                    extraction_menu::max_size_label(config),
+                );
+                selections.push(
+                    ConfigureSuricataMenuOption::FileExtractionRetention,
+                    extraction_menu::retention_label(config),
+                );
+            } else {
+                selections.push(
+                    ConfigureSuricataMenuOption::FileExtraction,
+                    "Enable File Extraction",
+                );
+                if let Some(label) = extraction_menu::remove_label_for(config, &filestore) {
+                    selections.push(ConfigureSuricataMenuOption::FileExtractionRemove, label);
+                }
+            }
+
             selections.push(ConfigureSuricataMenuOption::Return, "Return");
 
             let selection =
                 match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
+                    .with_page_size(selections.page_size())
                     .prompt()
                 {
                     Ok(selection) => selection,
@@ -901,10 +963,47 @@ mod imp {
                     crate::menu::suricata::set_sensor_name(config)
                 }
                 ConfigureSuricataMenuOption::Bpf => crate::menu::suricata::set_bpf_filter(config),
+                ConfigureSuricataMenuOption::FileExtraction => {
+                    extraction_menu::toggle_config(config, &filestore)
+                }
+                ConfigureSuricataMenuOption::FileExtractionForceFilestore => {
+                    extraction_menu::set_force_filestore(config)
+                }
+                ConfigureSuricataMenuOption::FileExtractionMaxSize => {
+                    extraction_menu::set_max_size(config)
+                }
+                ConfigureSuricataMenuOption::FileExtractionRetention => {
+                    extraction_menu::set_retention(config)
+                }
+                ConfigureSuricataMenuOption::FileExtractionRemove => {
+                    run_menu_action_with_pause(
+                        "Failed to remove extracted files",
+                        remove_extracted_files,
+                    );
+                }
                 ConfigureSuricataMenuOption::Return => break,
             }
         }
 
+        Ok(())
+    }
+
+    fn remove_extracted_files() -> Result<()> {
+        if count_named_processes("suricata")? > 0 || managed_process_is_running(ROLE_HOUSEKEEPER)? {
+            bail!(
+                "Suricata or housekeeping is running; stop services before removing extracted files"
+            );
+        }
+        let directory = get_suricata_filestore_dir()?;
+        if crate::prompt::confirm_destructive(&format!(
+            "Remove all extracted files in {} (~{})?",
+            directory.display(),
+            crate::menu::fpc::format_size(extraction_menu::dir_size(&directory))
+        )) && directory.exists()
+        {
+            std::fs::remove_dir_all(&directory)
+                .with_context(|| format!("Cannot remove {}", directory.display()))?;
+        }
         Ok(())
     }
 
@@ -1617,21 +1716,24 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn spawn_detached(command: &Command) -> Result<u32> {
-        let output = super::process::detached_command(command)
-            .output()
-            .context("Failed to spawn detached process")?;
+    fn spawn_detached(command: &mut Command) -> Result<u32> {
+        spawn_detached_with_logs(command, None, None)
+    }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to spawn detached process: {}", stderr.trim());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .trim()
-            .parse::<u32>()
-            .context("Failed to parse detached process PID")
+    fn spawn_detached_with_logs(
+        command: &mut Command,
+        stdout: Option<&Path>,
+        stderr: Option<&Path>,
+    ) -> Result<u32> {
+        // Dropping Child closes our process handle; it doesn't stop the detached service.
+        super::process::spawn_detached(command, stdout, stderr)
+            .map(|child| child.id())
+            .with_context(|| {
+                format!(
+                    "Failed to spawn detached process {}",
+                    command.get_program().to_string_lossy()
+                )
+            })
     }
 
     #[cfg(windows)]
@@ -1901,6 +2003,10 @@ mod imp {
             ROLE_EVEBOX_AGENT => Ok((
                 get_evebox_agent_pid_path()?,
                 get_evebox_agent_runtime_path()?,
+            )),
+            ROLE_HOUSEKEEPER => Ok((
+                get_suricata_run_dir()?.join("housekeeper.pid"),
+                get_suricata_run_dir()?.join("housekeeper.runtime.json"),
             )),
             _ => bail!("Unknown runtime role {}", role),
         }
@@ -2612,6 +2718,10 @@ mod imp {
         Ok(get_suricata_log_dir()?.join("pcap"))
     }
 
+    fn get_suricata_filestore_dir() -> Result<PathBuf> {
+        Ok(get_suricata_log_dir()?.join("filestore"))
+    }
+
     #[cfg(windows)]
     fn get_suricata_install_dir() -> Result<std::path::PathBuf> {
         Ok(get_suricata_data_dir()?.join("install"))
@@ -3096,6 +3206,7 @@ exit $process.ExitCode
             suricata_guid,
             evebox_server_running,
             evebox_agent_running,
+            housekeeper_running: managed_process_is_running(ROLE_HOUSEKEEPER)?,
         })
     }
 
@@ -3121,6 +3232,9 @@ exit $process.ExitCode
             if plan.evebox_agent_running {
                 let agent = start_evebox_agent_background()?;
                 validate_background_process_started(&agent)?;
+            }
+            if plan.suricata_running || plan.housekeeper_running {
+                reconcile_housekeeper(&load_evectl_config()?)?;
             }
 
             Ok(())
@@ -3834,7 +3948,8 @@ exit $process.ExitCode
     fn ensure_managed_services_stopped_for_uninstall() -> Result<()> {
         let any_running = managed_process_is_running(ROLE_SURICATA)?
             || managed_process_is_running(ROLE_EVEBOX)?
-            || managed_process_is_running(ROLE_EVEBOX_AGENT)?;
+            || managed_process_is_running(ROLE_EVEBOX_AGENT)?
+            || managed_process_is_running(ROLE_HOUSEKEEPER)?;
 
         if !any_running {
             return Ok(());
@@ -3846,6 +3961,7 @@ exit $process.ExitCode
         if managed_process_is_running(ROLE_SURICATA)?
             || managed_process_is_running(ROLE_EVEBOX)?
             || managed_process_is_running(ROLE_EVEBOX_AGENT)?
+            || managed_process_is_running(ROLE_HOUSEKEEPER)?
         {
             bail!("Managed Windows services are still running after stop was requested");
         }
@@ -4377,12 +4493,12 @@ exit 1
         dump_command.args(command.get_args());
         dump_command.arg("--dump-config");
         dump_command.current_dir(&suricata_dir);
-        let output = dump_command
-            .output()
-            .context("Failed to dump Suricata configuration for full packet capture")?;
+        let output = dump_command.output().context(
+            "Failed to dump Suricata configuration for packet capture and file extraction",
+        )?;
         if !output.status.success() {
             bail!(
-                "Failed to dump Suricata configuration for full packet capture ({}): {}",
+                "Failed to dump Suricata configuration for packet capture and file extraction ({}): {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             );
@@ -4400,6 +4516,16 @@ exit 1
         if fpc.enabled {
             ensure_dir(&spool)?;
         }
+        let extraction = crate::config::FileExtractionConfig {
+            enabled: super::file_extraction::enabled(&config),
+            ..config.suricata.file_extraction.clone()
+        };
+        super::file_extraction::configure_command(
+            &mut command,
+            std::str::from_utf8(&output.stdout)?,
+            &extraction,
+            &get_suricata_filestore_dir()?,
+        )?;
 
         // The BPF filter is a trailing positional argument.
         if let Some(bpf) = &config.suricata.bpf {
@@ -4480,7 +4606,8 @@ exit 1
     #[cfg(windows)]
     fn start_stack_foreground(guid: Option<String>) -> Result<()> {
         fn stop_children(children: &mut Vec<(&'static str, Child)>) {
-            for (_, child) in children.iter() {
+            // Housekeeping is spawned last; stop it before its producers/readers.
+            for (_, child) in children.iter().rev() {
                 let _ = stop_pid(child.id());
             }
             for (_, child) in children.iter_mut() {
@@ -4521,6 +4648,9 @@ exit 1
             let _ = get_evebox_exe_path()?;
         }
 
+        if managed_process_is_running(ROLE_HOUSEKEEPER)? {
+            bail!("Managed housekeeping is already running. Use 'evectl stop' first.");
+        }
         ensure_ctrlc_handler()?;
         CTRL_C_RECEIVED.store(false, Ordering::SeqCst);
 
@@ -4545,6 +4675,11 @@ exit 1
                     ROLE_EVEBOX_AGENT,
                     &mut children,
                 )?;
+            }
+            if super::file_extraction::cleanup_enabled(&config) {
+                let command = build_housekeeper_command(&config)?;
+                prepare_housekeeper_executable(&command)?;
+                spawn_foreground(command, ROLE_HOUSEKEEPER, &mut children)?;
             }
 
             Ok(())
@@ -4590,7 +4725,7 @@ exit 1
 
             if request_shutdown && !shutdown_requested {
                 shutdown_requested = true;
-                for (index, (_, child)) in children.iter().enumerate() {
+                for (index, (_, child)) in children.iter().enumerate().rev() {
                     if statuses[index].is_none() {
                         let _ = stop_pid(child.id());
                     }
@@ -4615,11 +4750,9 @@ exit 1
     fn start_suricata_background(guid: &str) -> Result<RuntimeMetadata> {
         ensure_suricata_start_allowed()?;
 
-        let command = build_suricata_command(guid)?;
+        let mut command = build_suricata_command(guid)?;
         info!("Running command: {}", format_command_line(&command));
-        let pid = spawn_detached(&command)?;
-
-        let command = build_suricata_command(guid)?;
+        let pid = spawn_detached(&mut command)?;
         let metadata = build_runtime_metadata(ROLE_SURICATA, &command, pid, None, None)?;
 
         ensure_dir(&get_suricata_run_dir()?)?;
@@ -4651,10 +4784,12 @@ exit 1
         command.arg("-D");
         command.arg(&evebox_data_dir);
         command.arg(get_suricata_eve_json_path()?);
-        super::fpc::configure_evebox_command(
+        let config = load_evectl_config()?;
+        super::fpc::configure_evebox_command(&mut command, &config, &get_suricata_pcap_dir()?);
+        super::file_extraction::configure_evebox_command(
             &mut command,
-            &load_evectl_config()?,
-            &get_suricata_pcap_dir()?,
+            &config,
+            &get_suricata_filestore_dir()?,
         );
 
         Ok(command)
@@ -4666,11 +4801,9 @@ exit 1
             bail!("A managed EveBox server is already running. Use 'evectl stop' first.");
         }
 
-        let command = build_evebox_command()?;
+        let mut command = build_evebox_command()?;
         info!("Running command: {}", format_command_line(&command));
-        let pid = spawn_detached(&command)?;
-
-        let command = build_evebox_command()?;
+        let pid = spawn_detached(&mut command)?;
         let metadata = build_runtime_metadata(ROLE_EVEBOX, &command, pid, None, None)?;
 
         write_pid(&get_evebox_pid_path()?, pid)?;
@@ -4729,6 +4862,11 @@ exit 1
             command.arg("--disable-certificate-check");
         }
         super::fpc::configure_agent_command(&mut command, &config, &get_suricata_pcap_dir()?);
+        super::file_extraction::configure_evebox_command(
+            &mut command,
+            &config,
+            &get_suricata_filestore_dir()?,
+        );
 
         Ok(command)
     }
@@ -4739,11 +4877,9 @@ exit 1
             bail!("A managed EveBox agent is already running. Use 'evectl stop' first.");
         }
 
-        let command = build_evebox_agent_command()?;
+        let mut command = build_evebox_agent_command()?;
         info!("Running command: {}", format_command_line(&command));
-        let pid = spawn_detached(&command)?;
-
-        let command = build_evebox_agent_command()?;
+        let pid = spawn_detached(&mut command)?;
         let metadata = build_runtime_metadata(ROLE_EVEBOX_AGENT, &command, pid, None, None)?;
 
         write_pid(&get_evebox_agent_pid_path()?, pid)?;
@@ -4816,6 +4952,89 @@ exit 1
         stop_managed_process(ROLE_SURICATA)
     }
 
+    /// Use a separate executable so the worker does not lock the EveCtl launcher
+    /// against replacement by a staged self-update.
+    fn build_housekeeper_command(config: &Config) -> Result<Command> {
+        let mut command = Command::new(get_suricata_run_dir()?.join("housekeeper.exe"));
+        command
+            .arg("housekeep")
+            .arg("--retention-days")
+            .arg(config.suricata.file_extraction.max_age_days().to_string());
+        Ok(command)
+    }
+
+    /// Refresh only when launching, after any previous worker has been stopped.
+    fn prepare_housekeeper_executable(command: &Command) -> Result<()> {
+        super::process::copy_worker_executable(
+            &std::env::current_exe()?,
+            Path::new(command.get_program()),
+        )
+        .context("Failed to prepare the housekeeping executable")
+    }
+
+    fn run_housekeeper(retention_days: u32) -> Result<()> {
+        let directory = get_suricata_filestore_dir()?;
+        ensure_ctrlc_handler()?;
+        info!(
+            "Filestore cleanup: {} (retention: {retention_days} days)",
+            directory.display()
+        );
+        loop {
+            match super::file_extraction::prune(&directory, retention_days, SystemTime::now()) {
+                Ok(removed) => info!("Filestore cleanup removed {removed} files"),
+                Err(err) => warn!("Filestore cleanup failed: {err:#}"),
+            }
+            let next = std::time::Instant::now() + super::file_extraction::CLEANUP_INTERVAL;
+            while std::time::Instant::now() < next {
+                if CTRL_C_RECEIVED.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    /// Restore a stopped worker or replace one whose retention settings changed.
+    fn reconcile_housekeeper(config: &Config) -> Result<Option<RuntimeMetadata>> {
+        if !super::file_extraction::cleanup_enabled(config) {
+            stop_managed_process(ROLE_HOUSEKEEPER)?;
+            return Ok(None);
+        }
+        let mut command = build_housekeeper_command(config)?;
+        if let Some(metadata) = get_managed_runtime_metadata(ROLE_HOUSEKEEPER)? {
+            if metadata.argv == command_argv(&command) {
+                return Ok(Some(metadata));
+            }
+            stop_managed_process(ROLE_HOUSEKEEPER)?;
+        }
+        ensure_dir(&get_suricata_run_dir()?)?;
+        ensure_dir(&get_suricata_log_dir()?)?;
+        let stdout = get_suricata_log_dir()?.join("housekeeper-stdout.log");
+        let stderr = get_suricata_log_dir()?.join("housekeeper-stderr.log");
+        prepare_housekeeper_executable(&command)?;
+        info!("Running command: {}", format_command_line(&command));
+        let pid = spawn_detached_with_logs(&mut command, Some(&stdout), Some(&stderr))?;
+        let result = (|| {
+            let metadata = build_runtime_metadata(
+                ROLE_HOUSEKEEPER,
+                &command,
+                pid,
+                Some(&stdout),
+                Some(&stderr),
+            )?;
+            let (pid_path, runtime_path) = role_paths(ROLE_HOUSEKEEPER)?;
+            write_pid(&pid_path, pid)?;
+            write_runtime_metadata(&runtime_path, &metadata)?;
+            validate_background_process_started(&metadata)?;
+            Ok(Some(metadata))
+        })();
+        if result.is_err() {
+            let _ = stop_pid(pid);
+            let _ = cleanup_runtime_files(ROLE_HOUSEKEEPER);
+        }
+        result
+    }
+
     #[cfg(windows)]
     fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
         if debug {
@@ -4864,6 +5083,9 @@ exit 1
                 validate_background_process_started(&agent)?;
                 started.push(agent);
             }
+            if let Some(housekeeper) = reconcile_housekeeper(&config)? {
+                started.push(housekeeper);
+            }
 
             Ok(started)
         })();
@@ -4904,6 +5126,9 @@ exit 1
     fn stop_stack() -> Result<()> {
         let mut errors = vec![];
 
+        if let Err(err) = stop_managed_process(ROLE_HOUSEKEEPER) {
+            errors.push(format!("Failed to stop housekeeping: {err}"));
+        }
         if let Err(err) = stop_evebox_agent_managed() {
             errors.push(format!("Failed to stop EveBox agent: {err}"));
         }
@@ -5376,6 +5601,47 @@ exit 1
             assert_ne!(second, first);
             std::fs::write(rules_dir.join("suricata.rules"), "").unwrap();
             assert_ne!(rules_digest(&rules_dir).unwrap(), second);
+        }
+
+        #[test]
+        fn housekeeper_command_requires_positive_retention_and_is_hidden() {
+            let args =
+                Args::try_parse_from(["evectl", "housekeep", "--retention-days", "7"]).unwrap();
+            assert!(matches!(
+                args.command,
+                Some(Commands::Housekeep { retention_days: 7 })
+            ));
+            assert!(
+                Args::try_parse_from(["evectl", "housekeep", "--retention-days", "0"]).is_err()
+            );
+            assert!(Args::try_parse_from(["evectl", "housekeep"]).is_err());
+            use clap::CommandFactory;
+            let help = Args::command().render_long_help().to_string();
+            assert!(!help.contains("housekeep"));
+        }
+
+        #[test]
+        fn housekeeper_command_snapshots_retention_without_credentials() {
+            let mut config = Config::default();
+            config.suricata.file_extraction.max_age_days = Some(19);
+            config.evebox_agent.key = Some("secret-agent-key".into());
+            let command = build_housekeeper_command(&config).unwrap();
+            assert_eq!(
+                Path::new(command.get_program()),
+                get_suricata_run_dir().unwrap().join("housekeeper.exe")
+            );
+            assert_ne!(
+                Path::new(command.get_program()),
+                std::env::current_exe().unwrap()
+            );
+            assert_eq!(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                ["housekeep", "--retention-days", "19"]
+            );
+            assert_eq!(command.get_envs().count(), 0);
         }
 
         #[test]

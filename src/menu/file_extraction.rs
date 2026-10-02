@@ -17,11 +17,14 @@ use crate::prompt::Selections;
 
 pub(crate) fn toggle(context: &mut Context) {
     let dir = crate::suricata::filestore_dir(context);
-    let config = &mut context.config;
+    toggle_config(&mut context.config, &dir);
+}
 
+/// Shared settings prompt for native Windows and container installations.
+pub(crate) fn toggle_config(config: &mut Config, dir: &Path) {
     if config.suricata.file_extraction.enabled {
         config.suricata.file_extraction.enabled = false;
-        if dir_size(&dir) > 0 {
+        if dir_size(dir) > 0 {
             info!(
                 "Existing extracted files remain in {}; they can be removed from this menu after \
                  restarting services",
@@ -149,11 +152,14 @@ pub(crate) fn set_retention(config: &mut Config) {
 /// extraction, or None if there are none. Nothing manages these files
 /// once extraction is disabled.
 pub(crate) fn remove_label(context: &Context) -> Option<String> {
-    if context.config.suricata.file_extraction.enabled {
+    remove_label_for(&context.config, &crate::suricata::filestore_dir(context))
+}
+
+pub(crate) fn remove_label_for(config: &Config, dir: &Path) -> Option<String> {
+    if config.suricata.file_extraction.enabled {
         return None;
     }
-    let dir = crate::suricata::filestore_dir(context);
-    let size = dir_size(&dir);
+    let size = dir_size(dir);
     (size > 0).then(|| {
         format!(
             "Remove Extracted Files (~{} in {})",
@@ -189,7 +195,7 @@ pub(crate) fn remove_files(context: &Context) {
 
 /// Total size of the files under a directory, recursively, best
 /// effort. Symbolic links are not followed.
-fn dir_size(dir: &Path) -> u64 {
+pub(crate) fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };

@@ -24,6 +24,14 @@
   menu, with a retention setting as a total file count. Agent
   installations are prompted for an agent ID and the matching agent
   key issued on the server (`evebox config agents add <agent-id>`)
+- Opt-in Suricata file extraction on Windows, using the same Suricata
+  menu settings and extraction-limit handling as Linux. Extracted files
+  are stored under `%LOCALAPPDATA%\evectl\suricata\log\filestore` and
+  served by the local EveBox server or agent, independently of full packet
+  capture. A native EveCtl housekeeping process provides age-based
+  retention (seven days by default; zero keeps files forever), with no
+  Python or `suricatactl` dependency. Stop, restart, uninstall and
+  foreground shutdown include the worker
 - Opt-in Suricata file extraction (Linux only), disabled by default:
   "Enable File Extraction" in the Suricata menu stores files seen in
   HTTP, SMTP, FTP, SMB and NFS traffic under
@@ -83,6 +91,12 @@
 
 ### Fixed
 
+- Windows file-extraction housekeeping no longer locks the EveCtl executable
+  against self-update. Failed staged-update copies retain the download for retry
+- Windows background startup no longer stalls after launching file-extraction
+  housekeeping. Launch services directly with native Windows process creation,
+  returning their PID immediately instead of waiting for a PowerShell launcher's
+  captured pipes to close. Housekeeping logs go directly to files
 - Extracted-file cleanup now runs in a separate housekeeping container,
   surviving Suricata restarts. Requires a Suricata image with Python 3 and
   `suricatactl filestore prune`. Cleanup includes old files in `tmp/`;

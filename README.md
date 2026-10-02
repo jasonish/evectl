@@ -159,7 +159,51 @@ EveBox retrieval after services restart. Files left over from normal mode
 are also left in place and do not count toward the new per-thread retention
 limit.
 
-## Extracted-file retention (Linux)
+## File extraction (Linux and Windows)
+
+Enable extraction from "Configure" → "Configure Suricata" → "Enable File
+Extraction", then restart services. Extraction is disabled by default and
+requires Suricata. By default, only files selected by rules using the
+`filestore` keyword are stored; enable `outputs.file-store.force-filestore`
+to store all files seen in supported protocols (HTTP, SMTP, FTP, SMB and NFS).
+The menu also offers a max extract size (default `4mb`) and retention
+(default seven days; `0` keeps files forever). Files larger than the configured
+size can be stored truncated. Suricata's relevant limits are raised, never lowered.
+
+Files are stored by SHA256 in `data/suricata/log/filestore` on Linux and
+`%LOCALAPPDATA%\evectl\suricata\log\filestore` on Windows. The local EveBox
+server or agent makes them available through events containing their SHA256.
+Agent retrieval uses the agent ID and matching server-issued key, independently
+of full packet capture; enabling extraction prompts for these when needed.
+Disabling extraction leaves existing files in place and stops cleanup and
+EveBox retrieval after restarting services. The Suricata menu offers to remove
+leftover extracted files once services are stopped.
+
+**Windows Suricata caveat:** the bundled Suricata 8.0.6 build was observed
+converting LF bytes to CRLF in extracted files. Filestore names and EVE SHA256
+values still identify the original network content, so the downloaded file's
+hash may differ. EveCtl does not rewrite extracted content to work around this
+upstream behavior.
+
+### Extracted-file retention (Windows)
+
+EveCtl launches a native `housekeeper` process alongside the Windows stack;
+no Python or `suricatactl` installation is needed. It uses a separate executable
+copy under `suricata\run`, refreshed whenever the worker starts, so housekeeping
+does not prevent updating `evectl.exe`. Cleanup runs immediately
+and then every five minutes, deleting files older than the configured retention
+by modification time, including files in `tmp/`. Symbolic links and junctions
+are not followed. Failed deletions (for example, files still in use) are logged
+and retried on the next pass.
+
+The worker runs independently of Suricata's rules-update restarts. Starting or
+restarting the stack applies the configured retention; `evectl stop`, uninstall
+and foreground shutdown stop the worker. A retention of `0`, disabled extraction
+or disabled Suricata prevents cleanup. Background cleanup logs are under
+`%LOCALAPPDATA%\evectl\suricata\log\housekeeper-stdout.log` and
+`housekeeper-stderr.log`; foreground runs display them in the console.
+
+### Extracted-file retention (Linux)
 
 When Suricata file extraction is enabled, EveCtl runs a separate
 `<instance-prefix>-housekeeper` container using the configured Suricata
