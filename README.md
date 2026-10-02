@@ -91,6 +91,29 @@ evectl -D /var/lib/evectl-sensor1
 This option is not available on Windows, where the location is
 fixed.
 
+## Full packet capture (Windows)
+
+Enable capture from "Configure" → "Configure Full Packet Capture".
+Requires Suricata and either the local EveBox server or the EveBox agent.
+Restart services after changing capture or retention settings.
+Captures can be retrieved through the EveBox web UI, locally or through
+an agent connected to a remote server. Agent setups prompt for an agent ID
+and the matching key issued on the server with
+`evebox config agents add <agent-id>` (or through its Agents page).
+These settings can also be changed in the EveBox Agent menu.
+
+Captures are stored in `%LOCALAPPDATA%\evectl\suricata\log\pcap`.
+Suricata uses multi mode, writing separate `log.<thread>.<timestamp>.pcap`
+files for each processing thread and rotating each file at 256 MB.
+The retention setting is a total file count (100 by default, about 25 GB),
+divided across the threads. The effective total is rounded down to a
+multiple of the thread count, with at least one file per thread; the
+configuration menu shows the effective retention and disk usage.
+Disabling capture leaves existing files in place but stops configuring
+EveBox retrieval after services restart. Files left over from normal mode
+are also left in place and do not count toward the new per-thread retention
+limit.
+
 ## Extracted-file retention (Linux)
 
 When Suricata file extraction is enabled, EveCtl runs a separate

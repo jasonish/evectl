@@ -44,9 +44,15 @@ pub fn hostname() -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-/// Not needed on Windows, where the agent ID is not configurable
-/// through EveCtl.
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn hostname() -> Option<String> {
     None
 }

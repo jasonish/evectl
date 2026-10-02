@@ -4,6 +4,14 @@
 
 ### Added
 
+- Opt-in full packet capture on Windows: Suricata writes rotating
+  256 MB PCAP files per processing thread under
+  `%LOCALAPPDATA%\evectl\suricata\log\pcap`, with configurable total
+  retention (100 files by default, rounded down to a multiple of the
+  thread count, with at least one file per thread). Enable it from
+  "Configure Full Packet Capture" and restart services. Captures are
+  available through the local EveBox server or an agent connected to a
+  remote server; agent setups prompt for an agent ID and matching key
 - Opt-in full packet capture (Linux only): Suricata writes a rotating
   pcap spool that is served through the EveBox web UI, either by the
   local EveBox server or by the EveBox agent on behalf of a remote
@@ -22,8 +30,8 @@
   The local EveBox server or agent serves extracted files for download
   from events containing their SHA256; agents use the agent ID and key
   independently of full packet capture
-- EveBox agent ID and key settings in the EveBox Agent menu (Linux
-  only); the ID is stamped on the agent's events and identifies it to
+- EveBox agent ID and key settings in the EveBox Agent menu on Linux
+  and Windows; the ID is stamped on the agent's events and identifies it to
   the server
 - `-D`/`--data-directory` option (Linux only) to select the instance
   directory, allowing multiple instances on one host

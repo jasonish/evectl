@@ -132,20 +132,18 @@ impl FileExtractionConfig {
 }
 
 /// Full packet capture configuration. When enabled, Suricata writes a
-/// rotating pcap spool that is served through the EveBox web UI, either
-/// directly by the local EveBox server or by the local EveBox agent on
-/// behalf of a remote server. Requires Suricata and one of the two; not
-/// supported on Windows.
+/// rotating pcap spool served through the EveBox web UI, either by the local
+/// server or by the agent on behalf of a remote server. Requires Suricata
+/// and at least one of these EveBox services on both Linux and Windows.
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct FpcConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub enabled: bool,
 
-    /// Maximum total number of pcap files to retain across all
-    /// capture threads. Suricata enforces the limit per thread, so
-    /// the effective total is rounded down to a multiple of the
-    /// thread count, with a minimum of one file per thread.
+    /// Maximum total number of pcap files to retain. Suricata's multi mode
+    /// enforces the limit per thread, so the effective total is rounded down
+    /// to a multiple of the thread count, with a minimum of one file per thread.
     #[serde(default, skip_serializing_if = "is_default")]
     pub max_files: Option<u32>,
 }
@@ -176,9 +174,9 @@ impl FpcConfig {
         self.effective_max_files_for(Self::capture_threads())
     }
 
-    /// Number of capture threads Suricata will use with
-    /// `threads: auto`: one per online CPU, regardless of any
-    /// affinity or quota applied to EveCtl itself.
+    /// Default number of packet-processing threads: one per online CPU
+    /// (`threads: auto` on Linux, `detect-thread-ratio: 1.0` on Windows).
+    /// On Linux, this ignores any affinity or quota applied to EveCtl itself.
     pub(crate) fn capture_threads() -> usize {
         evectl::system::online_cpus()
     }

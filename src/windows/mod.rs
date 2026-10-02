@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: (C) 2025 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+#[cfg(any(windows, test))]
+mod fpc;
+#[cfg(any(windows, test))]
+mod process;
+
 #[cfg(windows)]
 mod imp {
     use crate::prelude::*;
@@ -275,6 +280,7 @@ mod imp {
         Suricata,
         EveBoxAgent,
         EveBoxServer,
+        Fpc,
         Shortcuts,
         Return,
     }
@@ -292,6 +298,8 @@ mod imp {
     enum ConfigureAgentMenuOption {
         Toggle,
         Server,
+        AgentId,
+        Key,
         Return,
     }
 
@@ -729,6 +737,13 @@ mod imp {
                     config.evebox_server.enabled
                 ),
             );
+            selections.push(
+                ConfigureMenuOption::Fpc,
+                format!(
+                    "Configure Full Packet Capture [enabled={}]",
+                    config.fpc.enabled
+                ),
+            );
             selections.push(ConfigureMenuOption::Shortcuts, "Add Desktop Shortcuts");
             selections.push(ConfigureMenuOption::Return, "Return");
 
@@ -742,6 +757,7 @@ mod imp {
                 ConfigureMenuOption::Suricata => configure_suricata_menu(config)?,
                 ConfigureMenuOption::EveBoxAgent => configure_evebox_agent_menu(config)?,
                 ConfigureMenuOption::EveBoxServer => configure_evebox_server_menu(config)?,
+                ConfigureMenuOption::Fpc => super::fpc::menu(config, &get_suricata_pcap_dir()?)?,
                 ConfigureMenuOption::Shortcuts => {
                     run_menu_action_with_pause("Failed to add desktop shortcuts", add_shortcuts)
                 }
@@ -841,6 +857,14 @@ mod imp {
                 ConfigureAgentMenuOption::Server,
                 format!("EveBox Server URL [{}]", config.evebox_agent.server),
             );
+            selections.push(
+                ConfigureAgentMenuOption::AgentId,
+                crate::menu::evebox_agent::agent_id_label(config),
+            );
+            selections.push(
+                ConfigureAgentMenuOption::Key,
+                crate::menu::evebox_agent::key_label(config),
+            );
             selections.push(ConfigureAgentMenuOption::Return, "Return");
 
             let selection =
@@ -859,6 +883,12 @@ mod imp {
                     }
                 }
                 ConfigureAgentMenuOption::Server => crate::menu::evebox_agent::set_server(config)?,
+                ConfigureAgentMenuOption::AgentId => {
+                    crate::menu::evebox_agent::set_agent_id(config);
+                }
+                ConfigureAgentMenuOption::Key => {
+                    crate::menu::evebox_agent::set_key(config);
+                }
                 ConfigureAgentMenuOption::Return => break,
             }
         }
@@ -1511,32 +1541,8 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn powershell_quote(value: &str) -> String {
-        format!("'{}'", value.replace('\'', "''"))
-    }
-
-    #[cfg(windows)]
     fn spawn_detached(command: &Command) -> Result<u32> {
-        let program = powershell_quote(&command.get_program().to_string_lossy());
-        let working_dir = command
-            .get_current_dir()
-            .map(|path| powershell_quote(&path.to_string_lossy()))
-            .unwrap_or_else(|| "'.'".to_string());
-        let argument_list = command
-            .get_args()
-            .map(|arg| powershell_quote(&arg.to_string_lossy()))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let script = format!(
-            "$argList = @({argument_list}); \
-             $p = Start-Process -FilePath {program} -WorkingDirectory {working_dir} \
-             -ArgumentList $argList -WindowStyle Hidden -PassThru; \
-             Write-Output $p.Id"
-        );
-
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
+        let output = super::process::detached_command(command)
             .output()
             .context("Failed to spawn detached process")?;
 
@@ -2078,6 +2084,10 @@ mod imp {
             suricata_log_dir.display()
         );
         println!(
+            "  Suricata packet captures:  {}",
+            get_suricata_pcap_dir()?.display()
+        );
+        println!(
             "  Suricata runtime files:    {}",
             suricata_run_dir.display()
         );
@@ -2506,6 +2516,11 @@ mod imp {
     #[cfg(windows)]
     fn get_suricata_log_dir() -> Result<PathBuf> {
         Ok(get_suricata_data_dir()?.join("log"))
+    }
+
+    #[cfg(windows)]
+    fn get_suricata_pcap_dir() -> Result<PathBuf> {
+        Ok(get_suricata_log_dir()?.join("pcap"))
     }
 
     #[cfg(windows)]
@@ -4271,6 +4286,35 @@ exit 1
             command.arg(format!("sensor-name={}", sensor_name));
         }
 
+        let spool = get_suricata_pcap_dir()?;
+        let mut dump_command = Command::new(command.get_program());
+        dump_command.args(command.get_args());
+        dump_command.arg("--dump-config");
+        dump_command.current_dir(&suricata_dir);
+        let output = dump_command
+            .output()
+            .context("Failed to dump Suricata configuration for full packet capture")?;
+        if !output.status.success() {
+            bail!(
+                "Failed to dump Suricata configuration for full packet capture ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let fpc = super::fpc::effective_config(&config);
+        if config.fpc.enabled && !fpc.enabled {
+            warn!("Full packet capture requires Suricata and either the EveBox server or agent");
+        }
+        super::fpc::configure_command(
+            &mut command,
+            std::str::from_utf8(&output.stdout)?,
+            &fpc,
+            &spool,
+        )?;
+        if fpc.enabled {
+            ensure_dir(&spool)?;
+        }
+
         // The BPF filter is a trailing positional argument.
         if let Some(bpf) = &config.suricata.bpf {
             command.arg(bpf);
@@ -4521,6 +4565,11 @@ exit 1
         command.arg("-D");
         command.arg(&evebox_data_dir);
         command.arg(get_suricata_eve_json_path()?);
+        super::fpc::configure_evebox_command(
+            &mut command,
+            &load_evectl_config()?,
+            &get_suricata_pcap_dir()?,
+        );
 
         Ok(command)
     }
@@ -4593,6 +4642,7 @@ exit 1
         if config.evebox_agent.disable_certificate_validation {
             command.arg("--disable-certificate-check");
         }
+        super::fpc::configure_agent_command(&mut command, &config, &get_suricata_pcap_dir()?);
 
         Ok(command)
     }
