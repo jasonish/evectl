@@ -71,6 +71,13 @@ https://evebox.org/files/evectl/.
 On first run, follow the setup wizard and select your network
 interface, then select "Start" from the main menu.
 
+If `evectl upgrade` (or the menu's **Update** action) downloads an EveCtl
+self-update, it exits immediately without an Enter prompt or restarting
+services. The update is applied after EveCtl exits. Run `evectl` again and
+choose **Update** to finish updating the components. The menu will recommend
+**Restart** for all enabled services; the reminder stays until a full stack
+restart succeeds.
+
 ### EveBox release channels on Windows
 
 Windows uses native EveBox binaries rather than container images. Choose

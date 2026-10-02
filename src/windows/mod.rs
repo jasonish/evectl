@@ -9,10 +9,13 @@ mod file_extraction;
 mod fpc;
 #[cfg(windows)]
 mod process;
+#[cfg(windows)]
+mod update;
 
 #[cfg(windows)]
 mod imp {
     use super::evebox::Download as EveBoxDownload;
+    use super::update::UpdateOutcome;
     use crate::config::EveBoxChannel;
     use crate::menu::file_extraction as extraction_menu;
     use crate::prelude::*;
@@ -262,7 +265,7 @@ mod imp {
                 Ok(())
             }
             Some(Commands::UpdateRules) => update_rules(false, false),
-            Some(Commands::Update) => upgrade_windows_components(),
+            Some(Commands::Update) => upgrade_windows_components().map(|_| ()),
             Some(Commands::Version) => {
                 println!("{}", env!("EVECTL_VERSION"));
                 Ok(())
@@ -518,11 +521,17 @@ mod imp {
             if original_config != config {
                 warn!("Configuration has changed, restart required");
             }
+            let restart_recommended = super::update::restart_recommended(&get_evectl_data_dir()?);
+            if restart_recommended {
+                warn!("{}", super::update::RESTART_REMINDER);
+            }
 
             let mut selections = crate::prompt::Selections::with_index();
             selections.push(MainMenuOption::Refresh, "Refresh Status");
-            if status.any_running() {
+            if status.any_running() || (restart_recommended && status.ready_to_start()) {
                 selections.push(MainMenuOption::Restart, "Restart");
+            }
+            if status.any_running() {
                 selections.push(MainMenuOption::Stop, "Stop");
             } else if status.ready_to_start() {
                 selections.push(MainMenuOption::Start, "Start");
@@ -570,12 +579,16 @@ mod imp {
                     });
                 }
                 MainMenuOption::ManageRules => rules_menu()?,
-                MainMenuOption::Update => {
-                    run_menu_action_with_pause(
-                        "Failed to update Windows components",
-                        upgrade_windows_components,
-                    );
-                }
+                MainMenuOption::Update => match upgrade_windows_components() {
+                    // Leave the menu immediately: don't pause or run anything
+                    // else using the old EveCtl executable.
+                    Ok(UpdateOutcome::RestartEveCtl) => break,
+                    result => {
+                        run_menu_action_with_pause("Failed to update Windows components", || {
+                            result.map(|_| ())
+                        })
+                    }
+                },
                 MainMenuOption::Configure => configure_menu(&mut config)?,
                 MainMenuOption::Other => other_menu(&mut config)?,
                 MainMenuOption::Exit => break,
@@ -3248,15 +3261,17 @@ exit $process.ExitCode
     }
 
     #[cfg(windows)]
-    fn upgrade_windows_components() -> Result<()> {
-        // Update EveCtl itself first, matching the Linux update workflow. On
-        // Windows the new executable is staged and applied on the next start,
-        // so the component upgrades below still run with the current binary.
-        if let Err(err) = crate::selfupdate::self_update() {
-            error!("Failed to update EveCtl: {err}");
-            info!("Continuing with component updates");
-        }
+    fn upgrade_windows_components() -> Result<UpdateOutcome> {
+        let data_dir = get_evectl_data_dir()?;
+        super::update::run(
+            crate::selfupdate::self_update(),
+            &data_dir,
+            upgrade_components,
+        )
+    }
 
+    #[cfg(windows)]
+    fn upgrade_components() -> Result<()> {
         let config = load_evectl_config()?;
         let plan = build_upgrade_plan(&config)?;
         if !plan.any() {
@@ -3994,6 +4009,7 @@ exit $process.ExitCode
             get_evebox_pid_path()?,
             get_evebox_runtime_path()?,
             get_evectl_data_dir()?.join("downloads"),
+            get_evectl_data_dir()?.join(super::update::RESTART_MARKER),
         ])
     }
 
@@ -5119,7 +5135,11 @@ exit 1
     fn restart_stack() -> Result<()> {
         let guid = capture_restart_plan()?.suricata_guid;
         stop_stack()?;
-        start_stack(false, guid)
+        start_stack(false, guid)?;
+        if let Err(err) = super::update::clear_restart_recommendation(&get_evectl_data_dir()?) {
+            warn!("Services restarted, but failed to clear the restart recommendation: {err}");
+        }
+        Ok(())
     }
 
     #[cfg(windows)]

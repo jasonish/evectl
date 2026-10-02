@@ -140,9 +140,7 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
     replace_current_executable(&current_exe, &mut download_exe)?;
 
     #[cfg(target_os = "windows")]
-    warn!(
-        "An EveCtl update has been downloaded and staged. It will be applied on the next start. Re-run your command after that run completes."
-    );
+    info!("An EveCtl update has been downloaded and staged.");
 
     #[cfg(not(target_os = "windows"))]
     warn!("The EveCtl program has been updated.");
@@ -199,6 +197,13 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
         }
     };
 
+    schedule_staged_update(&current_exe)
+}
+
+/// Schedule replacement as soon as the running executable exits. Startup also
+/// uses this as a fallback for downloads left by older builds or failed helpers.
+#[cfg(target_os = "windows")]
+pub(crate) fn schedule_staged_update(current_exe: &Path) -> Result<bool> {
     let file_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
