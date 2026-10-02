@@ -169,9 +169,25 @@ exit 1
 "#;
 
 #[cfg(target_os = "windows")]
-pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
-    use std::process::Command;
+fn windows_update_command(script: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
 
+    // -WindowStyle Hidden can hide the caller's shared console. Give the
+    // helper no console instead, and don't inherit the terminal's streams.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = Command::new("powershell");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
     let current_exe = match env::current_exe() {
         Ok(path) => path,
         Err(err) => {
@@ -193,14 +209,7 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
         return Ok(false);
     }
 
-    Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            WINDOWS_UPDATE_SCRIPT,
-        ])
+    windows_update_command(WINDOWS_UPDATE_SCRIPT)
         .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
         .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
         .spawn()
@@ -302,7 +311,32 @@ fn make_executable(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::process::Command;
+
+    #[test]
+    fn staged_update_helper_runs_without_a_console() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = dir.path().join("console window.txt");
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class UpdateConsole {
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+}
+'@
+[System.IO.File]::WriteAllText($env:EVECTL_TEST_CONSOLE_WINDOW, [UpdateConsole]::GetConsoleWindow().ToInt64().ToString())
+"#;
+        let mut command = windows_update_command(script);
+        assert!(!command.get_args().any(|arg| arg == "-WindowStyle"));
+        let status = command
+            .env("EVECTL_TEST_CONSOLE_WINDOW", &result)
+            .status()
+            .unwrap();
+        assert!(status.success(), "Helper exited with {status}");
+        assert_eq!(fs::read_to_string(result).unwrap(), "0");
+    }
 
     #[test]
     fn staged_update_preserves_download_until_copy_succeeds() {
@@ -314,8 +348,7 @@ mod tests {
         // One attempt is enough to test failure without waiting for all retries.
         let script = WINDOWS_UPDATE_SCRIPT.replace("$i -lt 120", "$i -lt 1");
         let run = || {
-            Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            windows_update_command(&script)
                 .env("EVECTL_SELF_UPDATE_TARGET", &target)
                 .env("EVECTL_SELF_UPDATE_STAGED", &staged)
                 .output()

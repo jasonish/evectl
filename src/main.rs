@@ -264,18 +264,6 @@ impl UpdateContinuationArgs {
 }
 
 #[cfg(target_os = "windows")]
-fn wait_for_enter_before_exit() {
-    use std::io::IsTerminal;
-
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        eprint!("Press Enter to exit...");
-        let _ = std::io::stderr().flush();
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn main() -> Result<()> {
     // Reqwest's rustls-no-provider feature requires installing a crypto
     // provider before any client is built (see Cargo.toml for why ring).
@@ -297,8 +285,7 @@ fn main() -> Result<()> {
                 eprintln!(
                     "EveCtl update scheduled after this process exits. Please run your command again."
                 );
-                wait_for_enter_before_exit();
-                std::process::exit(0);
+                return Ok(());
             }
             Ok(false) => {}
             Err(err) => eprintln!("Warning: failed to apply staged EveCtl update: {}", err),

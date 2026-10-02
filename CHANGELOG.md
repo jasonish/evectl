@@ -91,6 +91,8 @@
 
 ### Fixed
 
+- Windows staged self-updates exit without an Enter prompt and launch the
+  update helper without a console, leaving the user's terminal window visible
 - Windows file-extraction housekeeping no longer locks the EveCtl executable
   against self-update. Failed staged-update copies retain the download for retry
 - Windows background startup no longer stalls after launching file-extraction
