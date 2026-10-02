@@ -4,6 +4,11 @@
 
 ### Added
 
+- Windows EveBox release-channel selection (Development or Release) in the
+  setup wizard, Configure menu, and `evectl config set-evebox-channel`.
+  The setting is shared by the server and agent and applied on install or
+  Update. Release resolves the latest stable version from the official
+  manifest; Development remains the default, matching Linux's main image
 - Opt-in full packet capture on Windows: Suricata writes rotating
   256 MB PCAP files per processing thread under
   `%LOCALAPPDATA%\evectl\suricata\log\pcap`, with configurable total
@@ -53,6 +58,12 @@
 
 ### Changed
 
+- Windows `evectl update` refreshes enabled EveBox installations from the
+  selected channel even when the version number is unchanged. It records
+  the installed channel and build revision, and stages and validates the
+  new build before replacing installed files while preserving data.
+  Channel switches can intentionally downgrade to a stable release;
+  back up data first. Disabled components are no longer upgraded
 - Windows: `evectl uninstall` now stops services and removes the data
   files by default instead of uninstalling the EveBox, Suricata, and
   Npcap components; the component uninstall is part of

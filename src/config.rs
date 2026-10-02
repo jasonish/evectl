@@ -30,6 +30,36 @@ pub(crate) struct Config {
 
     #[serde(default, skip_serializing_if = "is_default")]
     pub fpc: FpcConfig,
+
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub windows: WindowsConfig,
+}
+
+/// Native Windows installation options; Linux continues to use image names.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct WindowsConfig {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub evebox_channel: EveBoxChannel,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, Eq, PartialEq, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum EveBoxChannel {
+    #[default]
+    #[serde(alias = "devel")]
+    #[value(alias = "devel")]
+    Development,
+    Release,
+}
+
+impl std::fmt::Display for EveBoxChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Release => "release",
+            Self::Development => "development",
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Eq, PartialEq)]
@@ -419,6 +449,52 @@ mod tests {
         let toml = toml::to_string(&config).unwrap();
         let parsed = Config::parse_toml(&toml).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn windows_evebox_channel_defaults_and_roundtrips() {
+        assert_eq!(
+            <EveBoxChannel as clap::ValueEnum>::value_variants(),
+            &[EveBoxChannel::Development, EveBoxChannel::Release]
+        );
+        let legacy = Config::parse_toml("[evebox-server]\nenabled = true\n").unwrap();
+        assert_eq!(legacy.windows.evebox_channel, EveBoxChannel::Development);
+        assert!(!toml::to_string(&legacy).unwrap().contains("[windows]"));
+
+        for (name, channel) in [
+            ("release", EveBoxChannel::Release),
+            ("development", EveBoxChannel::Development),
+            ("devel", EveBoxChannel::Development),
+        ] {
+            let text = format!("[windows]\nevebox-channel = \"{name}\"\n");
+            let config = Config::parse_toml(&text).unwrap();
+            assert_eq!(config.windows.evebox_channel, channel);
+            let serialized = toml::to_string(&config).unwrap();
+            assert_eq!(Config::parse_toml(&serialized).unwrap(), config);
+        }
+        assert!(Config::parse_toml("[windows]\nevebox-channel = \"unknown\"\n").is_err());
+    }
+
+    #[test]
+    fn saving_windows_channel_preserves_service_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evectl.toml");
+        let mut config = Config::default_with_filename(&path);
+        config.evebox_agent.enabled = true;
+        config.evebox_agent.server = "https://example.test:5636".into();
+        config.evebox_agent.key = Some("keep-key".into());
+        config.windows.evebox_channel = EveBoxChannel::Release;
+        config.save().unwrap();
+        assert_eq!(Config::from_file(&path).unwrap(), config);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("evebox-channel = \"release\"")
+        );
+
+        config.windows.evebox_channel = EveBoxChannel::Development;
+        config.save().unwrap();
+        assert_eq!(Config::from_file(&path).unwrap(), config);
     }
 
     #[test]

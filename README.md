@@ -71,6 +71,51 @@ https://evebox.org/files/evectl/.
 On first run, follow the setup wizard and select your network
 interface, then select "Start" from the main menu.
 
+### EveBox release channels on Windows
+
+Windows uses native EveBox binaries rather than container images. Choose
+its channel in the setup wizard or under **Configure → EveBox Release
+Channel**:
+
+- **Development** (default, matching Linux's `jasonish/evebox:main` image):
+  the latest main-branch build.
+- **Release**: the latest stable release, resolved from the official release
+  manifest instead of a version bundled with EveCtl.
+
+The setting is shared by the EveBox server and agent. From PowerShell:
+
+```powershell
+evectl config set-evebox-channel release
+evectl update
+
+# To return to development builds:
+evectl config set-evebox-channel development
+evectl update
+```
+
+Omit the channel to choose interactively; `devel` is also accepted for
+`development`. The setting is saved in `evectl.toml`:
+
+```toml
+[windows]
+evebox-channel = "release"
+```
+
+For a new installation, `evectl install` uses the selected channel. For an
+existing installation, use `evectl update` or the main menu's **Update**
+action to apply a channel change; a restart alone does not change the
+installed binary. Every Update downloads the latest build from the selected
+channel, even if its version number is unchanged. Only enabled components
+are updated. Previously running managed services are stopped and restarted,
+and EveBox data is preserved. The archive and binary are validated before
+replacing the installed files. `evectl info` shows the selected channel,
+installed channel, version, and development revision.
+
+Switching from Development to Release may downgrade EveBox. **Back up your
+data first**: preserving the files does not guarantee an older release can
+read data created by a newer development build. Linux continues to use the
+configured Docker/Podman image name; this Windows setting has no effect there.
+
 ## Configuration and Data
 
 On Linux, EveCtl stores its configuration and data in
@@ -177,6 +222,15 @@ remains outside this simulated coverage.
 Container integration tests are opt-in; see
 `src/housekeeper/test_runtime.py` for Docker/Podman commands. They use
 isolated instances and disposable files, never live captures or host reboots.
+
+On Windows, the optional EveBox channel smoke test downloads and runs the
+official builds' `version` commands in a temporary directory. It tests both
+channels, switching in both directions, and replacing the same build without
+touching your installation:
+
+```powershell
+cargo test installs_and_switches_evebox_release_channels -- --ignored --nocapture
+```
 
 ### For Host OS
 

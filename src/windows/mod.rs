@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 #[cfg(any(windows, test))]
+mod evebox;
+#[cfg(any(windows, test))]
 mod fpc;
 #[cfg(any(windows, test))]
 mod process;
 
 #[cfg(windows)]
 mod imp {
+    use super::evebox::Download as EveBoxDownload;
+    use crate::config::EveBoxChannel;
     use crate::prelude::*;
     use clap::{Parser, Subcommand};
     use colored::Colorize;
@@ -32,10 +36,8 @@ mod imp {
         r"C:\Program Files (x86)\Suricata\suricata.exe",
     ];
     const SURICATA_VERSION_MARKER: &str = ".evectl-suricata-version";
-    const EVEBOX_VERSION: &str = "0.28.0";
     const EVEBOX_VERSION_MARKER: &str = ".evectl-evebox-version";
-    const EVEBOX_URL: &str =
-        "https://evebox.org/files/release/0.28.0/evebox-0.28.0-windows-x64.zip";
+    const EVEBOX_CHANNEL_MARKER: &str = ".evectl-evebox-channel";
     const STATUS_CONTROL_C_EXIT: i32 = -1073741510;
     const ROLE_SURICATA: &str = "suricata";
     const ROLE_EVEBOX: &str = "evebox";
@@ -133,7 +135,7 @@ mod imp {
         /// Update Suricata rules.
         UpdateRules,
 
-        /// Update EveCtl itself and the bundled Windows components.
+        /// Update EveCtl, bundled Windows components, and EveBox from the selected release channel.
         #[command(aliases = ["upgrade", "upgrade-suricata"])]
         Update,
 
@@ -186,6 +188,14 @@ mod imp {
     pub(crate) enum ConfigCommands {
         /// Select and save the default interface name used by start.
         SetInterface,
+
+        /// Select the EveBox release channel; run update to apply it to an existing installation.
+        #[command(name = "set-evebox-channel")]
+        SetEveBoxChannel {
+            /// Omit to choose interactively. Applies to both server and agent.
+            #[arg(value_enum)]
+            channel: Option<EveBoxChannel>,
+        },
     }
 
     #[derive(Subcommand, Debug, Clone)]
@@ -248,6 +258,7 @@ mod imp {
             Some(Commands::AddShortcuts) => add_shortcuts(),
             Some(Commands::Config { command }) => match command {
                 ConfigCommands::SetInterface => config_set_interface(),
+                ConfigCommands::SetEveBoxChannel { channel } => config_set_evebox_channel(channel),
             },
             Some(Commands::Rules { command }) => match command {
                 RulesCommands::Update { force, quiet } => update_rules(force, quiet),
@@ -280,6 +291,7 @@ mod imp {
         Suricata,
         EveBoxAgent,
         EveBoxServer,
+        EveBoxChannel,
         Fpc,
         Shortcuts,
         Return,
@@ -439,9 +451,19 @@ mod imp {
                 ensure_dir(&get_evectl_data_dir()?)?;
                 config.save()?;
 
-                if let Ok(Some(true)) = inquire::Confirm::new("Configuration has changed, restart?")
-                    .with_default(true)
-                    .prompt_skippable()
+                if config.windows.evebox_channel != original_config.windows.evebox_channel {
+                    info!(
+                        "EveBox channel saved as {}. Choose Update to apply it; a restart alone does not change the installed build.",
+                        config.windows.evebox_channel
+                    );
+                    original_config.windows.evebox_channel = config.windows.evebox_channel;
+                }
+
+                if config != original_config
+                    && let Ok(Some(true)) =
+                        inquire::Confirm::new("Configuration has changed, restart?")
+                            .with_default(true)
+                            .prompt_skippable()
                 {
                     run_menu_action("Failed to restart Windows stack", restart_stack);
                     original_config = config.clone();
@@ -652,6 +674,11 @@ mod imp {
             config.evebox_server.enabled = true;
         }
 
+        let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
+            return Ok(());
+        };
+        config.windows.evebox_channel = channel;
+
         if !inquire::Confirm::new("Would you like to proceed with this configuration?")
             .with_default(true)
             .prompt()?
@@ -699,6 +726,45 @@ mod imp {
         crate::prompt::enter();
     }
 
+    fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
+        let mut selections = crate::prompt::Selections::new();
+        selections.push(
+            EveBoxChannel::Development,
+            "Development: latest main-branch build",
+        );
+        selections.push(EveBoxChannel::Release, "Release: latest stable release");
+        inquire::Select::new(
+            "EveBox release channel (server and agent)",
+            selections.to_vec(),
+        )
+        .with_starting_cursor(match current {
+            EveBoxChannel::Development => 0,
+            EveBoxChannel::Release => 1,
+        })
+        .with_help_message(
+            "Apply with Update. Back up data before switching from development to release.",
+        )
+        .prompt()
+        .ok()
+        .map(|selection| selection.tag)
+    }
+
+    fn config_set_evebox_channel(channel: Option<EveBoxChannel>) -> Result<()> {
+        let mut config = load_evectl_config()?;
+        let Some(channel) =
+            channel.or_else(|| prompt_for_evebox_channel(config.windows.evebox_channel))
+        else {
+            return Ok(());
+        };
+        config.windows.evebox_channel = channel;
+        ensure_dir(&get_evectl_data_dir()?)?;
+        config.save()?;
+        println!(
+            "EveBox channel saved as {channel}. Run 'evectl update' to apply it to an existing installation."
+        );
+        Ok(())
+    }
+
     fn configure_menu(config: &mut crate::config::Config) -> Result<()> {
         loop {
             crate::term::clear();
@@ -738,6 +804,10 @@ mod imp {
                 ),
             );
             selections.push(
+                ConfigureMenuOption::EveBoxChannel,
+                format!("EveBox Release Channel [{}]", config.windows.evebox_channel),
+            );
+            selections.push(
                 ConfigureMenuOption::Fpc,
                 format!(
                     "Configure Full Packet Capture [enabled={}]",
@@ -757,6 +827,12 @@ mod imp {
                 ConfigureMenuOption::Suricata => configure_suricata_menu(config)?,
                 ConfigureMenuOption::EveBoxAgent => configure_evebox_agent_menu(config)?,
                 ConfigureMenuOption::EveBoxServer => configure_evebox_server_menu(config)?,
+                ConfigureMenuOption::EveBoxChannel => {
+                    if let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel)
+                    {
+                        config.windows.evebox_channel = channel;
+                    }
+                }
                 ConfigureMenuOption::Fpc => super::fpc::menu(config, &get_suricata_pcap_dir()?)?,
                 ConfigureMenuOption::Shortcuts => {
                     run_menu_action_with_pause("Failed to add desktop shortcuts", add_shortcuts)
@@ -2101,6 +2177,10 @@ mod imp {
         );
         println!("  EveBox data directory:     {}", evebox_data_dir.display());
         println!(
+            "  Selected EveBox channel:   {}",
+            load_evectl_config()?.windows.evebox_channel
+        );
+        println!(
             "  EveBox PID file:           {}",
             get_evebox_pid_path()?.display()
         );
@@ -2110,6 +2190,12 @@ mod imp {
         );
         if let Some(evebox_exe) = evebox_exe {
             println!("  Current EveBox binary:     {}", evebox_exe.display());
+            if let Some(version) = get_evebox_installed_version()? {
+                println!("  Current EveBox version:    {}", version);
+            }
+            if let Some(channel) = evebox_installed_channel(&evebox_install_dir)? {
+                println!("  Installed EveBox channel:  {}", channel);
+            }
         } else {
             println!(
                 "  Current EveBox binary:     {} (not installed)",
@@ -2128,8 +2214,11 @@ mod imp {
         info!("Downloading {} from {}", name, url);
         info!("Saving to {:?}", path);
 
-        let mut response =
-            reqwest::blocking::get(url).context(format!("Failed to download {}", name))?;
+        let mut response = crate::http::client_builder()
+            .build()?
+            .get(url)
+            .send()
+            .context(format!("Failed to download {}", name))?;
 
         if !response.status().is_success() {
             bail!("Failed to download {}: HTTP {}", name, response.status());
@@ -2909,7 +2998,7 @@ exit $process.ExitCode
         }
 
         if config.evebox_server.enabled || config.evebox_agent.enabled {
-            install_evebox()?;
+            install_evebox(config.windows.evebox_channel)?;
         }
 
         Ok(())
@@ -2952,36 +3041,21 @@ exit $process.ExitCode
         Ok(comparison == std::cmp::Ordering::Less)
     }
 
-    #[cfg(windows)]
-    fn evebox_upgrade_needed() -> Result<bool> {
-        if find_evebox_exe(&get_evebox_install_dir()?)?.is_none() {
-            return Ok(true);
-        }
-
-        let Some(installed_version) = get_evebox_installed_version()? else {
-            return Ok(true);
-        };
-
-        let Some(comparison) = compare_versions(&installed_version, EVEBOX_VERSION) else {
-            return Ok(false);
-        };
-
-        Ok(comparison == std::cmp::Ordering::Less)
-    }
-
     /// Only the components required by the enabled services are
     /// considered for upgrade; a server-only install for example must
     /// not pull in Npcap or Suricata.
     #[cfg(windows)]
-    fn build_upgrade_plan() -> Result<UpgradePlan> {
-        let config = load_evectl_config()?;
+    fn build_upgrade_plan(config: &crate::config::Config) -> Result<UpgradePlan> {
         let use_suricata = config.suricata.enabled;
         let use_evebox = config.evebox_server.enabled || config.evebox_agent.enabled;
 
         Ok(UpgradePlan {
             npcap: use_suricata && npcap_upgrade_needed()?,
             suricata: use_suricata && suricata_upgrade_needed()?,
-            evebox: use_evebox && evebox_upgrade_needed()?,
+            // Always refresh the selected channel on an explicit update. This
+            // covers same-version development revisions and intentional channel
+            // switches (including development -> an older stable release).
+            evebox: use_evebox,
         })
     }
 
@@ -3069,7 +3143,8 @@ exit $process.ExitCode
             info!("Continuing with component updates");
         }
 
-        let plan = build_upgrade_plan()?;
+        let config = load_evectl_config()?;
+        let plan = build_upgrade_plan(&config)?;
         if !plan.any() {
             info!("No component upgrades are available.");
             return Ok(());
@@ -3082,9 +3157,15 @@ exit $process.ExitCode
         }
 
         let upgrade_result = (|| {
-            maybe_upgrade_npcap()?;
-            maybe_upgrade_suricata()?;
-            maybe_upgrade_evebox()?;
+            if plan.npcap {
+                maybe_upgrade_npcap()?;
+            }
+            if plan.suricata {
+                maybe_upgrade_suricata()?;
+            }
+            if plan.evebox {
+                install_or_upgrade_evebox(true, config.windows.evebox_channel)?;
+            }
             Ok(())
         })();
 
@@ -3297,56 +3378,6 @@ if ($entry -and $entry.DisplayVersion) {
                 info!(
                     "Suricata {} meets or exceeds bundled {} (package {}). Skipping Suricata upgrade.",
                     installed_version, target_version, SURICATA_VERSION
-                );
-                Ok(())
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    fn maybe_upgrade_evebox() -> Result<()> {
-        if find_evebox_exe(&get_evebox_install_dir()?)?.is_none() {
-            info!(
-                "EveBox was not detected. Installing version {}...",
-                EVEBOX_VERSION
-            );
-            return install_or_upgrade_evebox(true);
-        }
-
-        let installed_version = match get_evebox_installed_version()? {
-            Some(version) => version,
-            None => {
-                info!(
-                    "EveBox is installed in the evectl-managed directory, but the version could not be determined. Reinstalling bundled version {}.",
-                    EVEBOX_VERSION
-                );
-                return install_or_upgrade_evebox(true);
-            }
-        };
-
-        let comparison = match compare_versions(&installed_version, EVEBOX_VERSION) {
-            Some(comparison) => comparison,
-            None => {
-                info!(
-                    "EveBox version comparison failed (installed: {}, bundled: {}). Skipping automatic EveBox upgrade.",
-                    installed_version, EVEBOX_VERSION
-                );
-                return Ok(());
-            }
-        };
-
-        match comparison {
-            std::cmp::Ordering::Less => {
-                info!(
-                    "EveBox {} is older than bundled {}. Upgrading EveBox...",
-                    installed_version, EVEBOX_VERSION
-                );
-                install_or_upgrade_evebox(true)
-            }
-            std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
-                info!(
-                    "EveBox {} meets or exceeds bundled {}. Skipping EveBox upgrade.",
-                    installed_version, EVEBOX_VERSION
                 );
                 Ok(())
             }
@@ -3686,31 +3717,6 @@ exit $process.ExitCode
     }
 
     #[cfg(windows)]
-    fn get_evebox_version_marker_path() -> Result<PathBuf> {
-        Ok(get_evebox_install_dir()?.join(EVEBOX_VERSION_MARKER))
-    }
-
-    #[cfg(windows)]
-    fn remove_existing_evebox_installation() -> Result<()> {
-        let install_dir = get_evebox_install_dir()?;
-        if !install_dir.exists() {
-            return Ok(());
-        }
-
-        std::fs::remove_dir_all(&install_dir).context(format!(
-            "Failed to remove existing EveBox install directory {}",
-            install_dir.display()
-        ))?;
-        info!(
-            "Removed previous EveBox install files from {} while preserving data in {}",
-            install_dir.display(),
-            get_evebox_data_dir()?.display()
-        );
-
-        Ok(())
-    }
-
-    #[cfg(windows)]
     fn extract_evebox_version_from_path(path: &Path) -> Option<String> {
         for component in path.components() {
             let name = component.as_os_str().to_string_lossy();
@@ -3728,9 +3734,13 @@ exit $process.ExitCode
 
     #[cfg(windows)]
     fn get_evebox_installed_version() -> Result<Option<String>> {
-        if let Ok(marker_path) = get_evebox_version_marker_path()
-            && marker_path.exists()
-        {
+        evebox_installed_version(&get_evebox_install_dir()?)
+    }
+
+    #[cfg(windows)]
+    fn evebox_installed_version(install_dir: &Path) -> Result<Option<String>> {
+        let marker_path = install_dir.join(EVEBOX_VERSION_MARKER);
+        if marker_path.exists() {
             let version = std::fs::read_to_string(&marker_path).context(format!(
                 "Failed to read EveBox version marker {}",
                 marker_path.display()
@@ -3741,11 +3751,35 @@ exit $process.ExitCode
             }
         }
 
-        let Some(exe_path) = find_evebox_exe(&get_evebox_install_dir()?)? else {
+        let Some(exe_path) = find_evebox_exe(install_dir)? else {
             return Ok(None);
         };
-
         Ok(extract_evebox_version_from_path(&exe_path))
+    }
+
+    #[cfg(windows)]
+    fn evebox_installed_channel(install_dir: &Path) -> Result<Option<EveBoxChannel>> {
+        if find_evebox_exe(install_dir)?.is_none() {
+            return Ok(None);
+        }
+        let marker = install_dir.join(EVEBOX_CHANNEL_MARKER);
+        if marker.exists() {
+            let text = std::fs::read_to_string(&marker)?;
+            return <EveBoxChannel as clap::ValueEnum>::from_str(text.trim(), false)
+                .map(Some)
+                .map_err(|err| anyhow!("Invalid EveBox channel marker: {err}"));
+        }
+        // Legacy installs had only a version marker or a versioned directory.
+        let version = evebox_installed_version(install_dir)?;
+        Ok(version.and_then(|version| {
+            let version = version.split_whitespace().next()?;
+            let version = semver::Version::parse(version).ok()?;
+            Some(if version.pre.is_empty() {
+                EveBoxChannel::Release
+            } else {
+                EveBoxChannel::Development
+            })
+        }))
     }
 
     #[cfg(windows)]
@@ -4123,75 +4157,127 @@ exit 1
     }
 
     #[cfg(windows)]
-    fn install_evebox() -> Result<()> {
-        install_or_upgrade_evebox(false)
+    fn install_evebox(channel: EveBoxChannel) -> Result<()> {
+        install_or_upgrade_evebox(false, channel)
     }
 
     #[cfg(windows)]
-    fn install_or_upgrade_evebox(upgrade: bool) -> Result<()> {
-        let url = EVEBOX_URL;
-
+    fn install_or_upgrade_evebox(upgrade: bool, channel: EveBoxChannel) -> Result<()> {
         let root_dir = get_evebox_root_dir()?;
         let install_dir = get_evebox_install_dir()?;
         let data_dir = get_evebox_data_dir()?;
 
+        if !upgrade && find_evebox_exe(&install_dir)?.is_some() {
+            info!(
+                "EveBox is already installed. Run 'evectl update' to install the latest {channel} build."
+            );
+            return Ok(());
+        }
+
         std::fs::create_dir_all(&root_dir).context("Failed to create EveBox root directory")?;
         std::fs::create_dir_all(&data_dir).context("Failed to create EveBox data directory")?;
 
-        if find_evebox_exe(&install_dir)?.is_some() {
-            if !upgrade {
-                info!("EveBox is already installed in the evectl-managed directory.");
-                return Ok(());
-            }
-
-            remove_existing_evebox_installation()?;
-        }
-
-        std::fs::create_dir_all(&install_dir)
-            .context("Failed to ensure EveBox install directory after upgrade cleanup")?;
-
+        // Resolve the latest version of the selected channel, without caching.
+        let download = EveBoxDownload::resolve(channel)?;
         let temp_dir = tempfile::tempdir()?;
-        let zip_path = temp_dir
-            .path()
-            .join(format!("evebox-{}-windows-x64.zip", EVEBOX_VERSION));
+        let zip_path = temp_dir.path().join(&download.archive_name);
+        download_file(&download.url, &zip_path, &format!("EveBox {channel} build"))?;
 
-        download_file(url, &zip_path, "EveBox")?;
+        let version = install_evebox_archive(&zip_path, &install_dir, &download)?;
+        info!(
+            "EveBox {} ({}) installed successfully at {} (data preserved in {})",
+            version,
+            channel,
+            install_dir.display(),
+            data_dir.display()
+        );
+        Ok(())
+    }
 
-        info!("Extracting EveBox to {:?}", install_dir);
+    /// Validate the downloaded build before touching the current installation.
+    #[cfg(windows)]
+    fn install_evebox_archive(
+        zip_path: &Path,
+        install_dir: &Path,
+        download: &EveBoxDownload,
+    ) -> Result<String> {
+        let root_dir = install_dir
+            .parent()
+            .context("Missing EveBox root directory")?;
+        let staging = tempfile::tempdir_in(root_dir)?;
+        let exe_path = extract_evebox_archive(zip_path, staging.path())?;
+        let mut command = Command::new(&exe_path);
+        command.arg("version");
+        let version = crate::run_evebox_version_command(command)?
+            .context("Could not determine the downloaded EveBox version")?;
+        download.validate_version(&version)?;
+        std::fs::write(staging.path().join(EVEBOX_VERSION_MARKER), &version)
+            .context("Failed to write EveBox version marker")?;
+        std::fs::write(
+            staging.path().join(EVEBOX_CHANNEL_MARKER),
+            download.channel.to_string(),
+        )
+        .context("Failed to write EveBox channel marker")?;
 
+        replace_evebox_installation(staging.path(), install_dir)?;
+        Ok(version)
+    }
+
+    #[cfg(windows)]
+    fn extract_evebox_archive(zip_path: &Path, destination: &Path) -> Result<PathBuf> {
+        info!("Extracting EveBox to {}", destination.display());
         let zip_file =
-            std::fs::File::open(&zip_path).context("Failed to open downloaded EveBox zip file")?;
+            std::fs::File::open(zip_path).context("Failed to open downloaded EveBox zip file")?;
         let mut archive =
             zip::ZipArchive::new(zip_file).context("Failed to read EveBox zip archive")?;
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let outpath = install_dir.join(file.mangled_name());
+            let name = file
+                .enclosed_name()
+                .context("Invalid path in EveBox zip archive")?;
+            let outpath = destination.join(name);
 
-            if file.name().ends_with('/') {
+            if file.is_dir() {
                 std::fs::create_dir_all(&outpath)?;
             } else {
-                if let Some(p) = outpath.parent()
-                    && !p.exists()
-                {
-                    std::fs::create_dir_all(p)?;
+                if let Some(parent) = outpath.parent() {
+                    std::fs::create_dir_all(parent)?;
                 }
                 let mut outfile = std::fs::File::create(&outpath)?;
                 std::io::copy(&mut file, &mut outfile)?;
             }
         }
 
-        let _ = get_evebox_exe_path()?;
-        let marker_path = get_evebox_version_marker_path()?;
-        std::fs::write(&marker_path, EVEBOX_VERSION).context(format!(
-            "Failed to write EveBox version marker {}",
-            marker_path.display()
-        ))?;
-        info!(
-            "EveBox {} installed successfully at {:?}",
-            EVEBOX_VERSION, install_dir
-        );
+        find_evebox_exe(destination)?
+            .context("Downloaded EveBox zip archive does not contain evebox.exe")
+    }
 
+    /// Swap only the install directory, retaining the old build for rollback.
+    #[cfg(windows)]
+    fn replace_evebox_installation(staging: &Path, install_dir: &Path) -> Result<()> {
+        let root_dir = install_dir
+            .parent()
+            .context("Missing EveBox root directory")?;
+        let backup_dir = tempfile::tempdir_in(root_dir)?;
+        let backup_path = backup_dir.path().join("previous");
+        let had_installation = install_dir.exists();
+        if had_installation {
+            std::fs::rename(install_dir, &backup_path)
+                .context("Failed to move the old EveBox installation; stop EveBox and retry")?;
+        }
+
+        if let Err(err) = std::fs::rename(staging, install_dir) {
+            if had_installation && let Err(restore_err) = std::fs::rename(&backup_path, install_dir)
+            {
+                let retained = backup_dir.keep();
+                bail!(
+                    "Failed to install EveBox: {err}; rollback failed: {restore_err}. Previous installation retained in {}",
+                    retained.join("previous").display()
+                );
+            }
+            return Err(err).context("Failed to replace EveBox installation");
+        }
         Ok(())
     }
 
@@ -5039,6 +5125,226 @@ exit 1
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn write_evebox_zip(path: &Path, entries: &[(&str, &[u8])]) {
+            let mut archive = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+            for (name, contents) in entries {
+                archive
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(contents).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+
+        #[test]
+        fn evebox_updates_refresh_both_channels_only_when_enabled() {
+            for channel in [EveBoxChannel::Release, EveBoxChannel::Development] {
+                for (server, agent) in [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let mut config = crate::config::Config::default();
+                    config.evebox_server.enabled = server;
+                    config.evebox_agent.enabled = agent;
+                    config.windows.evebox_channel = channel;
+                    for _ in 0..2 {
+                        let plan = build_upgrade_plan(&config).unwrap();
+                        assert_eq!(plan.evebox, server || agent);
+                        assert!(!plan.npcap);
+                        assert!(!plan.suricata);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn evebox_channel_command_parses_choices_and_optional_prompt() {
+            for (name, expected) in [
+                ("release", EveBoxChannel::Release),
+                ("development", EveBoxChannel::Development),
+                ("devel", EveBoxChannel::Development),
+            ] {
+                let args =
+                    Args::try_parse_from(["evectl", "config", "set-evebox-channel", name]).unwrap();
+                assert!(matches!(args.command,
+                    Some(Commands::Config { command: ConfigCommands::SetEveBoxChannel { channel: Some(channel) } })
+                    if channel == expected
+                ));
+            }
+            let args = Args::try_parse_from(["evectl", "config", "set-evebox-channel"]).unwrap();
+            assert!(matches!(
+                args.command,
+                Some(Commands::Config {
+                    command: ConfigCommands::SetEveBoxChannel { channel: None }
+                })
+            ));
+            assert!(
+                Args::try_parse_from(["evectl", "config", "set-evebox-channel", "unknown"])
+                    .is_err()
+            );
+        }
+
+        #[test]
+        fn evebox_channel_markers_support_legacy_installs() {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(evebox_installed_channel(dir.path()).unwrap(), None);
+            std::fs::write(dir.path().join("evebox.exe"), b"binary").unwrap();
+            for (version, expected) in [
+                ("0.28.0", EveBoxChannel::Release),
+                ("0.30.0-dev rev abc1234", EveBoxChannel::Development),
+            ] {
+                std::fs::write(dir.path().join(EVEBOX_VERSION_MARKER), version).unwrap();
+                assert_eq!(
+                    evebox_installed_channel(dir.path()).unwrap(),
+                    Some(expected)
+                );
+            }
+            // The explicit channel wins, even for a main build at a release tag.
+            std::fs::write(dir.path().join(EVEBOX_VERSION_MARKER), "0.29.0").unwrap();
+            std::fs::write(dir.path().join(EVEBOX_CHANNEL_MARKER), "development").unwrap();
+            assert_eq!(
+                evebox_installed_channel(dir.path()).unwrap(),
+                Some(EveBoxChannel::Development)
+            );
+        }
+
+        #[test]
+        fn evebox_development_versions_include_revision() {
+            let first = crate::parse_evebox_version(
+                "EveBox Version 0.30.0-dev (rev abc1234); x86_64-pc-windows-gnu",
+            );
+            let second = crate::parse_evebox_version(
+                "EveBox Version 0.30.0-dev (rev def5678); x86_64-pc-windows-gnu",
+            );
+            assert_eq!(first.as_deref(), Some("0.30.0-dev rev abc1234"));
+            assert_ne!(first, second);
+        }
+
+        #[test]
+        fn evebox_archives_support_flat_and_versioned_layouts() {
+            for binary in ["evebox.exe", "evebox-0.30.0-dev-windows-x64/evebox.exe"] {
+                let dir = tempfile::tempdir().unwrap();
+                let zip_path = dir.path().join("evebox.zip");
+                let destination = dir.path().join("staging");
+                write_evebox_zip(&zip_path, &[(binary, b"binary"), ("docs/README", b"docs")]);
+                let exe = extract_evebox_archive(&zip_path, &destination).unwrap();
+                assert_eq!(exe, destination.join(binary));
+                assert_eq!(std::fs::read(exe).unwrap(), b"binary");
+                assert_eq!(
+                    std::fs::read(destination.join("docs/README")).unwrap(),
+                    b"docs"
+                );
+            }
+        }
+
+        #[test]
+        fn invalid_evebox_archives_preserve_existing_installation() {
+            let dir = tempfile::tempdir().unwrap();
+            let install_dir = dir.path().join("install");
+            std::fs::create_dir(&install_dir).unwrap();
+            std::fs::write(install_dir.join("evebox.exe"), b"old binary").unwrap();
+            let zip_path = dir.path().join("evebox.zip");
+
+            let download = EveBoxDownload::development();
+            std::fs::write(&zip_path, b"not a zip").unwrap();
+            assert!(install_evebox_archive(&zip_path, &install_dir, &download).is_err());
+            for entries in [
+                vec![("README", b"no binary".as_slice())],
+                vec![("evebox.exe", b"not an executable".as_slice())],
+                vec![("../outside.txt", b"invalid path".as_slice())],
+            ] {
+                write_evebox_zip(&zip_path, &entries);
+                assert!(install_evebox_archive(&zip_path, &install_dir, &download).is_err());
+                assert_eq!(
+                    std::fs::read(install_dir.join("evebox.exe")).unwrap(),
+                    b"old binary"
+                );
+            }
+            assert!(!dir.path().join("outside.txt").exists());
+        }
+
+        #[test]
+        fn evebox_replacement_preserves_data_and_removes_old_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let install_dir = dir.path().join("install");
+            let staging = dir.path().join("staging");
+            let data_dir = dir.path().join("data");
+            for path in [&install_dir, &staging, &data_dir] {
+                std::fs::create_dir(path).unwrap();
+            }
+            std::fs::write(install_dir.join("obsolete"), b"old").unwrap();
+            std::fs::write(staging.join("evebox.exe"), b"new binary").unwrap();
+            std::fs::write(data_dir.join("events.sqlite"), b"keep").unwrap();
+
+            replace_evebox_installation(&staging, &install_dir).unwrap();
+            assert_eq!(
+                std::fs::read(install_dir.join("evebox.exe")).unwrap(),
+                b"new binary"
+            );
+            assert!(!install_dir.join("obsolete").exists());
+            assert_eq!(
+                std::fs::read(data_dir.join("events.sqlite")).unwrap(),
+                b"keep"
+            );
+        }
+
+        #[test]
+        fn failed_evebox_replacement_restores_old_installation() {
+            let dir = tempfile::tempdir().unwrap();
+            let install_dir = dir.path().join("install");
+            std::fs::create_dir(&install_dir).unwrap();
+            std::fs::write(install_dir.join("evebox.exe"), b"old binary").unwrap();
+
+            assert!(
+                replace_evebox_installation(&dir.path().join("missing"), &install_dir).is_err()
+            );
+            assert_eq!(
+                std::fs::read(install_dir.join("evebox.exe")).unwrap(),
+                b"old binary"
+            );
+        }
+
+        #[test]
+        #[ignore = "Downloads and runs official EveBox release/development builds in a temporary directory"]
+        fn installs_and_switches_evebox_release_channels() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let dir = tempfile::tempdir().unwrap();
+            let install_dir = dir.path().join("install");
+            let data_dir = dir.path().join("data");
+            std::fs::create_dir(&data_dir).unwrap();
+            std::fs::write(data_dir.join("events.sqlite"), b"keep").unwrap();
+
+            // Exercise both directions, including an intentional downgrade.
+            for channel in [
+                EveBoxChannel::Release,
+                EveBoxChannel::Development,
+                EveBoxChannel::Release,
+            ] {
+                let download = EveBoxDownload::resolve(channel).unwrap();
+                let zip_path = dir.path().join(&download.archive_name);
+                download_file(&download.url, &zip_path, "EveBox channel smoke test").unwrap();
+                let version = install_evebox_archive(&zip_path, &install_dir, &download).unwrap();
+                println!("Installed EveBox {version} ({channel})");
+                assert_eq!(
+                    evebox_installed_version(&install_dir).unwrap().as_deref(),
+                    Some(version.as_str())
+                );
+                assert_eq!(
+                    evebox_installed_channel(&install_dir).unwrap(),
+                    Some(channel)
+                );
+                std::fs::write(install_dir.join("obsolete"), b"old").unwrap();
+                // Refreshing an identical build must not be skipped either.
+                assert_eq!(
+                    install_evebox_archive(&zip_path, &install_dir, &download).unwrap(),
+                    version
+                );
+                assert!(!install_dir.join("obsolete").exists());
+                assert_eq!(
+                    std::fs::read(data_dir.join("events.sqlite")).unwrap(),
+                    b"keep"
+                );
+            }
+        }
 
         #[test]
         fn rules_digest_tracks_content_changes() {
