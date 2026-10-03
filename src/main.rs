@@ -40,6 +40,7 @@ mod menu;
 mod prelude;
 mod prompt;
 mod ruleindex;
+mod rules;
 mod selfupdate;
 mod suricata;
 mod systemd;
@@ -452,7 +453,7 @@ fn main() -> Result<()> {
                     0
                 }
                 "suricata-update" => {
-                    menu::suricata_update::menu(&mut context)?;
+                    menu::rules::menu(&rules::ContainerBackend(&context))?;
                     0
                 }
                 "configure.containers" => {
@@ -1221,7 +1222,7 @@ fn menu_main(
                         }
                         prompt::enter();
                     }
-                    Main::SuricataUpdate => menu::suricata_update::menu(&mut context)?,
+                    Main::SuricataUpdate => menu::rules::menu(&rules::ContainerBackend(&context))?,
                     Main::Exit => break 'outer,
                 },
                 Err(_) => break 'outer,

@@ -61,6 +61,16 @@ pub(crate) fn disable_ruleset(context: &Context, ruleset: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn update_sources(context: &Context) -> Result<()> {
+    SuricataContainer::new(context.clone())
+        .run()
+        .rm()
+        .it()
+        .args(&["suricata-update", "update-sources"])
+        .build()
+        .status_ok()
+}
+
 pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()> {
     if !context.config.suricata.enabled {
         bail!("Suricata is not enabled.");
@@ -80,14 +90,7 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
     }
 
     info!("Updating Suricata rule sources...");
-    if let Err(err) = container
-        .run()
-        .rm()
-        .it()
-        .args(&["suricata-update", "update-sources"])
-        .build()
-        .status_ok()
-    {
+    if let Err(err) = update_sources(context) {
         error!("Rule source update did not complete successfully: {err}");
     }
 
@@ -99,7 +102,7 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
         info!("Suricata is not running; skipping rule reload");
     }
     let args = build_update_args(extra_args, suricata_running);
-    if let Err(err) = container
+    container
         .run()
         .rm()
         .it()
@@ -107,10 +110,7 @@ pub(crate) fn update_rules(context: &Context, extra_args: &[&str]) -> Result<()>
         .args(&args)
         .build()
         .status_ok()
-    {
-        error!("Rule update did not complete successfully: {err}");
-    }
-    Ok(())
+        .context("Rule update did not complete successfully")
 }
 
 fn build_update_args<'a>(extra_args: &[&'a str], suricata_running: bool) -> Vec<&'a str> {

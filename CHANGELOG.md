@@ -4,6 +4,8 @@
 
 ### Added
 
+- Linux Manage Rules menu actions to refresh rule sources and list enabled
+  rulesets, matching Windows
 - Windows EveBox release-channel selection (Development or Release) in the
   setup wizard, Configure menu, and `evectl config set-evebox-channel`.
   The setting is shared by the server and agent and applied on install or
@@ -91,6 +93,10 @@
 
 ### Fixed
 
+- Rule-management errors are reported without closing the Manage Rules menu;
+  Linux rule-update failures now propagate to callers instead of appearing
+  successful. Enabled rulesets missing from the source index can still be
+  disabled on Linux
 - Windows upgrades exit immediately when EveCtl itself is updated, without
   updating components, restarting services, returning to the menu, or prompting
   for Enter. Apply the staged binary after exit using a console-free helper.

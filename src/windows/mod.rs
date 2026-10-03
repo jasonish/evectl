@@ -337,16 +337,6 @@ mod imp {
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum RulesMenuOption {
-        Enable,
-        Disable,
-        Update,
-        UpdateSources,
-        ListEnabled,
-        Return,
-    }
-
-    #[derive(Debug, Clone, Copy)]
     enum OtherMenuOption {
         Install,
         Uninstall,
@@ -569,7 +559,7 @@ mod imp {
                         update_rules(false, false)
                     });
                 }
-                MainMenuOption::ManageRules => rules_menu()?,
+                MainMenuOption::ManageRules => crate::menu::rules::menu(&WindowsRulesBackend)?,
                 MainMenuOption::Update => match upgrade_windows_components() {
                     // Leave the menu immediately: don't pause or run anything
                     // else using the old EveCtl executable.
@@ -1059,49 +1049,63 @@ mod imp {
         Ok(())
     }
 
-    fn rules_menu() -> Result<()> {
-        loop {
-            crate::term::title("EveCtl: Manage Rules");
+    struct WindowsRulesBackend;
 
-            let mut selections = crate::prompt::Selections::with_index();
-            selections.push(RulesMenuOption::Enable, "Enable a Ruleset");
-            selections.push(RulesMenuOption::Disable, "Disable a Ruleset");
-            selections.push(RulesMenuOption::Update, "Update Rules");
-            selections.push(RulesMenuOption::UpdateSources, "Update Rule Sources");
-            selections.push(RulesMenuOption::ListEnabled, "List Enabled Rulesets");
-            selections.push(RulesMenuOption::Return, "Return");
-
-            let selection = match inquire::Select::new("Select menu option", selections.to_vec())
-                .prompt_skippable()?
-            {
-                Some(selection) => selection,
-                None => break,
-            };
-
-            match selection.tag {
-                RulesMenuOption::Enable => {
-                    run_menu_action("Failed to enable ruleset", enable_ruleset_interactive)
-                }
-                RulesMenuOption::Disable => {
-                    run_menu_action("Failed to disable ruleset", disable_ruleset_interactive)
-                }
-                RulesMenuOption::Update => {
-                    run_menu_action_with_pause("Failed to update rules", || {
-                        update_rules(false, false)
-                    })
-                }
-                RulesMenuOption::UpdateSources => {
-                    run_menu_action_with_pause("Failed to update rule sources", update_sources)
-                }
-                RulesMenuOption::ListEnabled => run_menu_action_with_pause(
-                    "Failed to list enabled rulesets",
-                    list_enabled_rulesets,
-                ),
-                RulesMenuOption::Return => break,
-            }
+    impl crate::rules::Backend for WindowsRulesBackend {
+        fn available_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
+            let paths = get_suricatax_paths()?;
+            Ok(SourceManager::new(&paths)
+                .get_or_download_index()?
+                .sources
+                .into_iter()
+                .map(|(id, source)| crate::rules::Ruleset {
+                    id,
+                    summary: Some(source.summary),
+                    can_enable: source.obsolete.is_none() && source.parameters.is_none(),
+                })
+                .collect())
         }
 
-        Ok(())
+        fn enabled_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
+            let paths = get_suricatax_paths()?;
+            let enabled = suricatax_cli::enabled_rulesets(&paths)?;
+            if enabled.is_empty() {
+                return Ok(vec![]);
+            }
+            let index = SourceManager::new(&paths)
+                .read_local_index()
+                .unwrap_or(None);
+            Ok(enabled
+                .into_iter()
+                .map(|id| {
+                    let summary = index
+                        .as_ref()
+                        .and_then(|index| index.sources.get(&id))
+                        .map(|source| source.summary.clone());
+                    crate::rules::Ruleset {
+                        id,
+                        summary,
+                        can_enable: false,
+                    }
+                })
+                .collect())
+        }
+
+        fn enable_ruleset(&self, id: &str) -> Result<()> {
+            enable_ruleset(Some(id))
+        }
+
+        fn disable_ruleset(&self, id: &str) -> Result<()> {
+            disable_ruleset(id)
+        }
+
+        fn update_sources(&self) -> Result<()> {
+            update_sources()
+        }
+
+        fn update_rules(&self) -> Result<()> {
+            update_rules(false, false)
+        }
     }
 
     fn other_menu(config: &mut crate::config::Config) -> Result<()> {
@@ -1416,51 +1420,8 @@ mod imp {
     fn enable_ruleset(name: Option<&str>) -> Result<()> {
         match name {
             Some(name) => with_path_provider(|paths| suricatax_cli::enable_ruleset(paths, name)),
-            None => enable_ruleset_interactive(),
+            None => crate::menu::rules::enable_ruleset(&WindowsRulesBackend),
         }
-    }
-
-    #[cfg(windows)]
-    fn enable_ruleset_interactive() -> Result<()> {
-        let paths = get_suricatax_paths()?;
-        let index = SourceManager::new(&paths).get_or_download_index()?;
-        let enabled = suricatax_cli::enabled_rulesets(&paths)?;
-
-        let mut sources: Vec<_> = index.sources.iter().collect();
-        sources.sort_by(|a, b| a.0.cmp(b.0));
-
-        let mut selections = crate::prompt::Selections::new();
-        for (id, source) in sources {
-            if source.obsolete.is_some() || source.parameters.is_some() || enabled.contains(id) {
-                continue;
-            }
-            selections.push(
-                id.clone(),
-                format!("{}: {}", id, source.summary.green().italic()),
-            );
-        }
-
-        if let Ok(selection) = inquire::Select::new(
-            "Choose a ruleset to enable or ESC to exit",
-            selections.to_vec(),
-        )
-        .with_page_size(16)
-        .prompt()
-        {
-            enable_ruleset(Some(&selection.tag))?;
-
-            if crate::prompt::confirm(
-                "Would you like to update your rules now?",
-                Some("A rule update is required to make the new ruleset active"),
-            ) && let Err(err) = update_rules(false, false)
-            {
-                error!("Failed to update rules: {}", err);
-            }
-
-            crate::prompt::enter();
-        }
-
-        Ok(())
     }
 
     #[cfg(windows)]
@@ -1469,67 +1430,8 @@ mod imp {
     }
 
     #[cfg(windows)]
-    fn disable_ruleset_interactive() -> Result<()> {
-        let paths = get_suricatax_paths()?;
-        let enabled = suricatax_cli::enabled_rulesets(&paths)?;
-        if enabled.is_empty() {
-            crate::prompt::enter_with_prefix("No rulesets enabled");
-            return Ok(());
-        }
-
-        // Summaries come from the local ruleset index when available,
-        // falling back to the bare ruleset name.
-        let index = SourceManager::new(&paths)
-            .read_local_index()
-            .unwrap_or(None);
-
-        let mut selections = crate::prompt::Selections::new();
-        for id in &enabled {
-            let label = match index.as_ref().and_then(|index| index.sources.get(id)) {
-                Some(source) => format!("{}: {}", id, source.summary.green().italic()),
-                None => id.clone(),
-            };
-            selections.push(id.clone(), label);
-        }
-
-        if let Ok(selection) = inquire::Select::new(
-            "Choose a ruleset to DISABLE or ESC to exit",
-            selections.to_vec(),
-        )
-        .with_page_size(16)
-        .prompt()
-        {
-            disable_ruleset(&selection.tag)?;
-
-            if crate::prompt::confirm(
-                "Would you like to update your rules now?",
-                Some("A rule update is required to complete disabling this ruleset"),
-            ) && let Err(err) = update_rules(false, false)
-            {
-                error!("Failed to update rules: {}", err);
-            }
-
-            crate::prompt::enter();
-        }
-
-        Ok(())
-    }
-
-    #[cfg(windows)]
     fn list_enabled_rulesets() -> Result<()> {
-        let rulesets = with_path_provider(suricatax_cli::enabled_rulesets)?;
-
-        if rulesets.is_empty() {
-            println!("No Suricata rulesets enabled");
-            return Ok(());
-        }
-
-        println!("Enabled Suricata rulesets:");
-        for ruleset in rulesets {
-            println!("- {}", ruleset);
-        }
-
-        Ok(())
+        crate::menu::rules::list_enabled_rulesets(&WindowsRulesBackend)
     }
 
     #[cfg(windows)]
