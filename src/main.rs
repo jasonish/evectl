@@ -33,6 +33,7 @@ mod container;
 mod context;
 mod elastic;
 mod evebox;
+mod fpc;
 mod housekeeper;
 mod http;
 mod logs;

@@ -83,7 +83,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
                 Options::Suricata => crate::menu::suricata::container_menu(context)?,
                 Options::EveBoxAgent => crate::menu::evebox_agent::menu(&mut context.config)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
-                Options::Fpc => crate::menu::fpc::menu(context)?,
+                Options::Fpc => crate::menu::fpc::container_menu(context)?,
                 Options::StartOnBoot => start_on_boot(context)?,
                 Options::Return => return Ok(()),
             },

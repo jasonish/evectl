@@ -9,14 +9,16 @@
 //! itself with an agent ID and authenticates the packet capture channel
 //! with an agent key issued by the server.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::FpcConfig;
 use crate::context::Context;
+use crate::fpc::{Backend, ContainerBackend};
 use crate::prelude::*;
+use crate::prompt::Selections;
 use crate::term;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Options {
     Toggle,
     MaxFiles,
@@ -26,88 +28,118 @@ enum Options {
     Return,
 }
 
-pub(crate) fn menu(context: &mut Context) -> Result<()> {
-    loop {
-        term::clear();
+/// Only runtime paths and cleanup image choices use the snapshot; settings
+/// are edited directly in the caller's configuration.
+pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
+    let runtime = context.clone();
+    menu(&mut context.config, &ContainerBackend(&runtime))
+}
 
-        let config = &context.config;
-        let mut selections = crate::prompt::Selections::new();
-
+fn menu_options(config: &Config, spool: &Path) -> Selections<Options> {
+    let mut selections = Selections::new();
+    selections.push(
+        Options::Toggle,
         if config.fpc.enabled {
-            selections.push(Options::Toggle, "Disable Full Packet Capture");
+            "Disable Full Packet Capture"
         } else {
-            selections.push(Options::Toggle, "Enable Full Packet Capture");
-        }
+            "Enable Full Packet Capture"
+        },
+    );
+    let threads = FpcConfig::capture_threads();
+    selections.push(
+        Options::MaxFiles,
+        format!(
+            "Retention (current: {} x {} files, ~{}; {} per capture thread x {} threads)",
+            config.fpc.effective_max_files(),
+            FpcConfig::FILE_SIZE,
+            config.fpc.disk_usage(),
+            config.fpc.max_files_per_thread(threads),
+            threads,
+        ),
+    );
 
-        let threads = FpcConfig::capture_threads();
+    if config.evebox_agent.enabled {
         selections.push(
-            Options::MaxFiles,
-            format!(
-                "Retention (current: {} x {} files, ~{}; {} per capture thread x {} threads)",
-                config.fpc.effective_max_files(),
-                FpcConfig::FILE_SIZE,
-                config.fpc.disk_usage(),
-                config.fpc.max_files_per_thread(threads),
-                threads,
-            ),
+            Options::AgentId,
+            crate::menu::evebox_agent::agent_id_label(config),
         );
-
-        // Served by the agent: the server needs to know who this is.
-        if config.evebox_agent.enabled {
-            selections.push(
-                Options::AgentId,
-                crate::menu::evebox_agent::agent_id_label(config),
-            );
-            selections.push(Options::Key, crate::menu::evebox_agent::key_label(config));
-        }
-
-        // Captures left behind after disabling are not managed by
-        // anything, so offer to clean them up here.
-        let spool = spool_dir(context);
-        let spool_size = if config.fpc.enabled {
-            0
-        } else {
-            spool_size(&spool)
-        };
-        if spool_size > 0 {
+        selections.push(Options::Key, crate::menu::evebox_agent::key_label(config));
+    }
+    // Captures left behind after disabling are no longer managed.
+    if !config.fpc.enabled {
+        let size = spool_size(spool);
+        if size > 0 {
             selections.push(
                 Options::RemoveSpool,
                 format!(
                     "Remove existing packet captures (~{} in {})",
-                    format_size(spool_size),
-                    spool.display()
+                    format_size(size),
+                    spool.display(),
                 ),
             );
         }
+    }
+    selections.push(Options::Return, "Return");
+    selections
+}
 
-        selections.push(Options::Return, "Return");
-
-        match inquire::Select::new("EveCtl: Configure Full Packet Capture", selections.to_vec())
-            .prompt()
+pub(crate) fn menu(config: &mut Config, backend: &dyn Backend) -> Result<()> {
+    let spool = backend.spool_dir()?;
+    loop {
+        term::clear();
+        println!("Packet captures: {}", spool.display());
+        println!("Captures are available through the EveBox server or agent.");
+        println!("Changes take effect after restarting services.");
+        let selections = menu_options(config, &spool);
+        let selection = match inquire::Select::new(
+            "EveCtl: Configure Full Packet Capture",
+            selections.to_vec(),
+        )
+        .with_page_size(selections.page_size())
+        .prompt()
         {
-            Ok(selection) => match selection.tag {
-                Options::Toggle => toggle_enabled(context),
-                Options::MaxFiles => set_max_files(&mut context.config),
-                Options::AgentId => {
-                    crate::menu::evebox_agent::set_agent_id(&mut context.config);
-                }
-                Options::Key => {
-                    crate::menu::evebox_agent::set_key(&mut context.config);
-                }
-                Options::RemoveSpool => remove_spool(context, &spool),
-                Options::Return => break,
-            },
-            Err(_) => break,
+            Ok(selection) => selection,
+            Err(
+                inquire::InquireError::OperationCanceled
+                | inquire::InquireError::OperationInterrupted,
+            ) => break,
+            Err(err) => return Err(err.into()),
+        };
+        if selection.tag == Options::Return {
+            break;
+        }
+        if let Err(err) = run_action(config, backend, &spool, selection.tag) {
+            error!("Packet-capture configuration failed: {err:#}");
+            crate::prompt::enter();
         }
     }
-
     Ok(())
 }
 
-/// Host path of the pcap spool, bind mounted into the containers as
-/// /var/log/suricata/pcap.
-fn spool_dir(context: &Context) -> PathBuf {
-    context.data_dir().join("suricata").join("log").join("pcap")
+fn run_action(
+    config: &mut Config,
+    backend: &dyn Backend,
+    spool: &Path,
+    action: Options,
+) -> Result<()> {
+    match action {
+        Options::Toggle => toggle_enabled(config, spool)?,
+        Options::MaxFiles => set_max_files(config),
+        Options::AgentId => {
+            crate::menu::evebox_agent::set_agent_id(config);
+        }
+        Options::Key => {
+            crate::menu::evebox_agent::set_key(config);
+        }
+        Options::RemoveSpool => {
+            if config.fpc.enabled {
+                bail!("Disable full packet capture before removing packet captures");
+            }
+            remove_spool(backend, crate::prompt::confirm_destructive)?;
+        }
+        Options::Return => {}
+    }
+    Ok(())
 }
 
 /// Total size of the files in the spool directory, best effort.
@@ -133,13 +165,10 @@ pub(crate) fn format_size(bytes: u64) -> String {
     }
 }
 
-fn toggle_enabled(context: &mut Context) {
-    let config = &mut context.config;
-
+fn toggle_enabled(config: &mut Config, spool: &Path) -> Result<()> {
     if config.fpc.enabled {
         config.fpc.enabled = false;
-        let spool = spool_dir(context);
-        if spool_size(&spool) > 0 {
+        if spool_size(spool) > 0 {
             info!(
                 "Existing packet captures remain in {}; they can be removed from this menu after \
                  restarting services",
@@ -147,37 +176,53 @@ fn toggle_enabled(context: &mut Context) {
             );
             crate::prompt::enter();
         }
-        return;
+        return Ok(());
     }
 
+    enable_capture(
+        config,
+        crate::menu::evebox_agent::setup_retrieval,
+        crate::prompt::confirm_destructive,
+    )
+}
+
+fn enable_capture(
+    config: &mut Config,
+    setup_retrieval: impl FnOnce(&mut Config) -> bool,
+    confirm: impl FnOnce(&str) -> bool,
+) -> Result<()> {
     if !config.suricata.enabled || !(config.evebox_server.enabled || config.evebox_agent.enabled) {
-        error!(
+        bail!(
             "Full packet capture requires Suricata and either the EveBox server or the EveBox \
              agent to be enabled (Suricata enabled: {}, EveBox server enabled: {}, EveBox agent \
              enabled: {})",
-            config.suricata.enabled, config.evebox_server.enabled, config.evebox_agent.enabled
+            config.suricata.enabled,
+            config.evebox_server.enabled,
+            config.evebox_agent.enabled
         );
-        crate::prompt::enter();
-        return;
     }
 
-    // The agent is given the spool whenever it is enabled, even
-    // alongside a local server (see `uses_fpc`), so it always needs
-    // its identity and key.
-    if config.evebox_agent.enabled && !crate::menu::evebox_agent::setup_retrieval(config) {
-        return;
+    // An enabled agent always serves the spool, even alongside a local server.
+    if config.evebox_agent.enabled && !setup_retrieval(config) {
+        return Ok(());
     }
-
     let message = format!(
         "Enable full packet capture (up to ~{})?",
         config.fpc.disk_usage()
     );
-    if inquire::Confirm::new(&message)
-        .with_default(false)
-        .prompt()
-        .unwrap_or(false)
-    {
+    if confirm(&message) {
         config.fpc.enabled = true;
+    }
+    Ok(())
+}
+
+fn parse_max_files(input: &str, threads: usize) -> std::result::Result<u32, String> {
+    match input.trim().parse::<u32>() {
+        Ok(n) if n as usize >= threads => Ok(n),
+        Ok(_) => Err(format!(
+            "Must be at least {threads}, one file per capture thread"
+        )),
+        Err(_) => Err("Must be a positive number".into()),
     }
 }
 
@@ -190,12 +235,9 @@ fn set_max_files(config: &mut Config) {
     let help =
         format!("Rounded down to a multiple of {threads} capture threads (minimum {threads})");
     let validator = move |input: &str| {
-        Ok(match input.trim().parse::<u32>() {
-            Ok(n) if n as usize >= threads => inquire::validator::Validation::Valid,
-            Ok(_) => inquire::validator::Validation::Invalid(
-                format!("Must be at least {threads}, one file per capture thread").into(),
-            ),
-            Err(_) => inquire::validator::Validation::Invalid("Must be a positive number".into()),
+        Ok(match parse_max_files(input, threads) {
+            Ok(_) => inquire::validator::Validation::Valid,
+            Err(message) => inquire::validator::Validation::Invalid(message.into()),
         })
     };
     if let Ok(value) = inquire::Text::new(&prompt)
@@ -203,7 +245,7 @@ fn set_max_files(config: &mut Config) {
         .with_help_message(&help)
         .with_validator(validator)
         .prompt()
-        && let Ok(n) = value.trim().parse::<u32>()
+        && let Ok(n) = parse_max_files(&value, threads)
     {
         config.fpc.max_files = if n == FpcConfig::DEFAULT_MAX_FILES {
             None
@@ -213,52 +255,19 @@ fn set_max_files(config: &mut Config) {
     }
 }
 
-fn remove_spool(context: &Context, spool: &Path) {
-    let suricata = crate::suricata::container_name(context);
-    if context.manager.is_running(&suricata) {
-        error!("Suricata is running; stop or restart services before removing packet captures");
-        crate::prompt::enter();
-        return;
-    }
-
-    let prompt = format!(
+fn remove_spool(backend: &dyn Backend, confirm: impl FnOnce(&str) -> bool) -> Result<()> {
+    backend.check_remove_spool()?;
+    let spool = backend.spool_dir()?;
+    let question = format!(
         "Remove all packet captures in {} (~{})?",
         spool.display(),
-        format_size(spool_size(spool))
+        format_size(spool_size(&spool)),
     );
-    if !crate::prompt::confirm_destructive(&prompt) {
-        return;
+    if confirm(&question) {
+        backend.remove_spool()?;
     }
-
-    if let Err(err) = crate::uninstall::remove_directory(context, spool) {
-        error!("{err:#}");
-        crate::prompt::enter();
-    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn spool_size_sums_files_only() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(spool_size(dir.path()), 0);
-        std::fs::write(dir.path().join("log.0.1.pcap"), [0u8; 1000]).unwrap();
-        std::fs::write(dir.path().join("log.1.1.pcap"), [0u8; 24]).unwrap();
-        std::fs::create_dir(dir.path().join("subdir")).unwrap();
-        assert_eq!(spool_size(dir.path()), 1024);
-        assert_eq!(spool_size(&dir.path().join("missing")), 0);
-    }
-
-    #[test]
-    fn format_size_rounds_sensibly() {
-        assert_eq!(format_size(1), "1 MB");
-        assert_eq!(format_size(256 * 1024 * 1024), "256 MB");
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
-        assert_eq!(
-            format_size(25 * 1024 * 1024 * 1024 + 512 * 1024 * 1024),
-            "25.5 GB"
-        );
-    }
-}
+mod tests;

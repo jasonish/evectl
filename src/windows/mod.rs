@@ -847,7 +847,7 @@ mod imp {
                         config.windows.evebox_channel = channel;
                     }
                 }
-                ConfigureMenuOption::Fpc => super::fpc::menu(config, &get_suricata_pcap_dir()?)?,
+                ConfigureMenuOption::Fpc => crate::menu::fpc::menu(config, &WindowsFpcBackend)?,
                 ConfigureMenuOption::Shortcuts => {
                     run_menu_action_with_pause("Failed to add desktop shortcuts", add_shortcuts)
                 }
@@ -856,6 +856,31 @@ mod imp {
         }
 
         Ok(())
+    }
+
+    struct WindowsFpcBackend;
+
+    impl crate::fpc::Backend for WindowsFpcBackend {
+        fn spool_dir(&self) -> Result<PathBuf> {
+            get_suricata_pcap_dir()
+        }
+
+        fn check_remove_spool(&self) -> Result<()> {
+            if count_named_processes("suricata")? > 0 {
+                bail!("Suricata is running; stop services before removing packet captures");
+            }
+            Ok(())
+        }
+
+        fn remove_spool(&self) -> Result<()> {
+            self.check_remove_spool()?;
+            let directory = self.spool_dir()?;
+            if directory.exists() {
+                std::fs::remove_dir_all(&directory)
+                    .with_context(|| format!("Cannot remove {}", directory.display()))?;
+            }
+            Ok(())
+        }
     }
 
     struct WindowsSuricataBackend;

@@ -4,6 +4,8 @@
 
 ### Added
 
+- Windows full packet capture settings now include agent ID/key editing and
+  confirmed removal of old captures after capture is disabled and Suricata stops
 - Linux Manage Rules menu actions to refresh rule sources and list enabled
   rulesets, matching Windows
 - Windows EveBox release-channel selection (Development or Release) in the
@@ -93,6 +95,8 @@
 
 ### Fixed
 
+- Packet-capture removal rechecks Suricata state after confirmation. On Linux,
+  removal is blocked while Suricata is restarting or its state cannot be checked
 - Suricata interface discovery errors are reported without closing the
   configuration menu; canceling interface selection keeps the previous interface
 - Linux extracted-file removal is blocked while Suricata or housekeeping is
