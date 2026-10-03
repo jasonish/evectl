@@ -12,8 +12,7 @@
 use std::path::Path;
 
 use crate::config::FpcConfig;
-use crate::context::Context;
-use crate::fpc::{Backend, ContainerBackend};
+use crate::fpc::Backend;
 use crate::prelude::*;
 use crate::prompt::Selections;
 use crate::term;
@@ -26,13 +25,6 @@ enum Options {
     Key,
     RemoveSpool,
     Return,
-}
-
-/// Only runtime paths and cleanup image choices use the snapshot; settings
-/// are edited directly in the caller's configuration.
-pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
-    let runtime = context.clone();
-    menu(&mut context.config, &ContainerBackend(&runtime))
 }
 
 fn menu_options(config: &Config, spool: &Path) -> Selections<Options> {

@@ -305,17 +305,6 @@ mod imp {
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum ConfigureMenuOption {
-        Suricata,
-        EveBoxAgent,
-        EveBoxServer,
-        EveBoxChannel,
-        Fpc,
-        Shortcuts,
-        Return,
-    }
-
-    #[derive(Debug, Clone, Copy)]
     enum ConfigureServerMenuOption {
         Toggle,
         Return,
@@ -555,7 +544,9 @@ mod imp {
                         })
                     }
                 },
-                MainMenuOption::Configure => configure_menu(&mut config)?,
+                MainMenuOption::Configure => {
+                    crate::menu::configure::menu(&mut config, &mut WindowsConfigureBackend)?
+                }
                 MainMenuOption::Other => other_menu(&mut config)?,
                 MainMenuOption::Exit => break,
             }
@@ -777,85 +768,59 @@ mod imp {
         Ok(())
     }
 
-    fn configure_menu(config: &mut crate::config::Config) -> Result<()> {
-        loop {
-            crate::term::clear();
+    struct WindowsConfigureBackend;
 
-            let interface = config
-                .suricata
-                .interfaces
-                .first()
-                .map(String::from)
-                .unwrap_or_default();
+    const CONFIGURE_EVEBOX_CHANNEL: &str = "evebox-channel";
+    const CONFIGURE_SHORTCUTS: &str = "shortcuts";
 
-            let mut selections = crate::prompt::Selections::with_index();
-            selections.push(
-                ConfigureMenuOption::Suricata,
-                format!(
-                    "Configure Suricata [enabled={}, interface={}]",
-                    config.suricata.enabled,
-                    if interface.is_empty() {
-                        "None"
-                    } else {
-                        &interface
-                    }
-                ),
-            );
-            selections.push(
-                ConfigureMenuOption::EveBoxAgent,
-                format!(
-                    "Configure EveBox Agent [enabled={}]",
-                    config.evebox_agent.enabled
-                ),
-            );
-            selections.push(
-                ConfigureMenuOption::EveBoxServer,
-                format!(
-                    "Configure EveBox Server [enabled={}]",
-                    config.evebox_server.enabled
-                ),
-            );
-            selections.push(
-                ConfigureMenuOption::EveBoxChannel,
-                format!("EveBox Release Channel [{}]", config.windows.evebox_channel),
-            );
-            selections.push(
-                ConfigureMenuOption::Fpc,
-                format!(
-                    "Configure Full Packet Capture [enabled={}]",
-                    config.fpc.enabled
-                ),
-            );
-            selections.push(ConfigureMenuOption::Shortcuts, "Add Desktop Shortcuts");
-            selections.push(ConfigureMenuOption::Return, "Return");
+    impl crate::menu::configure::Backend for WindowsConfigureBackend {
+        fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
+            Box::new(WindowsSuricataBackend)
+        }
 
-            let selection =
-                match inquire::Select::new("EveCtl: Configure", selections.to_vec()).prompt() {
-                    Ok(selection) => selection,
-                    Err(_) => break,
-                };
+        fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_> {
+            Box::new(WindowsFpcBackend)
+        }
 
-            match selection.tag {
-                ConfigureMenuOption::Suricata => {
-                    crate::menu::suricata::menu(config, &WindowsSuricataBackend)?
-                }
-                ConfigureMenuOption::EveBoxAgent => crate::menu::evebox_agent::menu(config)?,
-                ConfigureMenuOption::EveBoxServer => configure_evebox_server_menu(config)?,
-                ConfigureMenuOption::EveBoxChannel => {
+        fn configure_evebox_server(&mut self, config: &mut crate::config::Config) -> Result<()> {
+            configure_evebox_server_menu(config)
+        }
+
+        fn platform_options(
+            &self,
+            config: &crate::config::Config,
+        ) -> Vec<crate::menu::configure::PlatformOption> {
+            vec![
+                crate::menu::configure::PlatformOption {
+                    id: CONFIGURE_EVEBOX_CHANNEL,
+                    label: format!("EveBox Release Channel [{}]", config.windows.evebox_channel),
+                },
+                crate::menu::configure::PlatformOption {
+                    id: CONFIGURE_SHORTCUTS,
+                    label: "Add Desktop Shortcuts".to_string(),
+                },
+            ]
+        }
+
+        fn run_platform_option(
+            &mut self,
+            config: &mut crate::config::Config,
+            id: &str,
+        ) -> Result<()> {
+            match id {
+                CONFIGURE_EVEBOX_CHANNEL => {
                     if let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel)
                     {
                         config.windows.evebox_channel = channel;
                     }
                 }
-                ConfigureMenuOption::Fpc => crate::menu::fpc::menu(config, &WindowsFpcBackend)?,
-                ConfigureMenuOption::Shortcuts => {
+                CONFIGURE_SHORTCUTS => {
                     run_menu_action_with_pause("Failed to add desktop shortcuts", add_shortcuts)
                 }
-                ConfigureMenuOption::Return => break,
+                _ => bail!("Unknown configuration option: {id}"),
             }
+            Ok(())
         }
-
-        Ok(())
     }
 
     struct WindowsFpcBackend;
