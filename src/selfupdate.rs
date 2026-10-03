@@ -215,7 +215,7 @@ pub(crate) fn schedule_staged_update(current_exe: &Path) -> Result<bool> {
     }
 
     windows_update_command(WINDOWS_UPDATE_SCRIPT)
-        .env("EVECTL_SELF_UPDATE_TARGET", &current_exe)
+        .env("EVECTL_SELF_UPDATE_TARGET", current_exe)
         .env("EVECTL_SELF_UPDATE_STAGED", &staged_path)
         .spawn()
         .context("Failed to launch Windows staged self-update helper")?;
