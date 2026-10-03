@@ -12,7 +12,6 @@ use tracing::{error, info, warn};
 use crate::selfupdate::{self, SelfUpdate};
 
 pub(super) const RESTART_MARKER: &str = ".evectl-restart-recommended";
-pub(super) const RESTART_REMINDER: &str = "EveCtl was updated. Choosing Restart from this menu to restart all enabled services is recommended.";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum UpdateOutcome {

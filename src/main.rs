@@ -979,20 +979,6 @@ fn guess_evebox_url(context: &Context) -> String {
     )
 }
 
-#[derive(Debug, Clone)]
-enum Main {
-    Refresh,
-    Restart,
-    Stop,
-    SuricataUpdate,
-    Start,
-    UpdateRules,
-    Update,
-    Configure,
-    Other,
-    Exit,
-}
-
 fn log_status(context: &Context) {
     let mut status = vec![];
     let mut enabled = 0;
@@ -1135,104 +1121,106 @@ fn log_status(context: &Context) {
     }
 }
 
+/// Main menu backed by the container runtime. The runtime snapshot's
+/// configuration is synchronized from the menu's before each action.
+struct MainMenuBackend<'a> {
+    runtime: Context,
+    update_continuation_args: &'a UpdateContinuationArgs,
+}
+
+impl MainMenuBackend<'_> {
+    fn context(&mut self, config: &Config) -> &Context {
+        if self.runtime.config != *config {
+            self.runtime.config = config.clone();
+        }
+        &self.runtime
+    }
+}
+
+impl menu::main::Backend for MainMenuBackend<'_> {
+    fn status(&mut self, config: &Config) -> menu::main::Status {
+        let context = self.context(config);
+        log_status(context);
+        let running = context
+            .manager
+            .is_running(&crate::suricata::container_name(context))
+            || context
+                .manager
+                .is_running(&crate::evebox::server::container_name(context));
+        menu::main::Status {
+            running,
+            ready_to_start: true,
+            restart_recommended: false,
+        }
+    }
+
+    fn start(&mut self, config: &Config) -> Result<()> {
+        if start(self.context(config)) {
+            Ok(())
+        } else {
+            bail!("One or more services failed to start")
+        }
+    }
+
+    fn stop(&mut self, config: &Config) -> Result<()> {
+        if stop_all(self.context(config)) {
+            Ok(())
+        } else {
+            bail!("One or more services failed to stop")
+        }
+    }
+
+    fn restart(&mut self, config: &Config) -> Result<()> {
+        let context = self.context(config);
+        stop_all(context);
+        if start(context) {
+            Ok(())
+        } else {
+            bail!("One or more services failed to start")
+        }
+    }
+
+    fn install(&mut self, _config: &mut Config) -> Result<()> {
+        bail!("Containers are installed on start")
+    }
+
+    fn update_rules(&mut self, config: &Config) -> Result<()> {
+        actions::update_rules(self.context(config), &[])
+    }
+
+    fn rules(&mut self, config: &Config) -> Box<dyn rules::Backend + '_> {
+        Box::new(rules::ContainerBackend(self.context(config)))
+    }
+
+    fn update(&mut self, config: &Config) -> Result<menu::main::UpdateOutcome> {
+        // A self-update replaces the process and never returns.
+        let args = self.update_continuation_args;
+        update(self.context(config), args, false, true);
+        Ok(menu::main::UpdateOutcome::Completed)
+    }
+
+    fn configure(&mut self, config: &mut Config) -> Result<()> {
+        self.runtime.config = config.clone();
+        let result = menu::configure::main(&mut self.runtime);
+        *config = self.runtime.config.clone();
+        result
+    }
+
+    fn other(&mut self, config: &mut Config) -> Result<()> {
+        menu::other::menu(self.context(config));
+        Ok(())
+    }
+}
+
 fn menu_main(
     mut context: Context,
     update_continuation_args: &UpdateContinuationArgs,
 ) -> Result<()> {
-    let mut original_config = context.config.clone();
-
-    'outer: loop {
-        let running = context
-            .manager
-            .is_running(&crate::suricata::container_name(&context))
-            || context
-                .manager
-                .is_running(&crate::evebox::server::container_name(&context));
-
-        if context.config != original_config {
-            context.config.save()?;
-
-            if let Some(true) = inquire::Confirm::new("Configuration has changed, restart?")
-                .with_default(true)
-                .prompt_skippable()?
-            {
-                restart(&context);
-                original_config = context.config.clone();
-            }
-        }
-
-        'inner: loop {
-            term::title("EveCtl: Main Menu");
-
-            log_status(&context);
-            println!();
-
-            if original_config != context.config {
-                warn!("Configuration has changed, restart required");
-            }
-
-            let mut selections = prompt::Selections::with_index();
-            selections.push(Main::Refresh, "Refresh Status");
-            if running {
-                selections.push(Main::Restart, "Restart");
-                selections.push(Main::Stop, "Stop");
-            } else {
-                selections.push(Main::Start, "Start");
-            }
-            if context.config.suricata.enabled {
-                selections.push(Main::UpdateRules, "Update Rules");
-                selections.push(Main::SuricataUpdate, "Manage Rules");
-            }
-
-            selections.push(Main::Update, "Update");
-            selections.push(Main::Configure, "Configure");
-            selections.push(Main::Other, "Other");
-            selections.push(Main::Exit, "Exit");
-
-            let response = inquire::Select::new("Select a menu option", selections.to_vec())
-                .with_page_size(12)
-                .prompt();
-            match response {
-                Ok(selection) => match selection.tag {
-                    Main::Refresh => {
-                        continue 'inner;
-                    }
-                    Main::Start => {
-                        if !start(&context) {
-                            prompt::enter();
-                        }
-                    }
-                    Main::Stop => {
-                        if !stop_all(&context) {
-                            prompt::enter();
-                        }
-                    }
-                    Main::Restart => {
-                        restart(&context);
-                        original_config = context.config.clone();
-                    }
-                    Main::Update => {
-                        update(&context, update_continuation_args, false, true);
-                        prompt::enter();
-                    }
-                    Main::Other => menu::other::menu(&context),
-                    Main::Configure => menu::configure::main(&mut context)?,
-                    Main::UpdateRules => {
-                        if let Err(err) = actions::update_rules(&context, &[]) {
-                            error!("{}", err);
-                        }
-                        prompt::enter();
-                    }
-                    Main::SuricataUpdate => menu::rules::menu(&rules::ContainerBackend(&context))?,
-                    Main::Exit => break 'outer,
-                },
-                Err(_) => break 'outer,
-            }
-            continue 'outer;
-        }
-    }
-
-    Ok(())
+    let mut backend = MainMenuBackend {
+        runtime: context.clone(),
+        update_continuation_args,
+    };
+    menu::main::menu(&mut context.config, &mut backend)
 }
 
 fn restart(context: &Context) {

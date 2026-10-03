@@ -7,6 +7,7 @@ pub(crate) mod evebox_agent;
 pub(crate) mod evebox_server;
 pub(crate) mod file_extraction;
 pub(crate) mod fpc;
+pub(crate) mod main;
 pub(crate) mod other;
 pub(crate) mod rules;
 pub(crate) mod suricata;

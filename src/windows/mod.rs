@@ -288,21 +288,6 @@ mod imp {
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum MainMenuOption {
-        Refresh,
-        Restart,
-        Stop,
-        Start,
-        Install,
-        UpdateRules,
-        ManageRules,
-        Update,
-        Configure,
-        Other,
-        Exit,
-    }
-
-    #[derive(Debug, Clone, Copy)]
     enum OtherMenuOption {
         Install,
         Uninstall,
@@ -429,126 +414,95 @@ mod imp {
 
         offer_install_if_missing(&mut config);
 
-        let mut original_config = config.clone();
+        crate::menu::main::menu(&mut config, &mut WindowsMainMenuBackend)
+    }
 
-        loop {
-            // Save a changed configuration and offer a restart, and keep
-            // offering until a restart happens.
-            if config != original_config {
-                ensure_dir(&get_evectl_data_dir()?)?;
-                config.save()?;
+    struct WindowsMainMenuBackend;
 
-                if config.windows.evebox_channel != original_config.windows.evebox_channel {
-                    info!(
-                        "EveBox channel saved as {}. Choose Update to apply it; a restart alone does not change the installed build.",
-                        config.windows.evebox_channel
-                    );
-                    original_config.windows.evebox_channel = config.windows.evebox_channel;
-                }
-
-                if config != original_config
-                    && let Ok(Some(true)) =
-                        inquire::Confirm::new("Configuration has changed, restart?")
-                            .with_default(true)
-                            .prompt_skippable()
-                {
-                    run_menu_action("Failed to restart Windows stack", restart_stack);
-                    original_config = config.clone();
-                }
-            }
-
-            crate::term::title("EveCtl: Main Menu");
-
-            let status = match windows_status(&config) {
+    impl crate::menu::main::Backend for WindowsMainMenuBackend {
+        fn status(&mut self, config: &crate::config::Config) -> crate::menu::main::Status {
+            let status = match windows_status(config) {
                 Ok(status) => status,
                 Err(err) => {
                     error!("Failed to determine Windows service status: {}", err);
                     WindowsStatus::default()
                 }
             };
-            log_status(status, &config);
-            println!();
-
-            if original_config != config {
-                warn!("Configuration has changed, restart required");
-            }
-            let restart_recommended = super::update::restart_recommended(&get_evectl_data_dir()?);
-            if restart_recommended {
-                warn!("{}", super::update::RESTART_REMINDER);
-            }
-
-            let mut selections = crate::prompt::Selections::with_index();
-            selections.push(MainMenuOption::Refresh, "Refresh Status");
-            if status.any_running() || (restart_recommended && status.ready_to_start()) {
-                selections.push(MainMenuOption::Restart, "Restart");
-            }
-            if status.any_running() {
-                selections.push(MainMenuOption::Stop, "Stop");
-            } else if status.ready_to_start() {
-                selections.push(MainMenuOption::Start, "Start");
-            } else {
-                selections.push(MainMenuOption::Install, "Install");
-            }
-            if status.suricata_enabled {
-                selections.push(MainMenuOption::UpdateRules, "Update Rules");
-                selections.push(MainMenuOption::ManageRules, "Manage Rules");
-            }
-            selections.push(MainMenuOption::Update, "Update");
-            selections.push(MainMenuOption::Configure, "Configure");
-            selections.push(MainMenuOption::Other, "Other");
-            selections.push(MainMenuOption::Exit, "Exit");
-
-            let selection = match inquire::Select::new("Select a menu option", selections.to_vec())
-                .with_page_size(12)
-                .prompt()
-            {
-                Ok(selection) => selection,
-                Err(_) => break,
-            };
-
-            match selection.tag {
-                MainMenuOption::Refresh => {}
-                MainMenuOption::Restart => {
-                    run_menu_action("Failed to restart Windows stack", restart_stack);
-                    original_config = config.clone();
-                }
-                MainMenuOption::Stop => {
-                    run_menu_action("Failed to stop Windows stack", stop_stack);
-                }
-                MainMenuOption::Start => {
-                    run_menu_action("Failed to start Windows stack", || start_stack(false, None));
-                }
-                MainMenuOption::Install => {
-                    run_menu_action_with_pause("Installation failed", || install_with(&mut config));
-                    // A wizard run saves its own configuration; don't
-                    // treat it as a pending change needing a restart.
-                    original_config = config.clone();
-                }
-                MainMenuOption::UpdateRules => {
-                    run_menu_action_with_pause("Failed to update rules", || {
-                        update_rules(false, false)
-                    });
-                }
-                MainMenuOption::ManageRules => crate::menu::rules::menu(&WindowsRulesBackend)?,
-                MainMenuOption::Update => match upgrade_windows_components() {
-                    // Leave the menu immediately: don't pause or run anything
-                    // else using the old EveCtl executable.
-                    Ok(UpdateOutcome::RestartEveCtl) => break,
-                    result => {
-                        run_menu_action_with_pause("Failed to update Windows components", || {
-                            result.map(|_| ())
-                        })
-                    }
-                },
-                MainMenuOption::Configure => {
-                    crate::menu::configure::menu(&mut config, &mut WindowsConfigureBackend)?
-                }
-                MainMenuOption::Other => other_menu(&mut config)?,
-                MainMenuOption::Exit => break,
+            log_status(status, config);
+            let restart_recommended = get_evectl_data_dir()
+                .map(|data_dir| super::update::restart_recommended(&data_dir))
+                .unwrap_or(false);
+            crate::menu::main::Status {
+                running: status.any_running(),
+                ready_to_start: status.ready_to_start(),
+                restart_recommended,
             }
         }
 
-        Ok(())
+        fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
+            ensure_dir(&get_evectl_data_dir()?)?;
+            config.save()
+        }
+
+        /// The release channel is applied by Update, not by a restart.
+        fn acknowledge_saved_changes(
+            &mut self,
+            original: &mut crate::config::Config,
+            current: &crate::config::Config,
+        ) {
+            if current.windows.evebox_channel != original.windows.evebox_channel {
+                info!(
+                    "EveBox channel saved as {}. Choose Update to apply it; a restart alone does not change the installed build.",
+                    current.windows.evebox_channel
+                );
+                original.windows.evebox_channel = current.windows.evebox_channel;
+            }
+        }
+
+        fn start(&mut self, _config: &crate::config::Config) -> Result<()> {
+            start_stack(false, None)
+        }
+
+        fn stop(&mut self, _config: &crate::config::Config) -> Result<()> {
+            stop_stack()
+        }
+
+        fn restart(&mut self, _config: &crate::config::Config) -> Result<()> {
+            restart_stack()
+        }
+
+        fn install(&mut self, config: &mut crate::config::Config) -> Result<()> {
+            install_with(config)
+        }
+
+        fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
+            update_rules(false, false)
+        }
+
+        fn rules(
+            &mut self,
+            _config: &crate::config::Config,
+        ) -> Box<dyn crate::rules::Backend + '_> {
+            Box::new(WindowsRulesBackend)
+        }
+
+        fn update(
+            &mut self,
+            _config: &crate::config::Config,
+        ) -> Result<crate::menu::main::UpdateOutcome> {
+            Ok(match upgrade_windows_components()? {
+                UpdateOutcome::Completed => crate::menu::main::UpdateOutcome::Completed,
+                UpdateOutcome::RestartEveCtl => crate::menu::main::UpdateOutcome::ExitMenu,
+            })
+        }
+
+        fn configure(&mut self, config: &mut crate::config::Config) -> Result<()> {
+            crate::menu::configure::menu(config, &mut WindowsConfigureBackend)
+        }
+
+        fn other(&mut self, config: &mut crate::config::Config) -> Result<()> {
+            other_menu(config)
+        }
     }
 
     /// Mirror the Linux onboarding: on first run walk through the setup
@@ -1142,13 +1096,6 @@ mod imp {
         }
 
         Ok(())
-    }
-
-    fn run_menu_action(message: &str, action: impl FnOnce() -> Result<()>) {
-        if let Err(err) = action() {
-            error!("{}: {}", message, err);
-            crate::prompt::enter();
-        }
     }
 
     fn run_menu_action_with_pause(message: &str, action: impl FnOnce() -> Result<()>) {
