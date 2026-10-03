@@ -464,7 +464,7 @@ fn main() -> Result<()> {
                     0
                 }
                 "evebox-agent" => {
-                    menu::evebox_agent::menu(&mut context)?;
+                    menu::evebox_agent::menu(&mut context.config)?;
                     0
                 }
                 "evebox-server" => {

@@ -331,15 +331,6 @@ mod imp {
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum ConfigureAgentMenuOption {
-        Toggle,
-        Server,
-        AgentId,
-        Key,
-        Return,
-    }
-
-    #[derive(Debug, Clone, Copy)]
     enum ConfigureServerMenuOption {
         Toggle,
         Return,
@@ -871,7 +862,7 @@ mod imp {
 
             match selection.tag {
                 ConfigureMenuOption::Suricata => configure_suricata_menu(config)?,
-                ConfigureMenuOption::EveBoxAgent => configure_evebox_agent_menu(config)?,
+                ConfigureMenuOption::EveBoxAgent => crate::menu::evebox_agent::menu(config)?,
                 ConfigureMenuOption::EveBoxServer => configure_evebox_server_menu(config)?,
                 ConfigureMenuOption::EveBoxChannel => {
                     if let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel)
@@ -1029,59 +1020,6 @@ mod imp {
                 crate::prompt::enter();
             }
         }
-    }
-
-    fn configure_evebox_agent_menu(config: &mut crate::config::Config) -> Result<()> {
-        loop {
-            crate::term::clear();
-
-            let mut selections = crate::prompt::Selections::new();
-            if config.evebox_agent.enabled {
-                selections.push(ConfigureAgentMenuOption::Toggle, "Disable Agent [enabled]");
-            } else {
-                selections.push(ConfigureAgentMenuOption::Toggle, "Enable Agent [disabled]");
-            }
-            selections.push(
-                ConfigureAgentMenuOption::Server,
-                format!("EveBox Server URL [{}]", config.evebox_agent.server),
-            );
-            selections.push(
-                ConfigureAgentMenuOption::AgentId,
-                crate::menu::evebox_agent::agent_id_label(config),
-            );
-            selections.push(
-                ConfigureAgentMenuOption::Key,
-                crate::menu::evebox_agent::key_label(config),
-            );
-            selections.push(ConfigureAgentMenuOption::Return, "Return");
-
-            let selection =
-                match inquire::Select::new("EveCtl: Configure EveBox Agent", selections.to_vec())
-                    .prompt_skippable()?
-                {
-                    Some(selection) => selection,
-                    None => break,
-                };
-
-            match selection.tag {
-                ConfigureAgentMenuOption::Toggle => {
-                    config.evebox_agent.enabled = !config.evebox_agent.enabled;
-                    if config.evebox_agent.enabled && config.evebox_agent.server.is_empty() {
-                        crate::menu::evebox_agent::set_server(config)?;
-                    }
-                }
-                ConfigureAgentMenuOption::Server => crate::menu::evebox_agent::set_server(config)?,
-                ConfigureAgentMenuOption::AgentId => {
-                    crate::menu::evebox_agent::set_agent_id(config);
-                }
-                ConfigureAgentMenuOption::Key => {
-                    crate::menu::evebox_agent::set_key(config);
-                }
-                ConfigureAgentMenuOption::Return => break,
-            }
-        }
-
-        Ok(())
     }
 
     fn configure_evebox_server_menu(config: &mut crate::config::Config) -> Result<()> {

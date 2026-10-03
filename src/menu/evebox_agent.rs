@@ -3,7 +3,6 @@
 
 use crate::prelude::*;
 
-use crate::context::Context;
 use crate::term;
 
 #[derive(Clone)]
@@ -15,9 +14,7 @@ enum Options {
     Exit,
 }
 
-pub(crate) fn menu(context: &mut Context) -> Result<()> {
-    let config = &mut context.config;
-
+pub(crate) fn menu(config: &mut Config) -> Result<()> {
     loop {
         term::clear();
 

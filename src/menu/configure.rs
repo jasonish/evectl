@@ -81,7 +81,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
             Ok(selection) => match selection.tag {
                 Options::ContainerImages => crate::menu::containers::menu(context),
                 Options::Suricata => crate::menu::suricata::menu(context)?,
-                Options::EveBoxAgent => crate::menu::evebox_agent::menu(context)?,
+                Options::EveBoxAgent => crate::menu::evebox_agent::menu(&mut context.config)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
                 Options::Fpc => crate::menu::fpc::menu(context)?,
                 Options::StartOnBoot => start_on_boot(context)?,
