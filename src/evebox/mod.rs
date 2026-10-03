@@ -2,4 +2,5 @@
 // SPDX-License-Identifier: MIT
 
 pub(crate) mod agent;
+pub(crate) mod configuration;
 pub(crate) mod server;

@@ -269,10 +269,12 @@ pub(crate) struct EveBoxServerConfig {
     )]
     pub bind_address: Option<String>,
 
-    #[serde(default, skip_serializing_if = "is_default")]
+    /// Always written so a missing key identifies configurations saved
+    /// before Windows honoured these settings.
+    #[serde(default)]
     pub no_tls: bool,
 
-    #[serde(default, skip_serializing_if = "is_default")]
+    #[serde(default)]
     pub no_auth: bool,
 
     #[serde(default, skip_serializing_if = "is_default")]
@@ -391,6 +393,34 @@ impl Config {
         Ok(config)
     }
 
+    /// Load a configuration written by EveCtl on Windows. Earlier Windows
+    /// versions ignored the EveBox server TLS and authentication settings
+    /// and always ran without them. Files saved by those versions lack the
+    /// keys, so missing keys keep that behaviour rather than switching an
+    /// existing server to TLS and authentication on restart.
+    #[cfg(windows)]
+    pub(crate) fn from_windows_file(filename: &PathBuf) -> Result<Self> {
+        let buf = Self::read_file(filename)?;
+        let mut config = Self::parse_windows_toml(&buf)?;
+        config.filename = filename.clone();
+        Ok(config)
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn parse_windows_toml(buf: &str) -> Result<Self> {
+        let mut config = Self::parse_toml(buf)?;
+        let value: toml::Value = toml::from_str(buf)?;
+        if let Some(server) = value.get("evebox-server").and_then(|v| v.as_table()) {
+            if !server.contains_key("no-tls") {
+                config.evebox_server.no_tls = true;
+            }
+            if !server.contains_key("no-auth") {
+                config.evebox_server.no_auth = true;
+            }
+        }
+        Ok(config)
+    }
+
     pub(crate) fn save(&self) -> Result<()> {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -425,6 +455,41 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_and_auth_settings_are_always_written() {
+        let mut config = Config::default();
+        config.evebox_server.enabled = true;
+        let toml = toml::to_string(&config).unwrap();
+        assert!(toml.contains("no-tls = false"));
+        assert!(toml.contains("no-auth = false"));
+        assert_eq!(Config::parse_windows_toml(&toml).unwrap(), config);
+    }
+
+    #[test]
+    fn windows_configs_without_tls_and_auth_keys_keep_running_without_them() {
+        let legacy = "[evebox-server]\nenabled = true\n";
+        let config = Config::parse_windows_toml(legacy).unwrap();
+        assert!(config.evebox_server.enabled);
+        assert!(config.evebox_server.no_tls);
+        assert!(config.evebox_server.no_auth);
+        let saved = toml::to_string(&config).unwrap();
+        assert!(saved.contains("no-tls = true"));
+        assert!(saved.contains("no-auth = true"));
+
+        // Linux reads the same file with the normal defaults.
+        let config = Config::parse_toml(legacy).unwrap();
+        assert!(!config.evebox_server.no_tls);
+        assert!(!config.evebox_server.no_auth);
+
+        // Explicit keys and absent tables are respected.
+        let config = Config::parse_windows_toml("[evebox-server]\nno-tls = false\n").unwrap();
+        assert!(!config.evebox_server.no_tls);
+        assert!(config.evebox_server.no_auth);
+        let config = Config::parse_windows_toml("[evebox-agent]\nenabled = true\n").unwrap();
+        assert!(!config.evebox_server.no_tls);
+        assert!(!config.evebox_server.no_auth);
+    }
 
     #[test]
     fn test_config_roundtrip() {

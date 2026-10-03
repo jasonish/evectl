@@ -4,6 +4,12 @@
 
 ### Added
 
+- Windows EveBox server settings now match Linux: remote access, bind
+  address, TLS, authentication, and admin password reset. The setup
+  wizard asks the same server questions as Linux. OpenSearch and
+  Elasticsearch datastores remain Linux only. Existing Windows
+  installations keep running without TLS and authentication until
+  changed in Configure > Configure EveBox Server
 - Windows full packet capture settings now include agent ID/key editing and
   confirmed removal of old captures after capture is disabled and Suricata stops
 - Linux Manage Rules menu actions to refresh rule sources and list enabled
@@ -95,6 +101,7 @@
 
 ### Fixed
 
+- Re-enabling EveBox server authentication no longer re-enables TLS instead
 - Packet-capture removal rechecks Suricata state after confirmation. On Linux,
   removal is blocked while Suricata is restarting or its state cannot be checked
 - Suricata interface discovery errors are reported without closing the

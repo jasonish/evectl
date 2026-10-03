@@ -470,7 +470,7 @@ fn main() -> Result<()> {
                     0
                 }
                 "evebox-server" => {
-                    menu::evebox_server::menu(&mut context)?;
+                    menu::evebox_server::container_menu(&mut context)?;
                     0
                 }
                 _ => panic!("Unhandled menu: {}", menu),

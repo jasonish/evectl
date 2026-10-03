@@ -7,7 +7,7 @@ pub(crate) fn container_name(context: &Context) -> String {
     format!("{}-evebox-server", context.container_prefix())
 }
 
-pub(crate) fn reset_password(context: &mut Context) {
+pub(crate) fn reset_password(context: &Context) {
     let image = context.image_name(Container::EveBox);
     let mut args = ArgBuilder::new();
     args.add("run");

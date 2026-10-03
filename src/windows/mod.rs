@@ -48,10 +48,7 @@ mod imp {
     const ROLE_EVEBOX: &str = "evebox";
     const ROLE_EVEBOX_AGENT: &str = "evebox-agent";
     const ROLE_HOUSEKEEPER: &str = "housekeeper";
-    const EVEBOX_HOST: &str = "127.0.0.1";
     const EVEBOX_PORT: &str = "5636";
-    const EVEBOX_ACCESS_URL: &str = "http://127.0.0.1:5636";
-    const EVEBOX_DESKTOP_SHORTCUT_URL: &str = "http://127.0.0.1:5636";
     const START_SHORTCUT_NAME: &str = "EveCtl Start.cmd";
     const EVEBOX_SHORTCUT_NAME: &str = "EveBox.url";
     const WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS: [&str; 1] = ["file.magic"];
@@ -260,7 +257,8 @@ mod imp {
             Some(Commands::Stop) => stop_stack(),
             Some(Commands::Restart) => restart_stack(),
             Some(Commands::Status) => {
-                log_status(windows_status(&load_evectl_config()?)?);
+                let config = load_evectl_config()?;
+                log_status(windows_status(&config)?, &config);
                 Ok(())
             }
             Some(Commands::UpdateRules) => update_rules(false, false),
@@ -302,12 +300,6 @@ mod imp {
         Configure,
         Other,
         Exit,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    enum ConfigureServerMenuOption {
-        Toggle,
-        Return,
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -373,7 +365,7 @@ mod imp {
         })
     }
 
-    fn log_status(status: WindowsStatus) {
+    fn log_status(status: WindowsStatus, config: &crate::config::Config) {
         if status.housekeeper_running {
             info!("{:-13}: running", "Housekeeper");
         } else if status.housekeeper_enabled {
@@ -393,7 +385,11 @@ mod imp {
 
         if status.evebox_server_enabled {
             if status.evebox_server_running {
-                info!("{:-13}: running {}", "EveBox Server", EVEBOX_ACCESS_URL);
+                info!(
+                    "{:-13}: running {}",
+                    "EveBox Server",
+                    evebox_server_url(config)
+                );
             } else if status.evebox_installed {
                 warn!("{:-13}: not running", "EveBox Server");
             } else {
@@ -470,7 +466,7 @@ mod imp {
                     WindowsStatus::default()
                 }
             };
-            log_status(status);
+            log_status(status, &config);
             println!();
 
             if original_config != config {
@@ -672,9 +668,26 @@ mod imp {
         }
 
         if has_server {
-            // The Windows EveBox server currently runs with fixed options:
-            // SQLite datastore, localhost only, no TLS, no authentication.
+            // SQLite is the only Windows datastore; the remaining server
+            // questions match the Linux wizard.
+            let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
+                .with_default(false)
+                .with_help_message("Enable to allow access from hosts other than localhost")
+                .prompt()?;
+            let disable_https = inquire::Confirm::new("EveBox Server: Disable HTTPS?")
+                .with_default(false)
+                .with_help_message("Disable HTTPS, not recommended if remote-access is allowed")
+                .prompt()?;
+            let disable_auth = inquire::Confirm::new("EveBox Server: Disable authentication?")
+                .with_default(false)
+                .with_help_message(
+                    "Disable authentication, not recommended if remote-access is allowed",
+                )
+                .prompt()?;
             config.evebox_server.enabled = true;
+            config.evebox_server.allow_remote = allow_remote;
+            config.evebox_server.no_tls = disable_https;
+            config.evebox_server.no_auth = disable_auth;
         }
 
         let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
@@ -698,6 +711,17 @@ mod imp {
         if has_suricata {
             info!("Updating Suricata rules...");
             update_rules(false, false)?;
+        }
+
+        if has_server && !config.evebox_server.no_auth {
+            crate::prompt::enter_with_prefix(
+                "EveBox Server: When prompted, enter the password for the EveBox \"admin\" user.",
+            );
+            if let Err(err) = reset_evebox_admin_password() {
+                error!("Failed to set the EveBox admin password: {err:#}");
+                info!("Reset it later from Configure > Configure EveBox Server");
+                crate::prompt::enter();
+            }
         }
 
         ensure_dir(&get_evectl_data_dir()?)?;
@@ -783,7 +807,7 @@ mod imp {
         }
 
         fn configure_evebox_server(&mut self, config: &mut crate::config::Config) -> Result<()> {
-            configure_evebox_server_menu(config)
+            crate::menu::evebox_server::menu(config, &WindowsEveBoxServerBackend)
         }
 
         fn platform_options(
@@ -891,41 +915,126 @@ mod imp {
         }
     }
 
-    fn configure_evebox_server_menu(config: &mut crate::config::Config) -> Result<()> {
-        loop {
-            crate::term::clear();
+    struct WindowsEveBoxServerBackend;
 
-            let mut selections = crate::prompt::Selections::with_index();
-            if config.evebox_server.enabled {
-                selections.push(
-                    ConfigureServerMenuOption::Toggle,
-                    "Disable EveBox Server [enabled]",
-                );
-            } else {
-                selections.push(
-                    ConfigureServerMenuOption::Toggle,
-                    "Enable EveBox Server [disabled]",
-                );
-            }
-            selections.push(ConfigureServerMenuOption::Return, "Return");
-
-            let selection =
-                match inquire::Select::new("EveCtl: Configure EveBox Server", selections.to_vec())
-                    .prompt()
-                {
-                    Ok(selection) => selection,
-                    Err(_) => break,
-                };
-
-            match selection.tag {
-                ConfigureServerMenuOption::Toggle => {
-                    config.evebox_server.enabled = !config.evebox_server.enabled;
-                }
-                ConfigureServerMenuOption::Return => break,
-            }
+    impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend {
+        fn supports_search_engines(&self) -> bool {
+            false
         }
 
+        fn bind_addresses(&self) -> Result<Vec<crate::evebox::configuration::BindAddress>> {
+            Ok(get_windows_interfaces()?
+                .into_iter()
+                .filter(|interface| interface.ip_address.parse::<std::net::Ipv4Addr>().is_ok())
+                .map(|interface| crate::evebox::configuration::BindAddress {
+                    interface: interface.name,
+                    address: interface.ip_address,
+                })
+                .collect())
+        }
+
+        fn reset_password(&self) -> Result<()> {
+            reset_evebox_admin_password()
+        }
+    }
+
+    /// Replace the EveBox "admin" user, prompting for the new password.
+    /// Uses the server's data directory, where EveBox keeps its
+    /// configuration database.
+    fn reset_evebox_admin_password() -> Result<()> {
+        let evebox_exe = get_evebox_exe_path()?;
+        let data_dir = get_evebox_data_dir()?;
+        ensure_dir(&data_dir)?;
+
+        // Removal fails if the user does not exist yet.
+        let _ = Command::new(&evebox_exe)
+            .arg("-D")
+            .arg(&data_dir)
+            .args(["config", "users", "rm", "admin"])
+            .status();
+
+        let status = Command::new(&evebox_exe)
+            .arg("-D")
+            .arg(&data_dir)
+            .args(["config", "users", "add", "--username", "admin"])
+            .status()
+            .context("Failed to run EveBox")?;
+        if !status.success() {
+            bail!("EveBox exited with {status}");
+        }
         Ok(())
+    }
+
+    /// Host for the EveBox server to listen on. Remote access without a
+    /// bind address listens on all IPv4 interfaces.
+    fn evebox_bind_host(
+        server: &crate::config::EveBoxServerConfig,
+        interfaces: &[WindowsInterface],
+    ) -> Result<String> {
+        if !server.allow_remote {
+            return Ok("127.0.0.1".to_string());
+        }
+        match server.bind_address.as_deref() {
+            None => Ok("0.0.0.0".to_string()),
+            Some(value) if value.parse::<std::net::IpAddr>().is_ok() => Ok(value.to_string()),
+            Some(name) => interfaces
+                .iter()
+                .find(|interface| {
+                    interface.name == name
+                        && interface.ip_address.parse::<std::net::Ipv4Addr>().is_ok()
+                })
+                .map(|interface| interface.ip_address.clone())
+                .ok_or_else(|| anyhow!("No IPv4 address found for interface {name}")),
+        }
+    }
+
+    /// Server options derived from the configuration: TLS, authentication,
+    /// and the listen address.
+    fn evebox_server_options(
+        server: &crate::config::EveBoxServerConfig,
+        interfaces: &[WindowsInterface],
+    ) -> Result<Vec<String>> {
+        let mut options = vec![];
+        if server.no_auth {
+            options.push("--no-auth".to_string());
+        }
+        if server.no_tls {
+            options.push("--no-tls".to_string());
+        }
+        options.push("--host".to_string());
+        options.push(evebox_bind_host(server, interfaces)?);
+        options.push("--port".to_string());
+        options.push(EVEBOX_PORT.to_string());
+        Ok(options)
+    }
+
+    /// URL for reaching the EveBox server from this host. With remote
+    /// access on all interfaces, the first non-loopback IPv4 address is
+    /// used, like the Linux status output.
+    fn evebox_server_url(config: &crate::config::Config) -> String {
+        let interfaces = get_windows_interfaces().unwrap_or_default();
+        evebox_server_url_for(&config.evebox_server, &interfaces)
+    }
+
+    fn evebox_server_url_for(
+        server: &crate::config::EveBoxServerConfig,
+        interfaces: &[WindowsInterface],
+    ) -> String {
+        let scheme = if server.no_tls { "http" } else { "https" };
+        let host = match evebox_bind_host(server, interfaces) {
+            Ok(host) if host == "0.0.0.0" => interfaces
+                .iter()
+                .filter_map(|interface| interface.ip_address.parse::<std::net::Ipv4Addr>().ok())
+                .find(|address| !address.is_loopback())
+                .map(|address| address.to_string())
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
+            Ok(host) => host,
+            Err(err) => {
+                warn!("Failed to resolve the EveBox bind address: {err}");
+                "127.0.0.1".to_string()
+            }
+        };
+        format!("{scheme}://{host}:{EVEBOX_PORT}")
     }
 
     struct WindowsRulesBackend;
@@ -2288,10 +2397,8 @@ mod imp {
             start_shortcut.display()
         ))?;
 
-        let evebox_contents = format!(
-            "[InternetShortcut]\r\nURL={}\r\n",
-            EVEBOX_DESKTOP_SHORTCUT_URL
-        );
+        let evebox_url = evebox_server_url(&load_evectl_config()?);
+        let evebox_contents = format!("[InternetShortcut]\r\nURL={}\r\n", evebox_url);
         std::fs::write(&evebox_shortcut, evebox_contents).context(format!(
             "Failed to write desktop shortcut {}",
             evebox_shortcut.display()
@@ -2300,7 +2407,7 @@ mod imp {
         println!("Created desktop shortcuts:");
         println!("  Start:  {}", start_shortcut.display());
         println!("  EveBox: {}", evebox_shortcut.display());
-        println!("  EveBox URL: {}", EVEBOX_DESKTOP_SHORTCUT_URL);
+        println!("  EveBox URL: {}", evebox_url);
 
         Ok(())
     }
@@ -2309,7 +2416,7 @@ mod imp {
     fn load_evectl_config() -> Result<crate::config::Config> {
         let config_path = get_evectl_config_path()?;
         if config_path.exists() {
-            crate::config::Config::from_file(&config_path)
+            crate::config::Config::from_windows_file(&config_path)
         } else {
             Ok(crate::config::Config::default_with_filename(&config_path))
         }
@@ -4430,7 +4537,7 @@ exit 1
             println!("  {} PID: {}", role, child.id());
         }
         if use_server {
-            println!("  EveBox URL: {}", EVEBOX_ACCESS_URL);
+            println!("  EveBox URL: {}", evebox_server_url(&config));
         }
         println!("Press Ctrl-C to stop.");
 
@@ -4506,20 +4613,18 @@ exit 1
         ensure_dir(&evebox_root_dir)?;
         ensure_dir(&evebox_data_dir)?;
 
+        let config = load_evectl_config()?;
         let mut command = Command::new(&evebox_exe);
         command.current_dir(&evebox_data_dir);
         command.arg("server");
         command.arg("--sqlite");
-        command.arg("--no-auth");
-        command.arg("--no-tls");
-        command.arg("--host");
-        command.arg(EVEBOX_HOST);
-        command.arg("--port");
-        command.arg(EVEBOX_PORT);
+        command.args(evebox_server_options(
+            &config.evebox_server,
+            &get_windows_interfaces()?,
+        )?);
         command.arg("-D");
         command.arg(&evebox_data_dir);
         command.arg(get_suricata_eve_json_path()?);
-        let config = load_evectl_config()?;
         super::fpc::configure_evebox_command(&mut command, &config, &get_suricata_pcap_dir()?);
         super::file_extraction::configure_evebox_command(
             &mut command,
@@ -4842,7 +4947,7 @@ exit 1
         }
         if use_server {
             println!("  EveBox data:  {}", get_evebox_data_dir()?.display());
-            println!("  EveBox URL:   {}", EVEBOX_ACCESS_URL);
+            println!("  EveBox URL:   {}", evebox_server_url(&config));
         }
 
         Ok(())
@@ -5089,6 +5194,98 @@ exit 1
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn interfaces() -> Vec<WindowsInterface> {
+            vec![
+                WindowsInterface {
+                    name: "Loopback".to_string(),
+                    ip_address: "127.0.0.1".to_string(),
+                    guid: "{lo}".to_string(),
+                },
+                WindowsInterface {
+                    name: "Ethernet".to_string(),
+                    ip_address: "192.0.2.10".to_string(),
+                    guid: "{eth}".to_string(),
+                },
+                WindowsInterface {
+                    name: "Wi-Fi 6".to_string(),
+                    ip_address: "fe80::1".to_string(),
+                    guid: "{wifi}".to_string(),
+                },
+            ]
+        }
+
+        #[test]
+        fn evebox_server_options_follow_remote_tls_and_auth_settings() {
+            let mut server = crate::config::EveBoxServerConfig::default();
+            assert_eq!(
+                evebox_server_options(&server, &interfaces()).unwrap(),
+                ["--host", "127.0.0.1", "--port", "5636"]
+            );
+
+            server.no_tls = true;
+            server.no_auth = true;
+            server.allow_remote = true;
+            assert_eq!(
+                evebox_server_options(&server, &interfaces()).unwrap(),
+                [
+                    "--no-auth",
+                    "--no-tls",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "5636"
+                ]
+            );
+
+            server.bind_address = Some("192.0.2.10".to_string());
+            assert_eq!(
+                evebox_bind_host(&server, &interfaces()).unwrap(),
+                "192.0.2.10"
+            );
+            server.bind_address = Some("Ethernet".to_string());
+            assert_eq!(
+                evebox_bind_host(&server, &interfaces()).unwrap(),
+                "192.0.2.10"
+            );
+            for missing in ["Wi-Fi 6", "Unknown"] {
+                server.bind_address = Some(missing.to_string());
+                assert!(evebox_bind_host(&server, &interfaces()).is_err());
+            }
+
+            // The bind address is ignored without remote access.
+            server.allow_remote = false;
+            assert_eq!(
+                evebox_bind_host(&server, &interfaces()).unwrap(),
+                "127.0.0.1"
+            );
+        }
+
+        #[test]
+        fn evebox_server_url_reflects_scheme_and_reachable_address() {
+            let mut server = crate::config::EveBoxServerConfig::default();
+            assert_eq!(
+                evebox_server_url_for(&server, &interfaces()),
+                "https://127.0.0.1:5636"
+            );
+            server.no_tls = true;
+            server.allow_remote = true;
+            assert_eq!(
+                evebox_server_url_for(&server, &interfaces()),
+                "http://192.0.2.10:5636"
+            );
+            assert_eq!(evebox_server_url_for(&server, &[]), "http://127.0.0.1:5636");
+            server.bind_address = Some("Ethernet".to_string());
+            assert_eq!(
+                evebox_server_url_for(&server, &interfaces()),
+                "http://192.0.2.10:5636"
+            );
+            server.bind_address = Some("Unknown".to_string());
+            assert_eq!(
+                evebox_server_url_for(&server, &interfaces()),
+                "http://127.0.0.1:5636"
+            );
+        }
 
         fn write_evebox_zip(path: &Path, entries: &[(&str, &[u8])]) {
             let mut archive = zip::ZipWriter::new(std::fs::File::create(path).unwrap());

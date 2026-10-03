@@ -162,7 +162,10 @@ impl Backend for ContainerBackend {
     }
 
     fn configure_evebox_server(&mut self, config: &mut Config) -> Result<()> {
-        self.with_context(config, crate::menu::evebox_server::menu)
+        crate::menu::evebox_server::menu(
+            config,
+            &crate::evebox::configuration::ContainerBackend(&self.runtime),
+        )
     }
 
     fn platform_options(&self, _config: &Config) -> Vec<PlatformOption> {
