@@ -80,7 +80,7 @@ pub(crate) fn main(context: &mut Context) -> Result<()> {
         match inquire::Select::new("EveCtl: Configure", selections.to_vec()).prompt() {
             Ok(selection) => match selection.tag {
                 Options::ContainerImages => crate::menu::containers::menu(context),
-                Options::Suricata => crate::menu::suricata::menu(context)?,
+                Options::Suricata => crate::menu::suricata::container_menu(context)?,
                 Options::EveBoxAgent => crate::menu::evebox_agent::menu(&mut context.config)?,
                 Options::EveBoxServer => crate::menu::evebox_server::menu(context)?,
                 Options::Fpc => crate::menu::fpc::menu(context)?,

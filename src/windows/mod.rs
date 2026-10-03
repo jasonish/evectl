@@ -17,7 +17,6 @@ mod imp {
     use super::evebox::Download as EveBoxDownload;
     use super::update::UpdateOutcome;
     use crate::config::EveBoxChannel;
-    use crate::menu::file_extraction as extraction_menu;
     use crate::prelude::*;
     use clap::{Parser, Subcommand};
     use colored::Colorize;
@@ -313,20 +312,6 @@ mod imp {
         EveBoxChannel,
         Fpc,
         Shortcuts,
-        Return,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    enum ConfigureSuricataMenuOption {
-        Toggle,
-        Interface,
-        SensorName,
-        Bpf,
-        FileExtraction,
-        FileExtractionForceFilestore,
-        FileExtractionMaxSize,
-        FileExtractionRetention,
-        FileExtractionRemove,
         Return,
     }
 
@@ -851,7 +836,9 @@ mod imp {
                 };
 
             match selection.tag {
-                ConfigureMenuOption::Suricata => configure_suricata_menu(config)?,
+                ConfigureMenuOption::Suricata => {
+                    crate::menu::suricata::menu(config, &WindowsSuricataBackend)?
+                }
                 ConfigureMenuOption::EveBoxAgent => crate::menu::evebox_agent::menu(config)?,
                 ConfigureMenuOption::EveBoxServer => configure_evebox_server_menu(config)?,
                 ConfigureMenuOption::EveBoxChannel => {
@@ -871,144 +858,46 @@ mod imp {
         Ok(())
     }
 
-    fn configure_suricata_menu(config: &mut crate::config::Config) -> Result<()> {
-        loop {
-            crate::term::clear();
+    struct WindowsSuricataBackend;
 
-            let mut selections = crate::prompt::Selections::new();
-            if config.suricata.enabled {
-                selections.push(ConfigureSuricataMenuOption::Toggle, "Disable Suricata");
-            } else {
-                selections.push(ConfigureSuricataMenuOption::Toggle, "Enable Suricata");
-            }
-
-            let interface_label = match config.suricata.interfaces.first() {
-                Some(interface) => format!("Select Interface (current: {})", interface),
-                None => "Select Interface".to_string(),
-            };
-            selections.push(ConfigureSuricataMenuOption::Interface, interface_label);
-
-            selections.push(ConfigureSuricataMenuOption::SensorName, {
-                if let Some(sensor_name) = &config.suricata.sensor_name {
-                    format!("Sensor Name (current: {})", sensor_name)
-                } else {
-                    "Sensor Name (current: none)".to_string()
-                }
-            });
-
-            let current_bpf = if let Some(bpf) = &config.suricata.bpf {
-                format!(" (current: \"{}\")", bpf)
-            } else {
-                " (current: none)".to_string()
-            };
-            selections.push(
-                ConfigureSuricataMenuOption::Bpf,
-                format!("BPF filter{}", current_bpf),
-            );
-
-            let filestore = get_suricata_filestore_dir()?;
-            if config.suricata.file_extraction.enabled {
-                selections.push(
-                    ConfigureSuricataMenuOption::FileExtraction,
-                    "Disable File Extraction",
-                );
-                selections.push(
-                    ConfigureSuricataMenuOption::FileExtractionForceFilestore,
-                    extraction_menu::force_filestore_label(config),
-                );
-                selections.push(
-                    ConfigureSuricataMenuOption::FileExtractionMaxSize,
-                    extraction_menu::max_size_label(config),
-                );
-                selections.push(
-                    ConfigureSuricataMenuOption::FileExtractionRetention,
-                    extraction_menu::retention_label(config),
-                );
-            } else {
-                selections.push(
-                    ConfigureSuricataMenuOption::FileExtraction,
-                    "Enable File Extraction",
-                );
-                if let Some(label) = extraction_menu::remove_label_for(config, &filestore) {
-                    selections.push(ConfigureSuricataMenuOption::FileExtractionRemove, label);
-                }
-            }
-
-            selections.push(ConfigureSuricataMenuOption::Return, "Return");
-
-            let selection =
-                match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
-                    .with_page_size(selections.page_size())
-                    .prompt()
-                {
-                    Ok(selection) => selection,
-                    Err(_) => break,
-                };
-
-            match selection.tag {
-                ConfigureSuricataMenuOption::Toggle => {
-                    config.suricata.enabled = !config.suricata.enabled;
-                    if config.suricata.enabled && config.suricata.interfaces.is_empty() {
-                        select_interface_into(config);
-                    }
-                }
-                ConfigureSuricataMenuOption::Interface => select_interface_into(config),
-                ConfigureSuricataMenuOption::SensorName => {
-                    crate::menu::suricata::set_sensor_name(config)
-                }
-                ConfigureSuricataMenuOption::Bpf => crate::menu::suricata::set_bpf_filter(config),
-                ConfigureSuricataMenuOption::FileExtraction => {
-                    extraction_menu::toggle_config(config, &filestore)
-                }
-                ConfigureSuricataMenuOption::FileExtractionForceFilestore => {
-                    extraction_menu::set_force_filestore(config)
-                }
-                ConfigureSuricataMenuOption::FileExtractionMaxSize => {
-                    extraction_menu::set_max_size(config)
-                }
-                ConfigureSuricataMenuOption::FileExtractionRetention => {
-                    extraction_menu::set_retention(config)
-                }
-                ConfigureSuricataMenuOption::FileExtractionRemove => {
-                    run_menu_action_with_pause(
-                        "Failed to remove extracted files",
-                        remove_extracted_files,
-                    );
-                }
-                ConfigureSuricataMenuOption::Return => break,
-            }
+    impl crate::suricata::configuration::Backend for WindowsSuricataBackend {
+        fn interfaces(&self) -> Result<Vec<crate::suricata::configuration::Interface>> {
+            Ok(get_windows_interfaces()?
+                .into_iter()
+                .map(|interface| crate::suricata::configuration::Interface {
+                    name: interface.name,
+                    address: (!interface.ip_address.is_empty()).then_some(interface.ip_address),
+                })
+                .collect())
         }
 
-        Ok(())
-    }
-
-    fn remove_extracted_files() -> Result<()> {
-        if count_named_processes("suricata")? > 0 || managed_process_is_running(ROLE_HOUSEKEEPER)? {
-            bail!(
-                "Suricata or housekeeping is running; stop services before removing extracted files"
-            );
+        fn eve_outputs(&self) -> &'static [crate::config::EveOutput] {
+            &[crate::config::EveOutput::File]
         }
-        let directory = get_suricata_filestore_dir()?;
-        if crate::prompt::confirm_destructive(&format!(
-            "Remove all extracted files in {} (~{})?",
-            directory.display(),
-            crate::menu::fpc::format_size(extraction_menu::dir_size(&directory))
-        )) && directory.exists()
-        {
-            std::fs::remove_dir_all(&directory)
-                .with_context(|| format!("Cannot remove {}", directory.display()))?;
-        }
-        Ok(())
-    }
 
-    fn select_interface_into(config: &mut crate::config::Config) {
-        match prompt_for_interface("Select Interface") {
-            Ok(interface) => config.suricata.interfaces = vec![interface.name],
-            Err(err) if prompt_was_cancelled(&err) => {}
-            Err(err) => {
-                error!("Failed to select a network interface: {}", err);
-                crate::prompt::enter();
+        fn filestore_dir(&self) -> Result<PathBuf> {
+            get_suricata_filestore_dir()
+        }
+
+        fn check_remove_extracted_files(&self) -> Result<()> {
+            if count_named_processes("suricata")? > 0
+                || managed_process_is_running(ROLE_HOUSEKEEPER)?
+            {
+                bail!(
+                    "Suricata or housekeeping is running; stop services before removing extracted files"
+                );
             }
+            Ok(())
+        }
+
+        fn remove_extracted_files(&self) -> Result<()> {
+            self.check_remove_extracted_files()?;
+            let directory = self.filestore_dir()?;
+            if directory.exists() {
+                std::fs::remove_dir_all(&directory)
+                    .with_context(|| format!("Cannot remove {}", directory.display()))?;
+            }
+            Ok(())
         }
     }
 

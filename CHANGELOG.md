@@ -93,6 +93,11 @@
 
 ### Fixed
 
+- Suricata interface discovery errors are reported without closing the
+  configuration menu; canceling interface selection keeps the previous interface
+- Linux extracted-file removal is blocked while Suricata or housekeeping is
+  running or restarting, or when container state cannot be determined. Service
+  state is rechecked after confirmation on both Linux and Windows
 - Rule-management errors are reported without closing the Manage Rules menu;
   Linux rule-update failures now propagate to callers instead of appearing
   successful. Enabled rulesets missing from the source index can still be

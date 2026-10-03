@@ -10,15 +10,10 @@
 use std::path::Path;
 
 use crate::config::FileExtractionConfig;
-use crate::context::Context;
 use crate::menu::fpc::format_size;
 use crate::prelude::*;
 use crate::prompt::Selections;
-
-pub(crate) fn toggle(context: &mut Context) {
-    let dir = crate::suricata::filestore_dir(context);
-    toggle_config(&mut context.config, &dir);
-}
+use crate::suricata::configuration::Backend;
 
 /// Shared settings prompt for native Windows and container installations.
 pub(crate) fn toggle_config(config: &mut Config, dir: &Path) {
@@ -151,10 +146,6 @@ pub(crate) fn set_retention(config: &mut Config) {
 /// Label for removing extracted files left behind after disabling
 /// extraction, or None if there are none. Nothing manages these files
 /// once extraction is disabled.
-pub(crate) fn remove_label(context: &Context) -> Option<String> {
-    remove_label_for(&context.config, &crate::suricata::filestore_dir(context))
-}
-
 pub(crate) fn remove_label_for(config: &Config, dir: &Path) -> Option<String> {
     if config.suricata.file_extraction.enabled {
         return None;
@@ -169,28 +160,25 @@ pub(crate) fn remove_label_for(config: &Config, dir: &Path) -> Option<String> {
     })
 }
 
-pub(crate) fn remove_files(context: &Context) {
-    let suricata = crate::suricata::container_name(context);
-    if context.manager.is_running(&suricata) {
-        error!("Suricata is running; stop or restart services before removing extracted files");
-        crate::prompt::enter();
-        return;
-    }
+pub(crate) fn remove_files(backend: &dyn Backend) -> Result<()> {
+    remove_files_with_confirmation(backend, crate::prompt::confirm_destructive)
+}
 
-    let dir = crate::suricata::filestore_dir(context);
-    let prompt = format!(
+fn remove_files_with_confirmation(
+    backend: &dyn Backend,
+    confirm: impl FnOnce(&str) -> bool,
+) -> Result<()> {
+    backend.check_remove_extracted_files()?;
+    let dir = backend.filestore_dir()?;
+    let question = format!(
         "Remove all extracted files in {} (~{})?",
         dir.display(),
-        format_size(dir_size(&dir))
+        format_size(dir_size(&dir)),
     );
-    if !crate::prompt::confirm_destructive(&prompt) {
-        return;
+    if confirm(&question) {
+        backend.remove_extracted_files()?;
     }
-
-    if let Err(err) = crate::uninstall::remove_directory(context, &dir) {
-        error!("{err:#}");
-        crate::prompt::enter();
-    }
+    Ok(())
 }
 
 /// Total size of the files under a directory, recursively, best
@@ -214,6 +202,80 @@ pub(crate) fn dir_size(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::EveOutput;
+    use crate::suricata::configuration::Interface;
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    struct CleanupBackend {
+        directory: PathBuf,
+        blocked: Cell<bool>,
+        removed: Cell<bool>,
+        fail_remove: bool,
+    }
+
+    impl Backend for CleanupBackend {
+        fn interfaces(&self) -> Result<Vec<Interface>> {
+            unreachable!()
+        }
+        fn eve_outputs(&self) -> &'static [EveOutput] {
+            &[EveOutput::File]
+        }
+        fn filestore_dir(&self) -> Result<PathBuf> {
+            Ok(self.directory.clone())
+        }
+        fn check_remove_extracted_files(&self) -> Result<()> {
+            if self.blocked.get() {
+                bail!("Service is running or cannot be inspected");
+            }
+            Ok(())
+        }
+        fn remove_extracted_files(&self) -> Result<()> {
+            self.check_remove_extracted_files()?;
+            if self.fail_remove {
+                bail!("Removal failed");
+            }
+            self.removed.set(true);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cleanup_requires_confirmation_and_propagates_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut backend = CleanupBackend {
+            directory: directory.path().to_path_buf(),
+            blocked: Cell::new(false),
+            removed: Cell::new(false),
+            fail_remove: false,
+        };
+        remove_files_with_confirmation(&backend, |_| false).unwrap();
+        assert!(!backend.removed.get());
+        backend.blocked.set(true);
+        assert!(remove_files_with_confirmation(&backend, |_| panic!("Must not prompt")).is_err());
+        assert!(!backend.removed.get());
+        backend.blocked.set(false);
+        // Starting a service while the confirmation is open also prevents removal.
+        assert!(
+            remove_files_with_confirmation(&backend, |_| {
+                backend.blocked.set(true);
+                true
+            })
+            .is_err()
+        );
+        assert!(!backend.removed.get());
+        backend.blocked.set(false);
+        backend.fail_remove = true;
+        assert!(remove_files_with_confirmation(&backend, |_| true).is_err());
+        assert!(!backend.removed.get());
+        backend.fail_remove = false;
+        remove_files_with_confirmation(&backend, |question| {
+            assert!(question.contains(&directory.path().display().to_string()));
+            true
+        })
+        .unwrap();
+        assert!(backend.removed.get());
+    }
 
     #[test]
     fn dir_size_is_recursive() {

@@ -461,7 +461,7 @@ fn main() -> Result<()> {
                     0
                 }
                 "configure-suricata" => {
-                    menu::suricata::menu(&mut context)?;
+                    menu::suricata::container_menu(&mut context)?;
                     0
                 }
                 "evebox-agent" => {

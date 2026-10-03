@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: (C) 2024 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+#[cfg(test)]
+mod tests;
+
 use colored::Colorize;
 
 use crate::config::EveOutput;
@@ -8,9 +11,10 @@ use crate::context::Context;
 use crate::menu::file_extraction;
 use crate::prelude::*;
 use crate::prompt::Selections;
+use crate::suricata::configuration::{Backend, ContainerBackend, Interface, container_interfaces};
 use crate::term;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Options {
     Toggle,
     Interface,
@@ -25,134 +29,163 @@ enum Options {
     Exit,
 }
 
-pub(crate) fn menu(context: &mut Context) -> Result<()> {
-    loop {
-        term::clear();
+/// Container entry point. Only runtime paths, names, and cleanup image choices
+/// use the snapshot; settings are edited directly in the caller's config.
+pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
+    let runtime = context.clone();
+    menu(&mut context.config, &ContainerBackend(&runtime))
+}
 
-        let remove_extracted_label = file_extraction::remove_label(context);
-        let config = &mut context.config;
-        let mut selections = crate::prompt::Selections::new();
-
+fn menu_options(config: &Config, backend: &dyn Backend) -> Result<Selections<Options>> {
+    let mut selections = Selections::new();
+    selections.push(
+        Options::Toggle,
         if config.suricata.enabled {
-            selections.push(Options::Toggle, "Disable Suricata");
+            "Disable Suricata"
         } else {
-            selections.push(Options::Toggle, "Enable Suricata");
-        }
+            "Enable Suricata"
+        },
+    );
+    selections.push(
+        Options::Interface,
+        match config.suricata.interfaces.first() {
+            Some(interface) => format!("Select Interface (current: {interface})"),
+            None => "Select Interface".to_string(),
+        },
+    );
+    selections.push(
+        Options::SensorName,
+        format!(
+            "Sensor Name (current: {})",
+            config.suricata.sensor_name.as_deref().unwrap_or("none"),
+        ),
+    );
+    let current_bpf = match &config.suricata.bpf {
+        Some(bpf) => format!(" (current: \"{bpf}\")"),
+        None => " (current: none)".to_string(),
+    };
+    selections.push(Options::Bpf, format!("BPF filter{current_bpf}"));
 
-        if config.suricata.interfaces.is_empty() {
-            selections.push(Options::Interface, "Select Interface");
-        } else {
-            selections.push(
-                Options::Interface,
-                format!(
-                    "Select Interface (current: {})",
-                    config.suricata.interfaces[0]
-                ),
-            );
-        }
-
-        //selections.push(Options::SensorName, "Set Sensor Name");
-
-        selections.push(Options::SensorName, {
-            if let Some(sensor_name) = &config.suricata.sensor_name {
-                format!("Sensor Name (current: {})", sensor_name)
-            } else {
-                "Sensor Name (current: none)".to_string()
-            }
-        });
-
-        let current_bpf = if let Some(bpf) = &config.suricata.bpf {
-            format!(" (current: \"{}\")", bpf)
-        } else {
-            " (current: none)".to_string()
-        };
-        selections.push(Options::Bpf, format!("BPF filter{}", current_bpf));
-
+    // A backend with a fixed output (Windows: file) offers no selector.
+    if backend.eve_outputs().len() > 1 {
         selections.push(
             Options::EveOutput,
             format!(
                 "EVE output (current: {})",
-                config.suricata.eve_output.name()
+                config.suricata.eve_output.name(),
             ),
         );
-
-        if config.suricata.file_extraction.enabled {
-            selections.push(Options::FileExtraction, "Disable File Extraction");
-            selections.push(
-                Options::FileExtractionForceFilestore,
-                file_extraction::force_filestore_label(config),
-            );
-            selections.push(
-                Options::FileExtractionMaxSize,
-                file_extraction::max_size_label(config),
-            );
-            selections.push(
-                Options::FileExtractionRetention,
-                file_extraction::retention_label(config),
-            );
-        } else {
-            selections.push(Options::FileExtraction, "Enable File Extraction");
-            if let Some(label) = remove_extracted_label {
-                selections.push(Options::FileExtractionRemove, label);
-            }
-        }
-
-        selections.push(Options::Exit, "Return");
-
-        match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
-            .with_page_size(selections.page_size())
-            .prompt()
-        {
-            Ok(selection) => match selection.tag {
-                Options::Toggle => {
-                    toggle_enabled(config);
-                }
-                Options::Interface => {
-                    let interface = select_interface("Select Interface")?;
-                    config.suricata.interfaces = vec![interface.clone()];
-                }
-                Options::SensorName => {
-                    set_sensor_name(config);
-                }
-                Options::Bpf => {
-                    set_bpf_filter(config);
-                }
-                Options::EveOutput => {
-                    set_eve_output(config)?;
-                }
-                Options::FileExtraction => file_extraction::toggle(context),
-                Options::FileExtractionForceFilestore => {
-                    file_extraction::set_force_filestore(config)
-                }
-                Options::FileExtractionMaxSize => file_extraction::set_max_size(config),
-                Options::FileExtractionRetention => file_extraction::set_retention(config),
-                Options::FileExtractionRemove => file_extraction::remove_files(context),
-                Options::Exit => break,
-            },
-            Err(_) => break,
-        }
     }
 
+    if config.suricata.file_extraction.enabled {
+        selections.push(Options::FileExtraction, "Disable File Extraction");
+        selections.push(
+            Options::FileExtractionForceFilestore,
+            file_extraction::force_filestore_label(config),
+        );
+        selections.push(
+            Options::FileExtractionMaxSize,
+            file_extraction::max_size_label(config),
+        );
+        selections.push(
+            Options::FileExtractionRetention,
+            file_extraction::retention_label(config),
+        );
+    } else {
+        selections.push(Options::FileExtraction, "Enable File Extraction");
+        if let Some(label) = file_extraction::remove_label_for(config, &backend.filestore_dir()?) {
+            selections.push(Options::FileExtractionRemove, label);
+        }
+    }
+    selections.push(Options::Exit, "Return");
+    Ok(selections)
+}
+
+pub(crate) fn menu(config: &mut Config, backend: &dyn Backend) -> Result<()> {
+    loop {
+        term::clear();
+        let selections = menu_options(config, backend)?;
+        let selection =
+            match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
+                .with_page_size(selections.page_size())
+                .prompt()
+            {
+                Ok(selection) => selection,
+                Err(
+                    inquire::InquireError::OperationCanceled
+                    | inquire::InquireError::OperationInterrupted,
+                ) => break,
+                Err(err) => return Err(err.into()),
+            };
+        if selection.tag == Options::Exit {
+            break;
+        }
+        if let Err(err) = run_action(config, backend, selection.tag)
+            && !prompt_was_cancelled(&err)
+        {
+            error!("Suricata configuration failed: {err:#}");
+            crate::prompt::enter();
+        }
+    }
     Ok(())
 }
 
-fn set_eve_output(config: &mut Config) -> Result<()> {
+fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Result<()> {
+    match action {
+        Options::Toggle => toggle_enabled(config, || {
+            select_interface_from("Select Interface", backend.interfaces()?)
+        })?,
+        Options::Interface => {
+            let interface = select_interface_from("Select Interface", backend.interfaces()?)?;
+            config.suricata.interfaces = vec![interface];
+        }
+        Options::SensorName => set_sensor_name(config),
+        Options::Bpf => set_bpf_filter(config),
+        Options::EveOutput => set_eve_output(config, backend.eve_outputs())?,
+        Options::FileExtraction => {
+            file_extraction::toggle_config(config, &backend.filestore_dir()?);
+        }
+        Options::FileExtractionForceFilestore => file_extraction::set_force_filestore(config),
+        Options::FileExtractionMaxSize => file_extraction::set_max_size(config),
+        Options::FileExtractionRetention => file_extraction::set_retention(config),
+        Options::FileExtractionRemove => {
+            if config.suricata.file_extraction.enabled {
+                bail!("Disable file extraction before removing extracted files");
+            }
+            file_extraction::remove_files(backend)?;
+        }
+        Options::Exit => {}
+    }
+    Ok(())
+}
+
+fn prompt_was_cancelled(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<inquire::InquireError>(),
+        Some(
+            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted
+        )
+    )
+}
+
+fn set_eve_output(config: &mut Config, outputs: &[EveOutput]) -> Result<()> {
+    if outputs.len() < 2 {
+        return Ok(());
+    }
     let mut selections = Selections::new();
-    selections.push(EveOutput::UnixStream, EveOutput::UnixStream.name());
-    selections.push(EveOutput::File, EveOutput::File.name());
-
-    let current = match config.suricata.eve_output {
-        EveOutput::UnixStream => 0,
-        EveOutput::File => 1,
-    };
-
+    for output in outputs {
+        selections.push(*output, output.name());
+    }
+    let current = outputs
+        .iter()
+        .position(|output| *output == config.suricata.eve_output)
+        .unwrap_or(0);
     if let Some(selection) = inquire::Select::new("Select EVE output", selections.to_vec())
         .with_starting_cursor(current)
         .prompt_skippable()?
     {
         config.suricata.eve_output = selection.tag;
     }
-
     Ok(())
 }
 
@@ -176,31 +209,39 @@ pub(crate) fn set_sensor_name(config: &mut Config) {
     }
 }
 
-fn toggle_enabled(config: &mut Config) {
+fn toggle_enabled(config: &mut Config, select: impl FnOnce() -> Result<String>) -> Result<()> {
     config.suricata.enabled = !config.suricata.enabled;
-    if config.suricata.enabled
-        && config.suricata.interfaces.is_empty()
-        && let Ok(interface) = select_interface("Select Interface")
-    {
-        config.suricata.interfaces = vec![interface];
+    if config.suricata.enabled && config.suricata.interfaces.is_empty() {
+        config.suricata.interfaces = vec![select()?];
     }
+    Ok(())
 }
 
+/// The container wizard uses the same interface prompt as the shared menu.
 pub(crate) fn select_interface(prompt: &str) -> Result<String> {
-    let interfaces = evectl::system::get_interfaces().unwrap();
+    select_interface_from(prompt, container_interfaces()?)
+}
 
-    let mut selections = Selections::with_index();
-    for interface in &interfaces {
-        let address = interface
-            .addr4
-            .first()
-            .map(|s| format!("-- {}", s.green().italic()))
-            .unwrap_or("".to_string());
-        selections.push(&interface.name, format!("{} {}", interface.name, address));
+fn interface_choices(interfaces: Vec<Interface>) -> Result<Selections<String>> {
+    if interfaces.is_empty() {
+        bail!("No network interfaces found");
     }
+    let mut selections = Selections::with_index();
+    for interface in interfaces {
+        let address = interface
+            .address
+            .map(|address| format!("-- {}", address.green().italic()))
+            .unwrap_or_default();
+        let label = format!("{} {}", interface.name, address);
+        selections.push(interface.name, label);
+    }
+    Ok(selections)
+}
 
-    let iface = inquire::Select::new(prompt, selections.to_vec()).prompt()?;
-    Ok(iface.tag.to_string())
+fn select_interface_from(prompt: &str, interfaces: Vec<Interface>) -> Result<String> {
+    let choices = interface_choices(interfaces)?;
+    let selection = inquire::Select::new(prompt, choices.to_vec()).prompt()?;
+    Ok(selection.tag)
 }
 
 pub(crate) fn set_bpf_filter(config: &mut Config) {
