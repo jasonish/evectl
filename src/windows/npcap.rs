@@ -3,10 +3,10 @@
 
 //! Npcap installation, upgrade, and removal.
 
+use super::component::Component;
 use super::install::{download_file, launch_windows_installer, wait_for_installer_completion};
 use super::paths::{Paths, ensure_dir};
 use super::runtime::powershell;
-use super::version::compare_versions;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -109,67 +109,33 @@ fn is_npcap_installed() -> bool {
     .any(|path| Path::new(path).exists())
 }
 
-pub(super) fn npcap_upgrade_needed() -> Result<bool> {
-    if !is_npcap_installed() {
-        return Ok(true);
+pub(super) struct Npcap;
+
+impl Component for Npcap {
+    fn name(&self) -> &'static str {
+        "Npcap"
     }
 
-    let Some(installed_version) = npcap_installed_version()? else {
-        return Ok(false);
-    };
-
-    let Some(comparison) = compare_versions(&installed_version, NPCAP_VERSION) else {
-        return Ok(false);
-    };
-
-    Ok(comparison == std::cmp::Ordering::Less)
-}
-
-pub(super) fn maybe_upgrade_npcap(paths: &Paths) -> Result<()> {
-    if !is_npcap_installed() {
-        info!(
-            "Npcap was not detected. Installing version {} before Suricata upgrade...",
-            NPCAP_VERSION
-        );
-        return install_or_upgrade_npcap(paths, true);
+    fn bundled_version(&self) -> &'static str {
+        NPCAP_VERSION
     }
 
-    let installed_version = match npcap_installed_version()? {
-        Some(version) => version,
-        None => {
-            info!(
-                "Npcap is installed, but the installed version could not be determined. Skipping automatic Npcap upgrade."
-            );
-            return Ok(());
-        }
-    };
+    fn installed(&self, _paths: &Paths) -> bool {
+        is_npcap_installed()
+    }
 
-    let comparison = match compare_versions(&installed_version, NPCAP_VERSION) {
-        Some(comparison) => comparison,
-        None => {
-            info!(
-                "Npcap version comparison failed (installed: {}, bundled: {}). Skipping automatic Npcap upgrade.",
-                installed_version, NPCAP_VERSION
-            );
-            return Ok(());
-        }
-    };
+    fn installed_version(&self, _paths: &Paths) -> Result<Option<String>> {
+        npcap_installed_version()
+    }
 
-    match comparison {
-        std::cmp::Ordering::Less => {
-            info!(
-                "Npcap {} is older than bundled {}. Upgrading Npcap...",
-                installed_version, NPCAP_VERSION
-            );
-            install_or_upgrade_npcap(paths, true)
-        }
-        std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
-            info!(
-                "Npcap {} meets or exceeds bundled {}. Skipping Npcap upgrade.",
-                installed_version, NPCAP_VERSION
-            );
-            Ok(())
-        }
+    /// Npcap may have been installed by someone else; leave it alone
+    /// unless it is known to be older.
+    fn reinstall_unknown_version(&self) -> bool {
+        false
+    }
+
+    fn install(&self, paths: &Paths, upgrade: bool) -> Result<()> {
+        install_or_upgrade_npcap(paths, upgrade)
     }
 }
 

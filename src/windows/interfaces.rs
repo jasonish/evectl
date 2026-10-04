@@ -247,17 +247,6 @@ fn find_windows_interface_by_name(name: &str) -> Result<Option<WindowsInterface>
         .find(|interface| interface.name.eq_ignore_ascii_case(&name)))
 }
 
-fn find_windows_interface_by_guid(guid: &str) -> Result<Option<WindowsInterface>> {
-    let guid = match normalize_interface_guid(guid) {
-        Some(guid) => guid,
-        None => return Ok(None),
-    };
-
-    Ok(windows_interfaces()?.into_iter().find(|interface| {
-        normalize_interface_guid(&interface.guid).as_deref() == Some(guid.as_str())
-    }))
-}
-
 pub(super) fn configured_interface_guid(paths: &Paths) -> Result<Option<String>> {
     let value = match configured_interface_value(paths)? {
         Some(value) => value,

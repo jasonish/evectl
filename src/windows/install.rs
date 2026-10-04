@@ -3,19 +3,18 @@
 
 //! Component installation and upgrades.
 
+use super::component::{Upgrade, upgrade, upgrade_needed};
 use super::evebox::Download as EveBoxDownload;
 use super::evebox::{
     EVEBOX_CHANNEL_MARKER, EVEBOX_VERSION_MARKER, find_evebox_exe, replace_evebox_installation,
 };
 use super::menu::wizard;
-use super::npcap::{install_or_upgrade_npcap, maybe_upgrade_npcap, npcap_upgrade_needed};
+use super::npcap::{Npcap, install_or_upgrade_npcap};
 use super::paths::{Paths, load_evectl_config};
 use super::stack::{
     capture_restart_plan, evebox_server_url, restart_managed_components, stop_stack,
 };
-use super::suricata::{
-    install_or_upgrade_suricata, maybe_upgrade_suricata, suricata_upgrade_needed,
-};
+use super::suricata::{Suricata, install_or_upgrade_suricata};
 use super::update::UpdateOutcome;
 use crate::config::EveBoxChannel;
 use crate::prelude::*;
@@ -26,16 +25,16 @@ use std::process::Command;
 pub(super) const START_SHORTCUT_NAME: &str = "EveCtl Start.cmd";
 pub(super) const EVEBOX_SHORTCUT_NAME: &str = "EveBox.url";
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default)]
 struct UpgradePlan {
-    npcap: bool,
-    suricata: bool,
+    npcap: Option<Upgrade>,
+    suricata: Option<Upgrade>,
     evebox: bool,
 }
 
 impl UpgradePlan {
-    fn any(self) -> bool {
-        self.npcap || self.suricata || self.evebox
+    fn any(&self) -> bool {
+        self.npcap.is_some() || self.suricata.is_some() || self.evebox
     }
 }
 
@@ -144,7 +143,7 @@ pub(super) fn desktop_dir() -> Result<PathBuf> {
     dirs::desktop_dir().ok_or_else(|| anyhow!("Could not find desktop directory"))
 }
 
-pub(super) fn add_shortcuts(paths: &Paths) -> Result<()> {
+pub(super) fn add_shortcuts(config: &Config) -> Result<()> {
     let desktop_dir = desktop_dir()?;
     let evectl_exe =
         std::env::current_exe().context("Failed to locate current EveCtl executable")?;
@@ -163,7 +162,7 @@ pub(super) fn add_shortcuts(paths: &Paths) -> Result<()> {
         start_shortcut.display()
     ))?;
 
-    let evebox_url = evebox_server_url(&load_evectl_config(paths)?);
+    let evebox_url = evebox_server_url(config);
     let evebox_contents = format!("[InternetShortcut]\r\nURL={}\r\n", evebox_url);
     std::fs::write(&evebox_shortcut, evebox_contents).context(format!(
         "Failed to write desktop shortcut {}",
@@ -220,8 +219,16 @@ fn build_upgrade_plan(paths: &Paths, config: &crate::config::Config) -> Result<U
     let use_evebox = config.evebox_server.enabled || config.evebox_agent.enabled;
 
     Ok(UpgradePlan {
-        npcap: use_suricata && npcap_upgrade_needed()?,
-        suricata: use_suricata && suricata_upgrade_needed(paths)?,
+        npcap: if use_suricata {
+            upgrade_needed(&Npcap, paths)?
+        } else {
+            None
+        },
+        suricata: if use_suricata {
+            upgrade_needed(&Suricata, paths)?
+        } else {
+            None
+        },
         // Always refresh the selected channel on an explicit update. This
         // covers same-version development revisions and intentional channel
         // switches (including development -> an older stable release).
@@ -250,11 +257,11 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
     }
 
     let upgrade_result = (|| {
-        if plan.npcap {
-            maybe_upgrade_npcap(paths)?;
+        if let Some(reason) = &plan.npcap {
+            upgrade(&Npcap, paths, reason)?;
         }
-        if plan.suricata {
-            maybe_upgrade_suricata(paths)?;
+        if let Some(reason) = &plan.suricata {
+            upgrade(&Suricata, paths, reason)?;
         }
         if plan.evebox {
             install_or_upgrade_evebox(paths, true, config.windows.evebox_channel)?;
@@ -264,7 +271,7 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
 
     if let Err(err) = upgrade_result {
         if restart_plan.any()
-            && let Err(restart_err) = restart_managed_components(paths, &restart_plan)
+            && let Err(restart_err) = restart_managed_components(paths, &config, &restart_plan)
         {
             return Err(anyhow!(
                 "Upgrade failed: {}\nAdditionally failed to restart previously running services: {}",
@@ -276,7 +283,7 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
     }
 
     if restart_plan.any() {
-        restart_managed_components(paths, &restart_plan)?;
+        restart_managed_components(paths, &config, &restart_plan)?;
     }
 
     Ok(())
@@ -401,8 +408,8 @@ mod tests {
                 for _ in 0..2 {
                     let plan = build_upgrade_plan(&paths, &config).unwrap();
                     assert_eq!(plan.evebox, server || agent);
-                    assert!(!plan.npcap);
-                    assert!(!plan.suricata);
+                    assert!(plan.npcap.is_none());
+                    assert!(plan.suricata.is_none());
                 }
             }
         }

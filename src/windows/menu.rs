@@ -351,7 +351,7 @@ impl crate::menu::configure::Backend for WindowsConfigureBackend<'_> {
             }
             CONFIGURE_SHORTCUTS => {
                 run_menu_action_with_pause("Failed to add desktop shortcuts", || {
-                    add_shortcuts(self.paths)
+                    add_shortcuts(config)
                 })
             }
             _ => bail!("Unknown configuration option: {id}"),

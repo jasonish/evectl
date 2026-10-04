@@ -3,20 +3,22 @@
 
 //! Suricata installation, configuration, and launch.
 
+use super::component::Component;
 use super::install::download_file;
-use super::paths::{Paths, ensure_dir, load_evectl_config};
+use super::paths::{Paths, ensure_dir};
 use super::runtime::{
     Role, RuntimeMetadata, is_pid_running, launch_managed, list_named_processes,
     managed_process_is_running, powershell, powershell_output, process_matches_exe,
     stop_managed_process,
 };
-use super::version::compare_versions;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const SURICATA_VERSION: &str = "8.0.6-1";
+/// The bundled Suricata release and its Windows package revision.
+pub(super) const SURICATA_VERSION: &str = "8.0.6";
+const SURICATA_PACKAGE_VERSION: &str = "8.0.6-1";
 const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
     r"C:\Program Files\Suricata\suricata.exe",
     r"C:\Program Files (x86)\Suricata\suricata.exe",
@@ -310,90 +312,34 @@ fn is_suricata_installed(paths: &Paths) -> bool {
     false
 }
 
-pub(super) fn suricata_upgrade_needed(paths: &Paths) -> Result<bool> {
-    let target_version = suricata_version_for_comparison();
+pub(super) struct Suricata;
 
-    if !is_suricata_managed_installed(paths) {
-        return Ok(true);
+impl Component for Suricata {
+    fn name(&self) -> &'static str {
+        "Suricata"
     }
 
-    let installed_version = match suricata_installed_version(paths)? {
-        Some(version) => version,
-        None => return Ok(true),
-    };
-
-    let Some(comparison) = compare_versions(&installed_version, target_version) else {
-        return Ok(false);
-    };
-
-    Ok(comparison == std::cmp::Ordering::Less)
-}
-
-pub(super) fn maybe_upgrade_suricata(paths: &Paths) -> Result<()> {
-    let target_version = suricata_version_for_comparison();
-    let managed_installed = is_suricata_managed_installed(paths);
-    let any_installed = is_suricata_installed(paths);
-
-    if !managed_installed {
-        if any_installed {
-            info!(
-                "A non-evectl Suricata installation was detected. Installing evectl-managed version {}...",
-                SURICATA_VERSION
-            );
-        } else {
-            info!(
-                "Suricata was not detected. Installing version {}...",
-                SURICATA_VERSION
-            );
-        }
-        return install_or_upgrade_suricata(paths, true);
+    fn bundled_version(&self) -> &'static str {
+        SURICATA_VERSION
     }
 
-    let installed_version = match suricata_installed_version(paths)? {
-        Some(version) => version,
-        None => {
-            info!(
-                "Suricata is installed in the evectl-managed directory, but the version could not be determined. Reinstalling bundled version {}.",
-                SURICATA_VERSION
-            );
-            return install_or_upgrade_suricata(paths, true);
-        }
-    };
-
-    let comparison = match compare_versions(&installed_version, target_version) {
-        Some(comparison) => comparison,
-        None => {
-            info!(
-                "Suricata version comparison failed (installed: {}, bundled: {}, comparison target: {}). Skipping automatic Suricata upgrade.",
-                installed_version, SURICATA_VERSION, target_version
-            );
-            return Ok(());
-        }
-    };
-
-    match comparison {
-        std::cmp::Ordering::Less => {
-            info!(
-                "Suricata {} is older than bundled {} (package {}). Upgrading Suricata...",
-                installed_version, target_version, SURICATA_VERSION
-            );
-            install_or_upgrade_suricata(paths, true)
-        }
-        std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
-            info!(
-                "Suricata {} meets or exceeds bundled {} (package {}). Skipping Suricata upgrade.",
-                installed_version, target_version, SURICATA_VERSION
-            );
-            Ok(())
-        }
+    fn installed(&self, paths: &Paths) -> bool {
+        is_suricata_managed_installed(paths)
     }
-}
 
-pub(super) fn suricata_version_for_comparison() -> &'static str {
-    SURICATA_VERSION
-        .split('-')
-        .next()
-        .unwrap_or(SURICATA_VERSION)
+    fn installed_version(&self, paths: &Paths) -> Result<Option<String>> {
+        suricata_installed_version(paths)
+    }
+
+    /// An evectl-managed installation without a version marker predates
+    /// the marker; replace it with the bundled version.
+    fn reinstall_unknown_version(&self) -> bool {
+        true
+    }
+
+    fn install(&self, paths: &Paths, upgrade: bool) -> Result<()> {
+        install_or_upgrade_suricata(paths, upgrade)
+    }
 }
 
 fn version_marker_path(paths: &Paths) -> PathBuf {
@@ -434,7 +380,10 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
 
     if upgrade {
         if managed_installed {
-            info!("Upgrading Suricata to version {}...", SURICATA_VERSION);
+            info!(
+                "Upgrading Suricata to version {}...",
+                SURICATA_PACKAGE_VERSION
+            );
 
             if let Err(err) = stop_managed_process(paths, Role::Suricata) {
                 warn!("Failed to stop running Suricata processes: {}", err);
@@ -444,21 +393,21 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
         } else if any_installed {
             info!(
                 "A non-evectl Suricata installation was detected. Installing evectl-managed version {} instead...",
-                SURICATA_VERSION
+                SURICATA_PACKAGE_VERSION
             );
         } else {
             info!(
                 "Suricata was not detected. Installing version {} instead...",
-                SURICATA_VERSION
+                SURICATA_PACKAGE_VERSION
             );
         }
     }
 
     let url = format!(
         "https://www.openinfosecfoundation.org/download/windows/Suricata-{}-64bit.msi",
-        SURICATA_VERSION
+        SURICATA_PACKAGE_VERSION
     );
-    let filename = format!("Suricata-{}-64bit.msi", SURICATA_VERSION);
+    let filename = format!("Suricata-{}-64bit.msi", SURICATA_PACKAGE_VERSION);
 
     let cache_dir = paths.downloads_dir();
     std::fs::create_dir_all(&cache_dir).context(format!(
@@ -480,7 +429,7 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
     patch_suricata_config_for_local_install(&install_dir)?;
 
     let marker_path = version_marker_path(paths);
-    std::fs::write(&marker_path, suricata_version_for_comparison()).context(format!(
+    std::fs::write(&marker_path, SURICATA_VERSION).context(format!(
         "Failed to write Suricata version marker {}",
         marker_path.display()
     ))?;
@@ -495,7 +444,7 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
 
     info!(
         "Suricata {} extracted to {}",
-        SURICATA_VERSION,
+        SURICATA_PACKAGE_VERSION,
         install_dir.display()
     );
 
@@ -551,7 +500,11 @@ pub(super) fn uninstall_suricata(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Command> {
+pub(super) fn build_suricata_command(
+    paths: &Paths,
+    config: &Config,
+    guid: &str,
+) -> Result<Command> {
     if !is_suricata_installed(paths) {
         bail!("Suricata is not installed. Please install it first using 'evectl install'");
     }
@@ -616,18 +569,22 @@ pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Comman
         );
     }
 
-    let config = load_evectl_config(paths)?;
-
-    if let Some(sensor_name) = &config.suricata.sensor_name {
-        command.arg("--set");
-        command.arg(format!("sensor-name={}", sensor_name));
+    let dump = suricata_dump_config(&command, &suricata_dir)?;
+    configure_suricata_command(&mut command, paths, config, &dump)?;
+    if super::fpc::effective_config(config).enabled {
+        ensure_dir(&paths.suricata_pcap_dir())?;
     }
 
-    let spool = paths.suricata_pcap_dir();
+    Ok(command)
+}
+
+/// Suricata's view of the installed configuration, from which the
+/// outputs to adjust are discovered.
+fn suricata_dump_config(command: &Command, suricata_dir: &Path) -> Result<String> {
     let mut dump_command = Command::new(command.get_program());
     dump_command.args(command.get_args());
     dump_command.arg("--dump-config");
-    dump_command.current_dir(&suricata_dir);
+    dump_command.current_dir(suricata_dir);
     let output = dump_command
         .output()
         .context("Failed to dump Suricata configuration for packet capture and file extraction")?;
@@ -638,26 +595,35 @@ pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Comman
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let fpc = super::fpc::effective_config(&config);
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+/// The arguments derived from the EveCtl configuration: sensor name,
+/// packet capture, file extraction, and the BPF filter.
+pub(super) fn configure_suricata_command(
+    command: &mut Command,
+    paths: &Paths,
+    config: &Config,
+    dump: &str,
+) -> Result<()> {
+    if let Some(sensor_name) = &config.suricata.sensor_name {
+        command.arg("--set");
+        command.arg(format!("sensor-name={}", sensor_name));
+    }
+
+    let fpc = super::fpc::effective_config(config);
     if config.fpc.enabled && !fpc.enabled {
         warn!("Full packet capture requires Suricata and either the EveBox server or agent");
     }
-    super::fpc::configure_command(
-        &mut command,
-        std::str::from_utf8(&output.stdout)?,
-        &fpc,
-        &spool,
-    )?;
-    if fpc.enabled {
-        ensure_dir(&spool)?;
-    }
+    super::fpc::configure_command(command, dump, &fpc, &paths.suricata_pcap_dir())?;
+
     let extraction = crate::config::FileExtractionConfig {
-        enabled: super::file_extraction::enabled(&config),
+        enabled: super::file_extraction::enabled(config),
         ..config.suricata.file_extraction.clone()
     };
     super::file_extraction::configure_command(
-        &mut command,
-        std::str::from_utf8(&output.stdout)?,
+        command,
+        dump,
         &extraction,
         &paths.suricata_filestore_dir(),
     )?;
@@ -667,7 +633,7 @@ pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Comman
         command.arg(bpf);
     }
 
-    Ok(command)
+    Ok(())
 }
 
 pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
@@ -686,10 +652,14 @@ pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn start_suricata_background(paths: &Paths, guid: &str) -> Result<RuntimeMetadata> {
+pub(super) fn start_suricata_background(
+    paths: &Paths,
+    config: &Config,
+    guid: &str,
+) -> Result<RuntimeMetadata> {
     ensure_suricata_start_allowed(paths)?;
 
-    let mut command = build_suricata_command(paths, guid)?;
+    let mut command = build_suricata_command(paths, config, guid)?;
     launch_managed(paths, Role::Suricata, &mut command, None)
 }
 
@@ -718,4 +688,51 @@ pub(super) fn wait_for_suricata_pid_readiness(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configuration_arguments_follow_the_dump_and_config() {
+        let paths = Paths::new(PathBuf::from(r"C:\evectl"));
+        let dump = "outputs.0 = eve-log\noutputs.1 = pcap-log\noutputs.2 = file-store\n";
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.suricata.sensor_name = Some("sensor".to_string());
+        config.suricata.bpf = Some("not port 22".to_string());
+
+        let mut command = Command::new("suricata.exe");
+        configure_suricata_command(&mut command, &paths, &config, dump).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--set",
+                "sensor-name=sensor",
+                "--set",
+                "outputs.1.pcap-log.enabled=false",
+                "--set",
+                "outputs.2.file-store.enabled=false",
+                "not port 22",
+            ]
+        );
+
+        // Capture needs a service to serve the spool.
+        config.fpc.enabled = true;
+        config.evebox_server.enabled = true;
+        let mut command = Command::new("suricata.exe");
+        configure_suricata_command(&mut command, &paths, &config, dump).unwrap();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"outputs.1.pcap-log.enabled=true".to_string()));
+        assert!(args.contains(&"outputs.1.pcap-log.dir=C:/evectl/suricata/log/pcap".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("not port 22"));
+    }
 }

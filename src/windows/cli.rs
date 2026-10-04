@@ -178,7 +178,7 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
         Some(Commands::Install) => install(&paths),
         Some(Commands::Uninstall { config, all, yes }) => uninstall(&paths, config, all, yes),
         Some(Commands::ListInterfaces) => list_interfaces(),
-        Some(Commands::AddShortcuts) => add_shortcuts(&paths),
+        Some(Commands::AddShortcuts) => add_shortcuts(&load_evectl_config(&paths)?),
         Some(Commands::Config { command }) => match command {
             ConfigCommands::SetInterface => config_set_interface(&paths),
             ConfigCommands::SetEveBoxChannel { channel } => {

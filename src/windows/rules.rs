@@ -3,14 +3,14 @@
 
 //! Suricata rule management through suricatax-rules.
 
-use super::paths::Paths;
+use super::component::parse_version_parts;
+use super::paths::{Paths, load_evectl_config};
 use super::runtime::{Role, stop_managed_process};
 use super::stack::capture_restart_plan;
 use super::suricata::{
-    find_suricata_executable, start_suricata_background, suricata_installed_version,
-    suricata_version_for_comparison, wait_for_suricata_pid_readiness,
+    SURICATA_VERSION, find_suricata_executable, start_suricata_background,
+    suricata_installed_version, wait_for_suricata_pid_readiness,
 };
-use super::version::parse_version_parts;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -220,7 +220,7 @@ fn restart_suricata_for_rules(paths: &Paths) -> Result<()> {
     info!("Restarting Suricata to load the updated rules");
     let result = (|| {
         stop_managed_process(paths, Role::Suricata)?;
-        let suricata = start_suricata_background(paths, guid)?;
+        let suricata = start_suricata_background(paths, &load_evectl_config(paths)?, guid)?;
         wait_for_suricata_pid_readiness(paths, suricata.pid, Path::new(&suricata.exe_path))
     })();
     result.map_err(|err| anyhow!("Rules updated, but restarting Suricata failed: {}", err))
@@ -233,14 +233,14 @@ fn detect_suricata_version_for_rules_update(paths: &Paths) -> Option<String> {
 
     match suricata_installed_version(paths) {
         Ok(Some(version)) => normalize_suricata_version(&version)
-            .or_else(|| normalize_suricata_version(suricata_version_for_comparison())),
-        Ok(None) => normalize_suricata_version(suricata_version_for_comparison()),
+            .or_else(|| normalize_suricata_version(SURICATA_VERSION)),
+        Ok(None) => normalize_suricata_version(SURICATA_VERSION),
         Err(err) => {
             warn!(
                 "Failed to determine installed Suricata version for rules update: {}",
                 err
             );
-            normalize_suricata_version(suricata_version_for_comparison())
+            normalize_suricata_version(SURICATA_VERSION)
         }
     }
 }

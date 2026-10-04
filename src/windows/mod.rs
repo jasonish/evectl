@@ -9,6 +9,9 @@
 mod cli;
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
+mod component;
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod evebox;
 #[cfg(any(windows, test))]
 mod file_extraction;
@@ -39,8 +42,6 @@ mod suricata;
 mod uninstall;
 #[cfg(windows)]
 mod update;
-#[cfg(windows)]
-mod version;
 
 #[cfg(windows)]
 pub(crate) use cli::{Args, Commands, main};
