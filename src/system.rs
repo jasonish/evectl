@@ -72,15 +72,15 @@ pub(crate) struct Interface {
 #[cfg(target_os = "linux")]
 pub(crate) fn get_interface_ip(interface: &str) -> Result<String> {
     let interfaces = get_interfaces()?;
-    for iface in interfaces {
-        if iface.name == interface {
-            if let Some(addr) = iface.addr4.first() {
-                return Ok(addr.clone());
-            }
-            bail!("Interface {} has no IPv4 address", interface);
-        }
-    }
-    bail!("Interface {} not found", interface)
+    let iface = interfaces
+        .iter()
+        .find(|iface| iface.name == interface)
+        .ok_or_else(|| anyhow!("Interface {} not found", interface))?;
+    iface
+        .addr4
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow!("Interface {} has no IPv4 address", interface))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -98,6 +98,35 @@ pub(crate) fn resolve_interface_or_ip(value: &str) -> Result<String> {
         return Ok(value.to_string());
     }
     get_interface_ip(value)
+}
+
+/// The IPv4 address the system is most likely reachable at: the
+/// first address of the first interface that is up, falling back to
+/// the loopback address.
+pub(crate) fn primary_ipv4() -> Option<String> {
+    let interfaces = match get_interfaces() {
+        Ok(interfaces) => interfaces,
+        Err(err) => {
+            error!("Failed to get system interfaces: {err}");
+            return None;
+        }
+    };
+    let mut addr: Option<&String> = None;
+    for interface in &interfaces {
+        // Only consider IPv4 addresses for now.
+        if interface.addr4.is_empty() {
+            continue;
+        }
+        // Loopback is only a placeholder until an interface that is up
+        // provides a better address.
+        let replace = (interface.name == "lo" && addr.is_none())
+            || (interface.status == "UP"
+                && addr.is_none_or(|previous| previous.starts_with("127")));
+        if replace {
+            addr = interface.addr4.first();
+        }
+    }
+    addr.cloned()
 }
 
 /// Get the network interfaces and their addresses.
@@ -125,18 +154,21 @@ pub(crate) fn get_interfaces() -> Result<Vec<Interface>> {
         if line.trim().is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.split(' ').filter(|part| !part.is_empty()).collect();
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let [name, status, addrs @ ..] = parts.as_slice() else {
+            debug!("Ignoring unexpected 'ip' output: {line}");
+            continue;
+        };
 
         // Get the name minus the @suffix which isn't supported by
         // Suricata.
-        let name = parts[0].split('@').next().unwrap();
-        let status = &parts[1];
+        let name = name.split('@').next().unwrap_or(name);
         let mut interface = Interface {
             name: name.to_string(),
             status: status.to_string(),
             ..Default::default()
         };
-        for addr in &parts[2..] {
+        for addr in addrs {
             let addr = addr.split('/').next().unwrap_or(addr);
             if addr.contains('.') {
                 interface.addr4.push(addr.to_string());

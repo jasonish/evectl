@@ -113,7 +113,7 @@ pub(crate) fn remove_engine_log(context: &Context) {
 pub(crate) fn last_rule_update(context: &Context) -> Option<String> {
     let path = lib_dir(context).join("rules").join("suricata.rules");
     let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
-    Some(crate::format_time_with_age(
+    Some(crate::status::format_time_with_age(
         modified,
         std::time::SystemTime::now(),
     ))

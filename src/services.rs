@@ -9,8 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crate::UpdateContinuationArgs;
 use crate::prelude::*;
+use crate::update::UpdateContinuationArgs;
 use crate::{elastic, evebox, housekeeper, menu, rules, suricata};
 
 /// A service EveCtl may run.
@@ -171,7 +171,7 @@ fn spawn_logged(mut command: Command, label: &'static str, tx: &Sender<bool>) ->
         .stderr(Stdio::piped())
         .spawn()
         .inspect_err(|err| error!("Failed to spawn {label} process: {err}"))?;
-    crate::process_output_handler(&mut child, label, tx.clone());
+    crate::process_output::pipe_output(&mut child, label, true, Some(tx.clone()));
     Ok(child)
 }
 
@@ -459,7 +459,7 @@ impl MainMenuBackend<'_> {
 impl menu::main::Backend for MainMenuBackend<'_> {
     fn status(&mut self, config: &Config) -> menu::main::Status {
         let context = self.context(config);
-        crate::log_status(context);
+        crate::status::log_status(context);
         let running = enabled_containers(context)
             .iter()
             .any(|(_, name)| context.manager.is_running(name));
@@ -511,7 +511,7 @@ impl menu::main::Backend for MainMenuBackend<'_> {
     fn update(&mut self, config: &Config) -> Result<menu::main::UpdateOutcome> {
         // A self-update replaces the process and never returns.
         let args = self.update_continuation_args;
-        crate::update(self.context(config), args, false, true);
+        crate::update::update(self.context(config), args, false, true);
         Ok(menu::main::UpdateOutcome::Completed)
     }
 
