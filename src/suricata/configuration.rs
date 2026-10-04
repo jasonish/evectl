@@ -26,7 +26,7 @@ pub(crate) trait Backend {
     fn remove_extracted_files(&self) -> Result<()>;
 }
 
-pub(crate) fn container_interfaces() -> Result<Vec<Interface>> {
+fn container_interfaces() -> Result<Vec<Interface>> {
     Ok(evectl::system::get_interfaces()?
         .into_iter()
         .map(|interface| Interface {

@@ -544,167 +544,41 @@ mod imp {
         }
     }
 
-    #[derive(Debug, Clone)]
-    enum InstallType {
-        Standalone,
-        Agent,
-        Server,
-        Custom,
-        Help,
-    }
-
-    /// First-run setup wizard, mirroring the Linux wizard: choose an
-    /// installation type, answer all questions up front, then install.
     fn wizard(config: &mut crate::config::Config) -> Result<()> {
-        let mut selections = crate::prompt::Selections::new();
-        selections.push(
-            InstallType::Standalone,
-            "Standalone: Suricata + EveBox Server",
-        );
-        selections.push(InstallType::Agent, "Agent:      Suricata + EveBox Agent");
-        selections.push(InstallType::Server, "Server:     EveBox server only");
-        selections.push(
-            InstallType::Custom,
-            "Custom:     Exit the wizard and perform manual configuration",
-        );
-        selections.push(InstallType::Help, "Help:       Show help");
-
-        let install_type;
-        loop {
-            let selection = match inquire::Select::new(
-                "What type of installation would you like to initialize?",
-                selections.to_vec(),
-            )
-            .prompt()
-            {
-                Ok(selection) => selection,
-                // Treat ESC like Custom: manual configuration.
-                Err(_) => return Ok(()),
-            };
-
-            install_type = match selection.tag {
-                InstallType::Custom => return Ok(()),
-                InstallType::Help => {
-                    install_type_help();
-                    continue;
-                }
-                other => other,
-            };
-
-            break;
-        }
-
-        let has_suricata = matches!(install_type, InstallType::Standalone | InstallType::Agent);
-        let has_server = matches!(install_type, InstallType::Standalone | InstallType::Server);
-
-        // Ask all questions up front, before any downloads.
-
-        if has_suricata {
-            let interface = prompt_for_interface(
-                "Suricata: What network interface should Suricata listen on?",
-            )?;
-            config.suricata.enabled = true;
-            config.suricata.interfaces = vec![interface.name];
-        }
-
-        if let InstallType::Agent = install_type {
-            loop {
-                if let Some((url, disable_certificate_validation)) =
-                    crate::menu::evebox_agent::prompt_for_server_url(config)?
-                {
-                    config.evebox_agent.enabled = true;
-                    config.evebox_agent.server = url;
-                    config.evebox_agent.disable_certificate_validation =
-                        disable_certificate_validation;
-                    break;
-                }
-            }
-        }
-
-        if has_server {
-            // SQLite is the only Windows datastore; the remaining server
-            // questions match the Linux wizard.
-            let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
-                .with_default(false)
-                .with_help_message("Enable to allow access from hosts other than localhost")
-                .prompt()?;
-            let disable_https = inquire::Confirm::new("EveBox Server: Disable HTTPS?")
-                .with_default(false)
-                .with_help_message("Disable HTTPS, not recommended if remote-access is allowed")
-                .prompt()?;
-            let disable_auth = inquire::Confirm::new("EveBox Server: Disable authentication?")
-                .with_default(false)
-                .with_help_message(
-                    "Disable authentication, not recommended if remote-access is allowed",
-                )
-                .prompt()?;
-            config.evebox_server.enabled = true;
-            config.evebox_server.allow_remote = allow_remote;
-            config.evebox_server.no_tls = disable_https;
-            config.evebox_server.no_auth = disable_auth;
-        }
-
-        let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
-            return Ok(());
-        };
-        config.windows.evebox_channel = channel;
-
-        if !inquire::Confirm::new("Would you like to proceed with this configuration?")
-            .with_default(true)
-            .prompt()?
-        {
-            bail!("Aborting configuration wizard. Bye!");
-        }
-
-        // Questions done, on to the installs. The configuration is not
-        // saved until installation completes so a failure here results
-        // in the wizard being run again on next start.
-
-        install_configured_components(config)?;
-
-        if has_suricata {
-            info!("Updating Suricata rules...");
-            update_rules(false, false)?;
-        }
-
-        if has_server && !config.evebox_server.no_auth {
-            crate::prompt::enter_with_prefix(
-                "EveBox Server: When prompted, enter the password for the EveBox \"admin\" user.",
-            );
-            if let Err(err) = reset_evebox_admin_password() {
-                error!("Failed to set the EveBox admin password: {err:#}");
-                info!("Reset it later from Configure > Configure EveBox Server");
-                crate::prompt::enter();
-            }
-        }
-
-        ensure_dir(&get_evectl_data_dir()?)?;
-        config.save()?;
-
-        Ok(())
+        crate::menu::wizard::menu(config, &mut WindowsWizardBackend)
     }
 
-    fn install_type_help() {
-        let msg = format!(
-            "
-{:11      } Suricata and EveBox all-in-one. Suitable for single
-            host deployments. Events are stored in SQLite.
+    struct WindowsWizardBackend;
 
-{:11      } Suricata and EveBox Agent. Useful if you already
-            have an EveBox server and need to deploy another
-            Suricata instance.
+    impl crate::menu::wizard::Backend for WindowsWizardBackend {
+        fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
+            Box::new(WindowsSuricataBackend)
+        }
 
-{:11      } EveBox server only. Events are stored in SQLite.
+        fn evebox_server(&self) -> Box<dyn crate::evebox::configuration::Backend + '_> {
+            Box::new(WindowsEveBoxServerBackend)
+        }
 
-{:11      } Exit the wizard and perform manual configuration.
-",
-            "Standalone:".cyan(),
-            "Agent:".blue(),
-            "Server:".green(),
-            "Custom:".yellow()
-        );
-        println!("{}", msg);
-        crate::prompt::enter();
+        fn platform_questions(&mut self, config: &mut crate::config::Config) -> Result<bool> {
+            let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
+                return Ok(false);
+            };
+            config.windows.evebox_channel = channel;
+            Ok(true)
+        }
+
+        fn install(&mut self, config: &crate::config::Config) -> Result<()> {
+            install_configured_components(config)
+        }
+
+        fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
+            update_rules(false, false)
+        }
+
+        fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
+            ensure_dir(&get_evectl_data_dir()?)?;
+            config.save()
+        }
     }
 
     fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {

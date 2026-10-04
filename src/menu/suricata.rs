@@ -11,7 +11,7 @@ use crate::context::Context;
 use crate::menu::file_extraction;
 use crate::prelude::*;
 use crate::prompt::Selections;
-use crate::suricata::configuration::{Backend, ContainerBackend, Interface, container_interfaces};
+use crate::suricata::configuration::{Backend, ContainerBackend, Interface};
 use crate::term;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,11 +217,6 @@ fn toggle_enabled(config: &mut Config, select: impl FnOnce() -> Result<String>) 
     Ok(())
 }
 
-/// The container wizard uses the same interface prompt as the shared menu.
-pub(crate) fn select_interface(prompt: &str) -> Result<String> {
-    select_interface_from(prompt, container_interfaces()?)
-}
-
 fn interface_choices(interfaces: Vec<Interface>) -> Result<Selections<String>> {
     if interfaces.is_empty() {
         bail!("No network interfaces found");
@@ -238,7 +233,8 @@ fn interface_choices(interfaces: Vec<Interface>) -> Result<Selections<String>> {
     Ok(selections)
 }
 
-fn select_interface_from(prompt: &str, interfaces: Vec<Interface>) -> Result<String> {
+/// Interface prompt shared with the setup wizard.
+pub(crate) fn select_interface_from(prompt: &str, interfaces: Vec<Interface>) -> Result<String> {
     let choices = interface_choices(interfaces)?;
     let selection = inquire::Select::new(prompt, choices.to_vec()).prompt()?;
     Ok(selection.tag)
