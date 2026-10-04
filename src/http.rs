@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+//! HTTP client construction and downloads.
+
+use std::io::{Read, Write};
+
+use crate::prelude::*;
+
 /// Return a reqwest client builder that trusts the system certificate
 /// store merged with the bundled Mozilla root certificates.
 ///
@@ -12,6 +18,34 @@ pub(crate) fn client_builder() -> reqwest::blocking::ClientBuilder {
         .iter()
         .map(|der| reqwest::Certificate::from_der(der).expect("invalid bundled root certificate"));
     reqwest::blocking::Client::builder().tls_certs_merge(roots)
+}
+
+/// Download `url` into `dest`, failing on a non-success HTTP status.
+/// `progress` is called after each chunk with the bytes written so far
+/// and the content length, if the server sent one.
+pub(crate) fn download(
+    url: &str,
+    dest: &mut dyn Write,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
+    let mut response = client_builder().build()?.get(url).send()?;
+    if !response.status().is_success() {
+        bail!("HTTP {}", response.status());
+    }
+    let total = response.content_length();
+    let mut downloaded = 0u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = response.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        dest.write_all(&buffer[..n])?;
+        downloaded += n as u64;
+        progress(downloaded, total);
+    }
+    dest.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]

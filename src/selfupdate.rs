@@ -9,8 +9,8 @@ use std::{
 };
 
 #[cfg(windows)]
-use anyhow::{Context as _, anyhow};
-use anyhow::{Result, bail};
+use anyhow::anyhow;
+use anyhow::{Context as _, Result, bail};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
@@ -244,9 +244,9 @@ fn parse_sha256_hash(input: &str) -> Option<String> {
 }
 
 fn download_release(url: &str) -> Result<File> {
-    let mut response = crate::http::client_builder().build()?.get(url).send()?;
     let mut dest = tempfile::tempfile()?;
-    io::copy(&mut response, &mut dest)?;
+    crate::http::download(url, &mut dest, |_, _| {})
+        .with_context(|| format!("Failed to download {url}"))?;
     dest.seek(SeekFrom::Start(0))?;
     Ok(dest)
 }

@@ -39,51 +39,30 @@ impl UpgradePlan {
 }
 
 pub(super) fn download_file(url: &str, path: &Path, name: &str) -> Result<()> {
-    use std::fs::File;
-    use std::io::{Read, Write};
-
     info!("Downloading {} from {}", name, url);
     info!("Saving to {:?}", path);
 
-    let mut response = crate::http::client_builder()
-        .build()?
-        .get(url)
-        .send()
-        .context(format!("Failed to download {}", name))?;
+    let mut file =
+        std::fs::File::create(path).context(format!("Failed to create file for {}", name))?;
 
-    if !response.status().is_success() {
-        bail!("Failed to download {}: HTTP {}", name, response.status());
-    }
-
-    let total_size = response.content_length().unwrap_or(0);
-    let mut file = File::create(path).context(format!("Failed to create file for {}", name))?;
-
-    let pb = if total_size > 0 {
-        let pb = ProgressBar::new(total_size);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")?
-            .progress_chars("#>-"));
-        pb
-    } else {
-        ProgressBar::new_spinner()
-    };
-
-    let mut downloaded = 0u64;
-    let mut buffer = [0; 8192];
-
-    loop {
-        let bytes_read = response.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        file.write_all(&buffer[..bytes_read])?;
-        downloaded += bytes_read as u64;
+    // A bar once the size is known, otherwise a spinner.
+    let mut pb: Option<ProgressBar> = None;
+    crate::http::download(url, &mut file, |downloaded, total| {
+        let pb = pb.get_or_insert_with(|| match total {
+            Some(total) if total > 0 => ProgressBar::new(total).with_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .expect("valid progress bar template")
+                    .progress_chars("#>-"),
+            ),
+            _ => ProgressBar::new_spinner(),
+        });
         pb.set_position(downloaded);
+    })
+    .with_context(|| format!("Failed to download {}", name))?;
+    if let Some(pb) = pb {
+        pb.finish_with_message("Download complete");
     }
-
-    pb.finish_with_message("Download complete");
-    file.flush()?;
     drop(file);
 
     info!("Downloaded {} to {:?}", name, path);
