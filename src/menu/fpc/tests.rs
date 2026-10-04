@@ -2,35 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
+use crate::menu::test_support::FakePlatform;
 use std::cell::Cell;
-use std::path::PathBuf;
-
-struct FakeBackend {
-    spool: PathBuf,
-    blocked: Cell<bool>,
-    removed: Cell<bool>,
-    fail_remove: bool,
-}
-
-impl Backend for FakeBackend {
-    fn spool_dir(&self) -> Result<PathBuf> {
-        Ok(self.spool.clone())
-    }
-    fn check_remove_spool(&self) -> Result<()> {
-        if self.blocked.get() {
-            bail!("Suricata is running or cannot be inspected");
-        }
-        Ok(())
-    }
-    fn remove_spool(&self) -> Result<()> {
-        self.check_remove_spool()?;
-        if self.fail_remove {
-            bail!("Removal failed");
-        }
-        self.removed.set(true);
-        Ok(())
-    }
-}
 
 #[test]
 fn menu_shares_credentials_and_gates_spool_cleanup() {
@@ -166,21 +139,17 @@ fn retention_validation_preserves_total_file_count_and_rejects_invalid_values() 
 #[test]
 fn cleanup_requires_disabled_capture_and_stopped_suricata() {
     let dir = tempfile::tempdir().unwrap();
-    let backend = FakeBackend {
-        spool: dir.path().to_path_buf(),
-        blocked: Cell::new(false),
-        removed: Cell::new(false),
-        fail_remove: false,
-    };
+    let backend = FakePlatform::with_dir(dir.path());
     let mut config = Config::default();
     config.fpc.enabled = true;
     assert!(run_action(&mut config, &backend, dir.path(), Options::RemoveSpool).is_err());
     assert!(!backend.removed.get());
-    let dyn_backend: &dyn Backend = &backend;
     backend.blocked.set(true);
-    assert!(cleanup::remove_with_confirmation(dyn_backend, |_| panic!("Must not prompt")).is_err());
+    assert!(
+        cleanup::remove_with_confirmation(backend.as_fpc(), |_| panic!("Must not prompt")).is_err()
+    );
     backend.blocked.set(false);
-    cleanup::remove_with_confirmation(dyn_backend, |message| {
+    cleanup::remove_with_confirmation(backend.as_fpc(), |message| {
         assert!(message.contains("packet captures"));
         assert!(message.contains(&dir.path().display().to_string()));
         true

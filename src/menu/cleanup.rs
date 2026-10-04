@@ -125,74 +125,41 @@ pub(crate) fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-
-    struct FakeLeftovers {
-        dir: PathBuf,
-        blocked: Cell<bool>,
-        removed: Cell<bool>,
-        fail_remove: bool,
-    }
-
-    impl Leftovers for FakeLeftovers {
-        fn what(&self) -> &'static str {
-            "fixtures"
-        }
-        fn dir(&self) -> Result<PathBuf> {
-            Ok(self.dir.clone())
-        }
-        fn check_remove(&self) -> Result<()> {
-            if self.blocked.get() {
-                bail!("Service is running or cannot be inspected");
-            }
-            Ok(())
-        }
-        fn remove(&self) -> Result<()> {
-            self.check_remove()?;
-            if self.fail_remove {
-                bail!("Removal failed");
-            }
-            self.removed.set(true);
-            Ok(())
-        }
-    }
+    use crate::menu::test_support::FakePlatform;
 
     #[test]
     fn removal_requires_stopped_services_and_explicit_confirmation() {
         let dir = tempfile::tempdir().unwrap();
-        let mut leftovers = FakeLeftovers {
-            dir: dir.path().to_path_buf(),
-            blocked: Cell::new(false),
-            removed: Cell::new(false),
-            fail_remove: false,
-        };
-        remove_with_confirmation(&leftovers, |_| false).unwrap();
-        assert!(!leftovers.removed.get());
-        leftovers.blocked.set(true);
-        assert!(remove_with_confirmation(&leftovers, |_| panic!("Must not prompt")).is_err());
-        assert!(!leftovers.removed.get());
-        leftovers.blocked.set(false);
+        let mut platform = FakePlatform::with_dir(dir.path());
+        remove_with_confirmation(platform.as_fpc(), |_| false).unwrap();
+        assert!(!platform.removed.get());
+        platform.blocked.set(true);
+        assert!(
+            remove_with_confirmation(platform.as_fpc(), |_| panic!("Must not prompt")).is_err()
+        );
+        assert!(!platform.removed.get());
+        platform.blocked.set(false);
         // Starting a service while the confirmation is open also prevents removal.
         assert!(
-            remove_with_confirmation(&leftovers, |_| {
-                leftovers.blocked.set(true);
+            remove_with_confirmation(platform.as_fpc(), |_| {
+                platform.blocked.set(true);
                 true
             })
             .is_err()
         );
-        assert!(!leftovers.removed.get());
-        leftovers.blocked.set(false);
-        leftovers.fail_remove = true;
-        assert!(remove_with_confirmation(&leftovers, |_| true).is_err());
-        assert!(!leftovers.removed.get());
-        leftovers.fail_remove = false;
-        remove_with_confirmation(&leftovers, |question| {
-            assert!(question.contains("fixtures"));
+        assert!(!platform.removed.get());
+        platform.blocked.set(false);
+        platform.fail = Some("remove");
+        assert!(remove_with_confirmation(platform.as_fpc(), |_| true).is_err());
+        assert!(!platform.removed.get());
+        platform.fail = None;
+        remove_with_confirmation(platform.as_fpc(), |question| {
+            assert!(question.contains("packet captures"));
             assert!(question.contains(&dir.path().display().to_string()));
             true
         })
         .unwrap();
-        assert!(leftovers.removed.get());
+        assert!(platform.removed.get());
     }
 
     #[test]

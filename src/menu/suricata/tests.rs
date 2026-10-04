@@ -2,34 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
-use std::path::PathBuf;
-
-struct FakeBackend {
-    directory: PathBuf,
-    outputs: &'static [EveOutput],
-    fail_interfaces: bool,
-}
-
-impl Backend for FakeBackend {
-    fn interfaces(&self) -> Result<Vec<Interface>> {
-        if self.fail_interfaces {
-            bail!("Interface discovery failed");
-        }
-        Ok(vec![])
-    }
-    fn eve_outputs(&self) -> &'static [EveOutput] {
-        self.outputs
-    }
-    fn filestore_dir(&self) -> Result<PathBuf> {
-        Ok(self.directory.clone())
-    }
-    fn check_remove_extracted_files(&self) -> Result<()> {
-        panic!("Unexpected cleanup check")
-    }
-    fn remove_extracted_files(&self) -> Result<()> {
-        panic!("Unexpected cleanup")
-    }
-}
+use crate::menu::test_support::FakePlatform;
 
 #[test]
 fn shared_options_gate_output_selection_and_extraction_settings() {
@@ -39,19 +12,13 @@ fn shared_options_gate_output_selection_and_extraction_settings() {
         &[EveOutput::File][..],
         &[EveOutput::UnixStream, EveOutput::File][..],
     ] {
-        let backend = FakeBackend {
-            directory: dir.path().to_path_buf(),
+        let backend = FakePlatform {
             outputs,
-            fail_interfaces: false,
+            ..FakePlatform::with_dir(dir.path())
         };
         for enabled in [false, true] {
             config.suricata.file_extraction.enabled = enabled;
-            let options: Vec<_> = menu_options(&config, &backend)
-                .unwrap()
-                .to_vec()
-                .into_iter()
-                .map(|item| item.tag)
-                .collect();
+            let options = menu_options(&config, &backend).unwrap().tags();
             let mut expected = vec![
                 Options::Toggle,
                 Options::Interface,
@@ -79,11 +46,7 @@ fn shared_options_gate_output_selection_and_extraction_settings() {
 fn menu_labels_reflect_config_and_backend_filestore() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("extracted"), b"fixture").unwrap();
-    let backend = FakeBackend {
-        directory: dir.path().to_path_buf(),
-        outputs: &[EveOutput::File],
-        fail_interfaces: false,
-    };
+    let backend = FakePlatform::with_dir(dir.path());
     let mut config = Config::default();
     config.suricata.enabled = true;
     config.suricata.interfaces = vec!["Ethernet 2".into()];
@@ -103,9 +66,8 @@ fn menu_labels_reflect_config_and_backend_filestore() {
     assert!(
         !menu_options(&config, &backend)
             .unwrap()
-            .to_vec()
-            .iter()
-            .any(|item| item.tag == Options::FileExtractionRemove)
+            .tags()
+            .contains(&Options::FileExtractionRemove)
     );
     assert!(run_action(&mut config, &backend, Options::FileExtractionRemove).is_err());
 }
@@ -145,10 +107,9 @@ fn interface_discovery_failures_and_empty_lists_keep_existing_configuration() {
     let mut config = Config::default();
     config.suricata.interfaces = vec!["existing".into()];
     for fail_interfaces in [false, true] {
-        let backend = FakeBackend {
-            directory: dir.path().to_path_buf(),
-            outputs: &[EveOutput::File],
+        let backend = FakePlatform {
             fail_interfaces,
+            ..FakePlatform::with_dir(dir.path())
         };
         let err = run_action(&mut config, &backend, Options::Interface).unwrap_err();
         assert!(!crate::prompt::cancelled(&err));

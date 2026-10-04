@@ -145,50 +145,19 @@ pub(crate) fn remove_label_for(config: &Config, dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::EveOutput;
-    use crate::suricata::configuration::{Backend, Interface};
-    use std::cell::Cell;
-    use std::path::PathBuf;
-
-    struct CleanupBackend {
-        directory: PathBuf,
-        removed: Cell<bool>,
-    }
-
-    impl Backend for CleanupBackend {
-        fn interfaces(&self) -> Result<Vec<Interface>> {
-            unreachable!()
-        }
-        fn eve_outputs(&self) -> &'static [EveOutput] {
-            &[EveOutput::File]
-        }
-        fn filestore_dir(&self) -> Result<PathBuf> {
-            Ok(self.directory.clone())
-        }
-        fn check_remove_extracted_files(&self) -> Result<()> {
-            Ok(())
-        }
-        fn remove_extracted_files(&self) -> Result<()> {
-            self.removed.set(true);
-            Ok(())
-        }
-    }
+    use crate::menu::test_support::FakePlatform;
 
     #[test]
     fn extracted_files_are_removed_through_the_backend() {
         let directory = tempfile::tempdir().unwrap();
-        let fake = CleanupBackend {
-            directory: directory.path().to_path_buf(),
-            removed: Cell::new(false),
-        };
-        let backend: &dyn Backend = &fake;
-        cleanup::remove_with_confirmation(backend, |question| {
+        let backend = FakePlatform::with_dir(directory.path());
+        cleanup::remove_with_confirmation(backend.as_suricata(), |question| {
             assert!(question.contains("extracted files"));
             assert!(question.contains(&directory.path().display().to_string()));
             true
         })
         .unwrap();
-        assert!(fake.removed.get());
+        assert!(backend.removed.get());
     }
 
     #[test]

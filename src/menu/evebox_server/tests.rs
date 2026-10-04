@@ -2,45 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
-use std::cell::Cell;
+use crate::menu::test_support::FakePlatform;
 
-struct FakeBackend {
-    search_engines: bool,
-    addresses: Vec<BindAddress>,
-    resets: Cell<usize>,
-}
-
-impl FakeBackend {
-    fn new(search_engines: bool) -> Self {
-        Self {
-            search_engines,
-            addresses: vec![],
-            resets: Cell::new(0),
-        }
-    }
-}
-
-impl Backend for FakeBackend {
-    fn supports_search_engines(&self) -> bool {
-        self.search_engines
-    }
-
-    fn bind_addresses(&self) -> Result<Vec<BindAddress>> {
-        Ok(self.addresses.clone())
-    }
-
-    fn reset_password(&self) -> Result<()> {
-        self.resets.set(self.resets.get() + 1);
-        Ok(())
+fn backend(search_engines: bool) -> FakePlatform {
+    FakePlatform {
+        search_engines,
+        ..Default::default()
     }
 }
 
 fn tags(config: &Config, backend: &dyn Backend) -> Vec<Options> {
-    menu_options(config, backend)
-        .to_vec()
-        .into_iter()
-        .map(|item| item.tag)
-        .collect()
+    menu_options(config, backend).tags()
 }
 
 #[test]
@@ -49,7 +21,7 @@ fn datastore_options_are_only_offered_with_search_engine_support() {
     config.evebox_server.enabled = true;
 
     assert_eq!(
-        tags(&config, &FakeBackend::new(false)),
+        tags(&config, &backend(false)),
         [
             Options::EnableToggle,
             Options::EnableRemote,
@@ -60,7 +32,7 @@ fn datastore_options_are_only_offered_with_search_engine_support() {
         ]
     );
     assert_eq!(
-        tags(&config, &FakeBackend::new(true)),
+        tags(&config, &backend(true)),
         [
             Options::EnableToggle,
             Options::EnableRemote,
@@ -73,12 +45,12 @@ fn datastore_options_are_only_offered_with_search_engine_support() {
     );
 
     config.elasticsearch.enabled = true;
-    assert!(tags(&config, &FakeBackend::new(true)).contains(&Options::Memory));
-    assert!(!tags(&config, &FakeBackend::new(false)).contains(&Options::Memory));
+    assert!(tags(&config, &backend(true)).contains(&Options::Memory));
+    assert!(!tags(&config, &backend(false)).contains(&Options::Memory));
 
     config.evebox_server.use_external_elasticsearch = true;
-    assert!(tags(&config, &FakeBackend::new(true)).contains(&Options::ElasticsearchUrl));
-    let without = tags(&config, &FakeBackend::new(false));
+    assert!(tags(&config, &backend(true)).contains(&Options::ElasticsearchUrl));
+    let without = tags(&config, &backend(false));
     assert!(!without.contains(&Options::ElasticsearchUrl));
     assert!(!without.contains(&Options::Datastore));
 
@@ -87,21 +59,15 @@ fn datastore_options_are_only_offered_with_search_engine_support() {
         Options::Memory,
         Options::ElasticsearchUrl,
     ] {
-        assert!(run_action(&mut config, &FakeBackend::new(false), action).is_err());
+        assert!(run_action(&mut config, &backend(false), action).is_err());
     }
 }
 
 #[test]
 fn labels_reflect_remote_access_tls_and_authentication_state() {
     let mut config = Config::default();
-    let backend = FakeBackend::new(false);
-    let labels = |config: &Config| -> Vec<String> {
-        menu_options(config, &backend)
-            .to_vec()
-            .into_iter()
-            .map(|item| item.value)
-            .collect()
-    };
+    let backend = backend(false);
+    let labels = |config: &Config| menu_options(config, &backend).labels();
 
     let items = labels(&config);
     assert!(items[0].ends_with("Enable EveBox Server [disabled]"));
@@ -128,7 +94,7 @@ fn labels_reflect_remote_access_tls_and_authentication_state() {
 
 #[test]
 fn toggles_without_remote_access_do_not_prompt() {
-    let backend = FakeBackend::new(false);
+    let backend = backend(false);
     let mut config = Config::default();
     run_action(&mut config, &backend, Options::ToggleTls).unwrap();
     assert!(config.evebox_server.no_tls);
@@ -193,24 +159,24 @@ fn bind_address_requires_an_available_ipv4_address() {
         bind_address: Some("eth0".to_string()),
         ..Default::default()
     };
-    let err = set_bind_address(&mut server, &FakeBackend::new(false)).unwrap_err();
+    let err = set_bind_address(&mut server, &backend(false)).unwrap_err();
     assert!(err.to_string().contains("No network interfaces"));
     assert_eq!(server.bind_address.as_deref(), Some("eth0"));
 }
 
 #[test]
 fn disabling_remote_access_and_password_reset_dispatch_to_backend() {
-    let backend = FakeBackend::new(false);
+    let backend = backend(false);
     let mut config = Config::default();
     config.evebox_server.allow_remote = true;
     run_action(&mut config, &backend, Options::DisableRemote).unwrap();
     assert!(!config.evebox_server.allow_remote);
 
     run_action(&mut config, &backend, Options::ResetPassword).unwrap();
-    assert_eq!(backend.resets.get(), 1);
+    assert_eq!(backend.calls(), ["reset_password:"]);
 
     run_action(&mut config, &backend, Options::EnableToggle).unwrap();
     assert!(config.evebox_server.enabled);
     run_action(&mut config, &backend, Options::Return).unwrap();
-    assert_eq!(backend.resets.get(), 1);
+    assert_eq!(backend.calls(), ["reset_password:"]);
 }

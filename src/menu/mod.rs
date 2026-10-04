@@ -12,4 +12,6 @@ pub(crate) mod main;
 pub(crate) mod other;
 pub(crate) mod rules;
 pub(crate) mod suricata;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod wizard;

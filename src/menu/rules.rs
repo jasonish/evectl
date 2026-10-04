@@ -200,53 +200,7 @@ fn edit_override(backend: &dyn Backend, file: OverrideFile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::path::PathBuf;
-
-    #[derive(Default)]
-    struct FakeBackend {
-        available: Vec<Ruleset>,
-        enabled: Vec<Ruleset>,
-        overrides: bool,
-        calls: RefCell<Vec<String>>,
-        fail: Option<&'static str>,
-    }
-
-    impl FakeBackend {
-        fn record(&self, operation: &str, id: &str) -> Result<()> {
-            self.calls.borrow_mut().push(format!("{operation}:{id}"));
-            if self.fail == Some(operation) {
-                bail!("{operation} failed");
-            }
-            Ok(())
-        }
-    }
-
-    impl Backend for FakeBackend {
-        fn available_rulesets(&self) -> Result<Vec<Ruleset>> {
-            self.record("available", "")?;
-            Ok(self.available.clone())
-        }
-        fn enabled_rulesets(&self) -> Result<Vec<Ruleset>> {
-            self.record("enabled", "")?;
-            Ok(self.enabled.clone())
-        }
-        fn enable_ruleset(&self, id: &str) -> Result<()> {
-            self.record("enable", id)
-        }
-        fn disable_ruleset(&self, id: &str) -> Result<()> {
-            self.record("disable", id)
-        }
-        fn update_rules(&self) -> Result<()> {
-            self.record("update", "")
-        }
-        fn update_sources(&self) -> Result<()> {
-            self.record("sources", "")
-        }
-        fn override_path(&self, file: OverrideFile) -> Option<PathBuf> {
-            self.overrides.then(|| PathBuf::from(file.filename()))
-        }
-    }
+    use crate::menu::test_support::FakePlatform;
 
     fn source(id: &str, can_enable: bool) -> Ruleset {
         Ruleset {
@@ -259,15 +213,11 @@ mod tests {
     #[test]
     fn menu_shares_operations_and_gates_override_files() {
         for overrides in [false, true] {
-            let backend = FakeBackend {
+            let backend = FakePlatform {
                 overrides,
                 ..Default::default()
             };
-            let options: Vec<_> = menu_options(&backend)
-                .to_vec()
-                .into_iter()
-                .map(|item| item.tag)
-                .collect();
+            let options = menu_options(&backend).tags();
             let mut expected = vec![
                 Options::Enable,
                 Options::Disable,
@@ -280,13 +230,13 @@ mod tests {
             }
             expected.push(Options::Return);
             assert_eq!(options, expected);
-            assert!(backend.calls.borrow().is_empty());
+            assert!(backend.calls().is_empty());
         }
     }
 
     #[test]
     fn enable_choices_are_sorted_and_exclude_enabled_and_unsupported_sources() {
-        let backend = FakeBackend {
+        let backend = FakePlatform {
             available: vec![
                 source("z", true),
                 source("obsolete", false),
@@ -305,7 +255,7 @@ mod tests {
 
     #[test]
     fn disable_includes_unknown_sources_without_fetching_available_index() {
-        let backend = FakeBackend {
+        let backend = FakePlatform {
             enabled: vec![source("z-unknown", false), source("a", false)],
             fail: Some("available"),
             ..Default::default()
@@ -316,12 +266,12 @@ mod tests {
             vec![source("a", false), source("z-unknown", false)]
         );
         assert_eq!(ruleset_label(&choices[1]), "z-unknown");
-        assert_eq!(*backend.calls.borrow(), ["enabled:"]);
+        assert_eq!(backend.calls(), ["enabled:"]);
     }
 
     #[test]
     fn empty_lists_and_backend_errors_are_handled_without_panicking() {
-        let mut backend = FakeBackend::default();
+        let mut backend = FakePlatform::default();
         assert!(ruleset_choices(&backend, true).unwrap().is_empty());
         assert!(ruleset_choices(&backend, false).unwrap().is_empty());
         for failure in ["available", "enabled"] {
@@ -334,14 +284,14 @@ mod tests {
     fn successful_changes_offer_optional_update_in_order() {
         for enable in [true, false] {
             for update in [true, false] {
-                let backend = FakeBackend::default();
+                let backend = FakePlatform::default();
                 change_ruleset(&backend, "test/source", enable, || update).unwrap();
                 let operation = if enable { "enable" } else { "disable" };
                 let mut expected = vec![format!("{operation}:test/source")];
                 if update {
                     expected.push("update:".into());
                 }
-                assert_eq!(*backend.calls.borrow(), expected);
+                assert_eq!(backend.calls(), expected);
             }
         }
     }
@@ -350,26 +300,23 @@ mod tests {
     fn failed_changes_do_not_offer_or_run_updates() {
         for enable in [true, false] {
             let operation = if enable { "enable" } else { "disable" };
-            let backend = FakeBackend {
+            let backend = FakePlatform {
                 fail: Some(operation),
                 ..Default::default()
             };
             assert!(change_ruleset(&backend, "test/source", enable, || panic!()).is_err());
-            assert_eq!(
-                *backend.calls.borrow(),
-                [format!("{operation}:test/source")]
-            );
+            assert_eq!(backend.calls(), [format!("{operation}:test/source")]);
         }
     }
 
     #[test]
     fn update_errors_propagate_after_a_successful_change() {
-        let backend = FakeBackend {
+        let backend = FakePlatform {
             fail: Some("update"),
             ..Default::default()
         };
         assert!(change_ruleset(&backend, "test/source", true, || true).is_err());
-        assert_eq!(*backend.calls.borrow(), ["enable:test/source", "update:"]);
+        assert_eq!(backend.calls(), ["enable:test/source", "update:"]);
     }
 
     #[test]
@@ -379,9 +326,9 @@ mod tests {
             (Options::UpdateSources, "sources"),
             (Options::ListEnabled, "enabled"),
         ] {
-            let mut backend = FakeBackend::default();
+            let mut backend = FakePlatform::default();
             assert!(run_action(&backend, action).unwrap());
-            assert_eq!(*backend.calls.borrow(), [format!("{operation}:")]);
+            assert_eq!(backend.calls(), [format!("{operation}:")]);
             backend.fail = Some(operation);
             assert!(run_action(&backend, action).is_err());
         }
@@ -389,7 +336,7 @@ mod tests {
 
     #[test]
     fn unsupported_override_actions_are_rejected_without_prompting() {
-        let backend = FakeBackend::default();
+        let backend = FakePlatform::default();
         for file in OverrideFile::ALL {
             assert!(run_action(&backend, Options::Edit(file)).is_err());
             assert!(backend.write_override_template(file).is_err());
