@@ -35,14 +35,6 @@ mod uninstall;
 mod update;
 mod windows;
 
-// Crate-root names still used by the Windows code.
-#[allow(unused_imports)]
-pub(crate) use evebox::{
-    parse_version as parse_evebox_version, run_version_command as run_evebox_version_command,
-};
-#[allow(unused_imports)]
-pub(crate) use suricata::file_extraction_set_args;
-
 #[cfg(windows)]
 fn main() -> Result<()> {
     // Reqwest's rustls-no-provider feature requires installing a crypto

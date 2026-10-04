@@ -19,7 +19,6 @@ use super::suricata::{
     start_suricata_background, wait_for_suricata_pid_readiness,
 };
 use crate::prelude::*;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -258,33 +257,6 @@ pub(super) fn restart_managed_components(
     result
 }
 
-fn process_line_reader<R: std::io::Read + Send + 'static>(output: R, label: &'static str) {
-    let reader = BufReader::new(output).lines();
-    for line in reader {
-        match line {
-            Ok(line) => {
-                let mut stdout = std::io::stdout().lock();
-                let _ = writeln!(&mut stdout, "{}: {}", label, line);
-                let _ = stdout.flush();
-            }
-            Err(err) => {
-                debug!("Failed to read {} output: {}", label, err);
-                break;
-            }
-        }
-    }
-}
-
-fn process_output_handler(child: &mut Child, label: &'static str) {
-    if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || process_line_reader(stdout, label));
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        std::thread::spawn(move || process_line_reader(stderr, label));
-    }
-}
-
 /// Pre-flight check used before starting any EveBox process. The
 /// per-role checks in the start functions are skipped here so a
 /// server and an agent can be started in sequence.
@@ -327,7 +299,7 @@ fn start_stack_foreground(paths: &Paths, guid: Option<String>) -> Result<()> {
         let mut child = command
             .spawn()
             .context(format!("Failed to start {}", role))?;
-        process_output_handler(&mut child, role.as_str());
+        crate::process_output::pipe_output(&mut child, role.as_str(), role == Role::Suricata, None);
         let pid = child.id();
         children.push((role, child));
         Ok(pid)

@@ -334,7 +334,7 @@ fn install_evebox_archive(
     let exe_path = extract_evebox_archive(zip_path, staging.path())?;
     let mut command = Command::new(&exe_path);
     command.arg("version");
-    let version = crate::run_evebox_version_command(command)?
+    let version = crate::evebox::run_version_command(command)?
         .context("Could not determine the downloaded EveBox version")?;
     download.validate_version(&version)?;
     std::fs::write(staging.path().join(EVEBOX_VERSION_MARKER), &version)

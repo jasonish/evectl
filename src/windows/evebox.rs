@@ -283,10 +283,10 @@ mod tests {
 
     #[test]
     fn evebox_development_versions_include_revision() {
-        let first = crate::parse_evebox_version(
+        let first = crate::evebox::parse_version(
             "EveBox Version 0.30.0-dev (rev abc1234); x86_64-pc-windows-gnu",
         );
-        let second = crate::parse_evebox_version(
+        let second = crate::evebox::parse_version(
             "EveBox Version 0.30.0-dev (rev def5678); x86_64-pc-windows-gnu",
         );
         assert_eq!(first.as_deref(), Some("0.30.0-dev rev abc1234"));

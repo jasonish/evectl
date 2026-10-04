@@ -47,7 +47,7 @@ pub(super) fn configure_command(
         .map(|c| format!("{}.file-store", &c[1]))
         .collect();
     let overrides = if config.enabled {
-        crate::file_extraction_set_args(
+        crate::suricata::file_extraction_set_args(
             &lines,
             config,
             &paths,
@@ -185,7 +185,7 @@ mod tests {
             )
             .unwrap();
             let lines: Vec<String> = DUMP.lines().map(str::to_string).collect();
-            let expected = crate::file_extraction_set_args(
+            let expected = crate::suricata::file_extraction_set_args(
                 &lines,
                 &extraction,
                 &BTreeSet::from(["outputs.17.file-store".into()]),
