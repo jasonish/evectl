@@ -379,6 +379,57 @@ impl Config {
             && self.elasticsearch.enabled
     }
 
+    /// True if the local Suricata writes EVE to a Unix socket rather
+    /// than spool files.
+    pub(crate) fn uses_eve_socket(&self) -> bool {
+        self.suricata.enabled && self.suricata.eve_output == EveOutput::UnixStream
+    }
+
+    /// Full packet capture is in use when the local Suricata is enabled
+    /// along with the FPC option and something local to serve the spool:
+    /// the EveBox server directly, or the EveBox agent on behalf of a
+    /// remote server.
+    pub(crate) fn uses_fpc(&self) -> bool {
+        self.suricata.enabled
+            && self.fpc.enabled
+            && (self.evebox_server.enabled || self.evebox_agent.enabled)
+    }
+
+    /// The FPC configuration as it applies to a start: capture is only
+    /// enabled if a local EveBox server or agent is there to serve it,
+    /// otherwise Suricata would fill a spool nothing reads.
+    pub(crate) fn effective_fpc_config(&self) -> FpcConfig {
+        let enabled = self.uses_fpc();
+        if self.fpc.enabled && !enabled {
+            warn!(
+                "Full packet capture is enabled but neither the EveBox server nor agent is; not capturing"
+            );
+        }
+        FpcConfig {
+            enabled,
+            ..self.fpc.clone()
+        }
+    }
+
+    /// File retrieval follows the local Suricata extraction setting.
+    pub(crate) fn uses_file_extraction(&self) -> bool {
+        self.suricata.enabled && self.suricata.file_extraction.enabled
+    }
+
+    /// Check that the enabled services can be started together.
+    pub(crate) fn validate_start_configuration(&self) -> Result<()> {
+        if !self.uses_eve_socket() {
+            return Ok(());
+        }
+
+        if self.evebox_server.enabled == self.evebox_agent.enabled {
+            bail!(
+                "Unix-stream EVE output requires exactly one local EveBox Server or Agent; enable one or set eve-output = \"file\" under [suricata]"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn default_with_filename(filename: &Path) -> Self {
         Self {
             filename: filename.to_path_buf(),
@@ -636,6 +687,54 @@ mod tests {
         assert!(config.suricata.enabled);
         assert_eq!(config.suricata.interfaces, vec!["br0".to_string()]);
         assert!(config.evebox_server.no_tls);
+    }
+
+    #[test]
+    fn fpc_requires_local_evebox_server_or_agent() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+        config.fpc.enabled = true;
+        config.fpc.max_files = Some(20);
+
+        // No server or agent: capture is disabled, retention is
+        // preserved.
+        let fpc = config.effective_fpc_config();
+        assert!(!fpc.enabled);
+        assert_eq!(fpc.max_files, Some(20));
+
+        config.evebox_server.enabled = true;
+        assert!(config.effective_fpc_config().enabled);
+
+        config.evebox_server.enabled = false;
+        config.evebox_agent.enabled = true;
+        assert!(config.effective_fpc_config().enabled);
+
+        // Both enabled (file mode): each serves the spool to its own
+        // server.
+        config.evebox_server.enabled = true;
+        assert!(config.effective_fpc_config().enabled);
+        config.evebox_server.enabled = false;
+
+        // Without Suricata there is nothing to capture.
+        config.suricata.enabled = false;
+        assert!(!config.effective_fpc_config().enabled);
+    }
+
+    #[test]
+    fn unix_stream_requires_exactly_one_local_consumer() {
+        let mut config = Config::default();
+        config.suricata.enabled = true;
+
+        assert!(config.validate_start_configuration().is_err());
+
+        config.evebox_server.enabled = true;
+        assert!(config.validate_start_configuration().is_ok());
+
+        config.evebox_agent.enabled = true;
+        assert!(config.validate_start_configuration().is_err());
+
+        config.suricata.eve_output = EveOutput::File;
+        assert!(config.validate_start_configuration().is_ok());
     }
 }
 

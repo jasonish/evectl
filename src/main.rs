@@ -572,60 +572,12 @@ fn command_start(context: &Context, debug: bool) -> i32 {
     0
 }
 
-fn uses_eve_socket(context: &Context) -> bool {
-    context.config.suricata.enabled && context.config.suricata.eve_output == EveOutput::UnixStream
-}
-
-/// Full packet capture is in use when the local Suricata is enabled
-/// along with the FPC option and something local to serve the spool:
-/// the EveBox server directly, or the EveBox agent on behalf of a
-/// remote server.
-fn uses_fpc(context: &Context) -> bool {
-    context.config.suricata.enabled
-        && context.config.fpc.enabled
-        && (context.config.evebox_server.enabled || context.config.evebox_agent.enabled)
-}
-
-/// The FPC configuration as it applies to this start: capture is only
-/// enabled if a local EveBox server or agent is there to serve it,
-/// otherwise Suricata would fill a spool nothing reads.
-fn effective_fpc_config(context: &Context) -> FpcConfig {
-    let enabled = uses_fpc(context);
-    if context.config.fpc.enabled && !enabled {
-        warn!(
-            "Full packet capture is enabled but neither the EveBox server nor agent is; not capturing"
-        );
-    }
-    FpcConfig {
-        enabled,
-        ..context.config.fpc.clone()
-    }
-}
-
-/// File retrieval follows the local Suricata extraction setting.
-fn uses_file_extraction(context: &Context) -> bool {
-    context.config.suricata.enabled && context.config.suricata.file_extraction.enabled
-}
-
-fn validate_start_configuration(context: &Context) -> Result<()> {
-    if !uses_eve_socket(context) {
-        return Ok(());
-    }
-
-    if context.config.evebox_server.enabled == context.config.evebox_agent.enabled {
-        bail!(
-            "Unix-stream EVE output requires exactly one local EveBox Server or Agent; enable one or set eve-output = \"file\" under [suricata]"
-        );
-    }
-    Ok(())
-}
-
 /// Start EveCtl in the foreground.
 ///
 /// Typically not done from the menus but instead the command line.
 fn start_foreground(context: &Context) -> Result<()> {
     info!("Starting services in the foreground");
-    validate_start_configuration(context)?;
+    context.config.validate_start_configuration()?;
 
     let _ = context
         .manager
@@ -1233,7 +1185,7 @@ fn restart(context: &Context) {
 /// Returns true if everything started successfully, otherwise false
 /// is return.
 fn start(context: &Context) -> bool {
-    if let Err(err) = validate_start_configuration(context) {
+    if let Err(err) = context.config.validate_start_configuration() {
         error!("Invalid configuration: {err}");
         return false;
     }
@@ -1353,7 +1305,7 @@ fn build_suricata_command(context: &Context, detached: bool) -> Result<std::proc
     let set_args = suricata_set_args(
         &config,
         context.config.suricata.eve_output,
-        &effective_fpc_config(context),
+        &context.config.effective_fpc_config(),
         &context.config.suricata.file_extraction,
     )?;
 
@@ -1838,7 +1790,7 @@ fn start_eve_prune(context: &Context, script: &str) -> Result<()> {
 
 fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<process::Command> {
     let config = &context.config.evebox_server;
-    let use_socket = uses_eve_socket(context);
+    let use_socket = context.config.uses_eve_socket();
     let mut command = context.manager.command();
     command.arg("run");
     command.arg("--name");
@@ -1980,12 +1932,12 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
     command.arg("--data-directory=/data");
     command.arg("--config-directory=/config");
 
-    if uses_fpc(context) {
+    if context.config.uses_fpc() {
         command.arg(format!("--pcap-directory={PCAP_LOG_CONTAINER_DIR}"));
         command.arg(format!("--pcap-prefix={PCAP_LOG_PREFIX}"));
     }
 
-    if uses_file_extraction(context) {
+    if context.config.uses_file_extraction() {
         command.arg(format!("--filestore-directory={FILESTORE_CONTAINER_DIR}"));
     }
 
@@ -1993,7 +1945,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 }
 
 fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<process::Command> {
-    let use_socket = uses_eve_socket(context);
+    let use_socket = context.config.uses_eve_socket();
     let mut args = ArgBuilder::from(&[
         "run",
         "--name",
@@ -2038,8 +1990,8 @@ fn build_evebox_agent_command(context: &Context, detached: bool) -> Result<proce
     // may need to connect to localhost of the host system.
     args.add("--net=host");
 
-    let fpc = uses_fpc(context);
-    let file_extraction = uses_file_extraction(context);
+    let fpc = context.config.uses_fpc();
+    let file_extraction = context.config.uses_file_extraction();
     if fpc || file_extraction {
         // The agent key authenticates the file and packet retrieval channel to
         // the server. Passed in the environment, like the server's
@@ -2632,39 +2584,19 @@ mod tests {
     }
 
     #[test]
-    fn fpc_requires_local_evebox_server_or_agent() {
+    fn fpc_with_both_server_and_agent_serves_each_spool() {
         let mut config = Config::default();
         config.suricata.enabled = true;
+        config.suricata.eve_output = EveOutput::File;
         config.fpc.enabled = true;
-        config.fpc.max_files = Some(20);
-        let (_root, mut context) = docker_context(config);
+        config.evebox_server.enabled = true;
+        config.evebox_agent.enabled = true;
+        let (_root, context) = docker_context(config);
 
-        // No server or agent: capture is disabled, retention is
-        // preserved.
-        let fpc = effective_fpc_config(&context);
-        assert!(!fpc.enabled);
-        assert_eq!(fpc.max_files, Some(20));
-
-        context.config.evebox_server.enabled = true;
-        assert!(effective_fpc_config(&context).enabled);
-
-        context.config.evebox_server.enabled = false;
-        context.config.evebox_agent.enabled = true;
-        assert!(effective_fpc_config(&context).enabled);
-
-        // Both enabled (file mode): each serves the spool to its own
-        // server.
-        context.config.evebox_server.enabled = true;
-        assert!(effective_fpc_config(&context).enabled);
         let args = command_args(&build_evebox_agent_command(&context, true).unwrap());
         assert!(args.contains(&"--pcap-prefix=log.".to_string()));
         let args = command_args(&build_evebox_server_command(&context, true).unwrap());
         assert!(args.contains(&"--pcap-prefix=log.".to_string()));
-        context.config.evebox_server.enabled = false;
-
-        // Without Suricata there is nothing to capture.
-        context.config.suricata.enabled = false;
-        assert!(!effective_fpc_config(&context).enabled);
     }
 
     #[test]
@@ -2897,24 +2829,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn unix_stream_requires_exactly_one_local_consumer() {
-        let mut config = Config::default();
-        config.suricata.enabled = true;
-        let (_root, mut context) = docker_context(config);
-
-        assert!(validate_start_configuration(&context).is_err());
-
-        context.config.evebox_server.enabled = true;
-        assert!(validate_start_configuration(&context).is_ok());
-
-        context.config.evebox_agent.enabled = true;
-        assert!(validate_start_configuration(&context).is_err());
-
-        context.config.suricata.eve_output = EveOutput::File;
-        assert!(validate_start_configuration(&context).is_ok());
     }
 
     #[test]
