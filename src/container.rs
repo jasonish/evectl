@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::prelude::*;
+use crate::suricata;
 
 use serde::Deserialize;
 use std::path::Path;
@@ -205,6 +206,80 @@ impl ContainerManager {
         }
         false
     }
+
+    /// A command running `args` in a running container, or in a
+    /// throwaway container from an image. Returns None if the image
+    /// is not present, as running it would trigger a pull.
+    pub(crate) fn probe_command(&self, target: ProbeTarget<'_>, args: &[&str]) -> Option<Command> {
+        let mut command = self.command();
+        match target {
+            ProbeTarget::Container(name) => {
+                command.args(["exec", name]);
+            }
+            ProbeTarget::Image(image) => {
+                if !self.has_image(image) {
+                    return None;
+                }
+                command.args(["run", "--rm", image]);
+            }
+        }
+        command.args(args);
+        Some(command)
+    }
+}
+
+/// Where to run a command that queries a service: in its running
+/// container, or in a throwaway container from its image.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProbeTarget<'a> {
+    Container(&'a str),
+    Image(&'a str),
+}
+
+/// Run a command that reports a version, returning its stdout and
+/// stderr as text. On failure, the error carries stderr, or stdout if
+/// nothing was written to stderr.
+pub(crate) fn version_output(mut command: Command, what: &str) -> Result<(String, String)> {
+    let output = command.output()?;
+    if !output.status.success() {
+        let message = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            String::from_utf8_lossy(&output.stderr)
+        };
+        bail!("Failed to query {what} version: {}", message.trim());
+    }
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
+/// Start a service container detached, unless it is already running.
+/// Any stopped container of the same name is removed first, then the
+/// command returned by `build` is run.
+pub(crate) fn start_detached(
+    context: &Context,
+    name: &str,
+    label: &str,
+    build: impl FnOnce() -> Result<Command>,
+) -> Result<()> {
+    if context.manager.is_running(name) {
+        info!("{label} is already running");
+        return Ok(());
+    }
+    context.manager.quiet_rm(name);
+    build()?.status_output()?;
+    Ok(())
+}
+
+/// The arguments of a command as strings, for tests.
+#[cfg(test)]
+pub(crate) fn command_args(command: &Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Command extensions useful for containers.
@@ -424,22 +499,18 @@ impl SuricataContainer {
     }
 
     pub(crate) fn volumes(&self) -> Vec<String> {
-        let libdir = self.context.config_dir().join("suricata").join("lib");
-        let logdir = self.context.data_dir().join("suricata").join("log");
-        let rundir = self.context.data_dir().join("suricata").join("run");
-
-        let volumes = vec![
-            self.context
+        let context = &self.context;
+        vec![
+            context
                 .manager
-                .bind_mount(&logdir, "/var/log/suricata"),
-            self.context
+                .bind_mount(&suricata::log_dir(context), "/var/log/suricata"),
+            context
                 .manager
-                .bind_mount(&libdir, "/var/lib/suricata"),
-            self.context
+                .bind_mount(&suricata::lib_dir(context), "/var/lib/suricata"),
+            context
                 .manager
-                .bind_mount(&rundir, "/var/run/suricata"),
-        ];
-        volumes
+                .bind_mount(&suricata::run_dir(context), "/var/run/suricata"),
+        ]
     }
 
     pub(crate) fn run(&self) -> RunCommandBuilder {

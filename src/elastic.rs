@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::SearchEngine;
-use crate::container::{CommandExt, RESTART_POLICY_ARG};
+use crate::container::RESTART_POLICY_ARG;
 use crate::prelude::*;
 
 pub(crate) const ELASTICSEARCH_IMAGE: &str =
@@ -24,30 +24,68 @@ pub(crate) fn memory_gb(context: &Context) -> u32 {
         .unwrap_or(DEFAULT_MEMORY_GB)
 }
 
-const ELASTICSEARCH_BIN: &str = "bin/elasticsearch";
-const OPENSEARCH_BIN: &str = "bin/opensearch";
+/// What differs between the supported search engines.
+pub(crate) struct EngineSpec {
+    pub(crate) image: &'static str,
+    /// The program to run in the container.
+    bin: &'static str,
+    args: &'static [&'static str],
+    /// Subdirectory of the data directory holding the engine's data.
+    data_subdir: &'static str,
+    /// Where the data directory is mounted in the container.
+    mount_target: &'static str,
+    /// Suffix of the container name.
+    name_suffix: &'static str,
+    /// Environment variable taking the JVM heap options, for engines
+    /// that don't size the heap to the container memory limit.
+    java_opts_env: Option<&'static str>,
+}
 
-const ELASTICSEARCH_ARGS: &[&str] = &[
-    "-Expack.security.enabled=false",
-    "-Ediscovery.type=single-node",
-    "-Elogger.level=ERROR",
-];
+const ELASTICSEARCH: EngineSpec = EngineSpec {
+    image: ELASTICSEARCH_IMAGE,
+    bin: "bin/elasticsearch",
+    args: &[
+        "-Expack.security.enabled=false",
+        "-Ediscovery.type=single-node",
+        "-Elogger.level=ERROR",
+    ],
+    data_subdir: "elastic",
+    mount_target: "/usr/share/elasticsearch/data",
+    name_suffix: "elastic",
+    java_opts_env: None,
+};
 
-const OPENSEARCH_ARGS: &[&str] = &[
-    "-Eplugins.security.disabled=true",
-    "-Ediscovery.type=single-node",
-    "-Elogger.level=ERROR",
-];
+const OPENSEARCH: EngineSpec = EngineSpec {
+    image: OPENSEARCH_IMAGE,
+    bin: "bin/opensearch",
+    args: &[
+        "-Eplugins.security.disabled=true",
+        "-Ediscovery.type=single-node",
+        "-Elogger.level=ERROR",
+    ],
+    data_subdir: "opensearch",
+    mount_target: "/usr/share/opensearch/data",
+    name_suffix: "opensearch",
+    // Unlike Elasticsearch, OpenSearch does not size its heap to the
+    // container memory limit.
+    java_opts_env: Some("OPENSEARCH_JAVA_OPTS"),
+};
+
+impl SearchEngine {
+    pub(crate) fn spec(self) -> &'static EngineSpec {
+        match self {
+            SearchEngine::Elasticsearch => &ELASTICSEARCH,
+            SearchEngine::OpenSearch => &OPENSEARCH,
+        }
+    }
+}
 
 pub(crate) fn engine(context: &Context) -> SearchEngine {
     context.config.elasticsearch.engine
 }
 
 pub(crate) fn docker_image(context: &Context) -> &'static str {
-    match engine(context) {
-        SearchEngine::Elasticsearch => ELASTICSEARCH_IMAGE,
-        SearchEngine::OpenSearch => OPENSEARCH_IMAGE,
-    }
+    engine(context).spec().image
 }
 
 pub(crate) fn container_name(context: &Context) -> String {
@@ -55,11 +93,11 @@ pub(crate) fn container_name(context: &Context) -> String {
 }
 
 pub(crate) fn container_name_for(context: &Context, engine: SearchEngine) -> String {
-    let prefix = context.container_prefix();
-    match engine {
-        SearchEngine::Elasticsearch => format!("{}-elastic", prefix),
-        SearchEngine::OpenSearch => format!("{}-opensearch", prefix),
-    }
+    format!(
+        "{}-{}",
+        context.container_prefix(),
+        engine.spec().name_suffix
+    )
 }
 
 pub(crate) fn existing_engines(context: &Context) -> Vec<SearchEngine> {
@@ -78,11 +116,7 @@ pub(crate) fn existing_engines(context: &Context) -> Vec<SearchEngine> {
 /// Each engine gets its own directory as their data formats are not
 /// compatible with each other.
 pub(crate) fn host_data_dir(context: &Context) -> PathBuf {
-    let dir = match engine(context) {
-        SearchEngine::Elasticsearch => "elastic",
-        SearchEngine::OpenSearch => "opensearch",
-    };
-    context.data_dir().join(dir)
+    context.data_dir().join(engine(context).spec().data_subdir)
 }
 
 /// The UID both the Elasticsearch and OpenSearch images run as.
@@ -127,6 +161,7 @@ pub(crate) fn stop_elasticsearch(context: &Context) {
 }
 
 pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command {
+    let spec = engine(context).spec();
     let mut command = context.manager.command();
     command.arg("run");
     command.arg("--name");
@@ -142,6 +177,15 @@ pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command
     // pre-allocating the heap on startup. With a limit, the heap is
     // sized to half the limit.
     command.arg(format!("--memory={}g", memory_gb(context)));
+    // Engines that don't size their heap to the container memory
+    // limit get it explicitly sized to half the limit.
+    if let Some(java_opts_env) = spec.java_opts_env {
+        command.arg("--env");
+        command.arg(format!(
+            "{java_opts_env}=-Xms{0}m -Xmx{0}m",
+            memory_gb(context) * 1024 / 2
+        ));
+    }
     // The images run as UID 1000, which under Podman, particularly
     // rootless, may be mapped to a subordinate ID the host side can't
     // chown to, so have Podman fix up the data directory ownership
@@ -151,57 +195,69 @@ pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command
     } else {
         &[]
     };
-    match engine(context) {
-        SearchEngine::Elasticsearch => {
-            command.arg("-v");
-            command.arg(context.manager.bind_mount_with_options(
-                &host_data_dir(context),
-                "/usr/share/elasticsearch/data",
-                volume_opts,
-            ));
-        }
-        SearchEngine::OpenSearch => {
-            // Unlike Elasticsearch, OpenSearch does not size its heap
-            // to the container memory limit, so explicitly size it to
-            // half the limit.
-            command.arg("--env");
-            command.arg(format!(
-                "OPENSEARCH_JAVA_OPTS=-Xms{0}m -Xmx{0}m",
-                memory_gb(context) * 1024 / 2
-            ));
-            command.arg("-v");
-            command.arg(context.manager.bind_mount_with_options(
-                &host_data_dir(context),
-                "/usr/share/opensearch/data",
-                volume_opts,
-            ));
-        }
-    }
-    command.arg(docker_image(context));
-    match engine(context) {
-        SearchEngine::Elasticsearch => {
-            command.arg(ELASTICSEARCH_BIN);
-            command.args(ELASTICSEARCH_ARGS);
-        }
-        SearchEngine::OpenSearch => {
-            command.arg(OPENSEARCH_BIN);
-            command.args(OPENSEARCH_ARGS);
-        }
-    }
+    command.arg("-v");
+    command.arg(context.manager.bind_mount_with_options(
+        &host_data_dir(context),
+        spec.mount_target,
+        volume_opts,
+    ));
+    command.arg(spec.image);
+    command.arg(spec.bin);
+    command.args(spec.args);
     command
 }
 
 /// Start the search engine detached.
 pub(crate) fn start_elasticsearch(context: &Context) -> Result<()> {
-    let container_name = container_name(context);
-    if context.manager.is_running(&container_name) {
-        info!("{} is already running", engine(context).name());
-        return Ok(());
+    crate::container::start_detached(
+        context,
+        &container_name(context),
+        engine(context).name(),
+        || {
+            stop_elasticsearch(context);
+            create_data_dir(context)?;
+            Ok(build_docker_command(context, true))
+        },
+    )
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::container::command_args;
+    use crate::context::testing::docker_context;
+
+    #[test]
+    fn engine_specs_select_image_names_and_mounts() {
+        let mut config = Config::default();
+        config.evebox_server.enabled = true;
+        config.elasticsearch.enabled = true;
+        let (_root, mut context) = docker_context(config);
+
+        assert_eq!(docker_image(&context), ELASTICSEARCH_IMAGE);
+        assert!(container_name(&context).ends_with("-elastic"));
+        assert_eq!(host_data_dir(&context), context.data_dir().join("elastic"));
+        let args = command_args(&build_docker_command(&context, true));
+        assert!(
+            args.iter()
+                .any(|a| a.ends_with(":/usr/share/elasticsearch/data"))
+        );
+        assert!(args.contains(&"bin/elasticsearch".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("OPENSEARCH_JAVA_OPTS=")));
+
+        context.config.elasticsearch.engine = SearchEngine::OpenSearch;
+        assert_eq!(docker_image(&context), OPENSEARCH_IMAGE);
+        assert!(container_name(&context).ends_with("-opensearch"));
+        assert_eq!(
+            host_data_dir(&context),
+            context.data_dir().join("opensearch")
+        );
+        let args = command_args(&build_docker_command(&context, true));
+        assert!(
+            args.iter()
+                .any(|a| a.ends_with(":/usr/share/opensearch/data"))
+        );
+        assert!(args.contains(&"bin/opensearch".to_string()));
+        assert!(args.contains(&"OPENSEARCH_JAVA_OPTS=-Xms1024m -Xmx1024m".to_string()));
     }
-
-    stop_elasticsearch(context);
-    create_data_dir(context)?;
-
-    build_docker_command(context, true).status_output()?;
-    Ok(())
 }

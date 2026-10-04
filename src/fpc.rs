@@ -18,8 +18,7 @@ pub(crate) struct ContainerBackend<'a>(pub(crate) &'a Context);
 
 impl Backend for ContainerBackend<'_> {
     fn spool_dir(&self) -> Result<PathBuf> {
-        // Bind mounted into the containers as /var/log/suricata/pcap.
-        Ok(self.0.data_dir().join("suricata").join("log").join("pcap"))
+        Ok(crate::suricata::pcap_dir(self.0))
     }
 
     fn check_remove_spool(&self) -> Result<()> {

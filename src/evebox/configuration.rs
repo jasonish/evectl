@@ -42,7 +42,6 @@ impl Backend for ContainerBackend<'_> {
     }
 
     fn reset_password(&self) -> Result<()> {
-        crate::evebox::server::reset_password(self.0);
-        Ok(())
+        crate::evebox::server::reset_password(self.0)
     }
 }

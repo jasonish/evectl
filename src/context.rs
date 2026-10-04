@@ -139,6 +139,18 @@ pub(crate) fn image_name(config: &Config, container: Container) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    /// A Docker-backed context rooted in a fresh temporary directory.
+    pub(crate) fn docker_context(config: Config) -> (tempfile::TempDir, Context) {
+        let root = tempfile::tempdir().unwrap();
+        let context = Context::new(config, root.path().to_path_buf(), ContainerManager::Docker);
+        (root, context)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

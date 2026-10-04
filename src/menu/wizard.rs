@@ -257,6 +257,6 @@ impl Backend for ContainerBackend {
     fn update_rules(&mut self, config: &Config) -> Result<()> {
         let context = self.context(config);
         crate::suricata::mkdirs(context)?;
-        crate::actions::update_rules(context, &["--no-reload", "--no-test"])
+        crate::rules::update_rules(context, &["--no-reload", "--no-test"])
     }
 }

@@ -52,7 +52,7 @@ fn write_assets(context: &Context) -> Result<()> {
     })?;
     // Only create the bind-mount root. Suricata owns creation of filestore;
     // its entrypoint may already have taken ownership of the log directory.
-    let log_directory = context.data_dir().join("suricata/log");
+    let log_directory = crate::suricata::log_dir(context);
     std::fs::create_dir_all(&log_directory)
         .with_context(|| format!("Cannot prepare log mount {}", log_directory.display()))?;
     let worker = directory.join("jobs.py");
@@ -116,10 +116,9 @@ fn command(context: &Context, spec: Option<&str>) -> Command {
     }
     command.arg(format!(
         "--volume={}",
-        context.manager.bind_mount(
-            &context.data_dir().join("suricata/log"),
-            "/var/log/suricata",
-        )
+        context
+            .manager
+            .bind_mount(&crate::suricata::log_dir(context), "/var/log/suricata")
     ));
     command.arg(context.image_name(Container::Suricata));
     command.arg(CONFIG_PATH);
