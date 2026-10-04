@@ -3,7 +3,6 @@
 
 //! Suricata rule management through suricatax-rules.
 
-use super::component::parse_version_parts;
 use super::paths::{Paths, load_evectl_config};
 use super::runtime::{Role, stop_managed_process};
 use super::stack::capture_restart_plan;
@@ -12,6 +11,7 @@ use super::suricata::{
     suricata_installed_version, wait_for_suricata_pid_readiness,
 };
 use crate::prelude::*;
+use semver::Version;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use suricatax_rules::cli as suricatax_cli;
@@ -226,91 +226,36 @@ fn restart_suricata_for_rules(paths: &Paths) -> Result<()> {
     result.map_err(|err| anyhow!("Rules updated, but restarting Suricata failed: {}", err))
 }
 
+/// The version used to select rules: the running executable's, else
+/// the installed marker's, else the bundled installer's.
 fn detect_suricata_version_for_rules_update(paths: &Paths) -> Option<String> {
-    if let Some(version) = suricata_runtime_version(paths) {
-        return Some(version);
-    }
-
-    match suricata_installed_version(paths) {
-        Ok(Some(version)) => normalize_suricata_version(&version)
-            .or_else(|| normalize_suricata_version(SURICATA_VERSION)),
-        Ok(None) => normalize_suricata_version(SURICATA_VERSION),
+    let installed = || match suricata_installed_version(paths) {
+        Ok(Some(version)) => Version::parse(&version).ok(),
+        Ok(None) => None,
         Err(err) => {
             warn!(
                 "Failed to determine installed Suricata version for rules update: {}",
                 err
             );
-            normalize_suricata_version(SURICATA_VERSION)
+            None
         }
-    }
+    };
+    suricata_runtime_version(paths)
+        .or_else(installed)
+        .or_else(|| Version::parse(SURICATA_VERSION).ok())
+        .map(|version| release_version(&version))
 }
 
-fn suricata_runtime_version(paths: &Paths) -> Option<String> {
-    let suricata_path = find_suricata_executable(paths)?;
-    let output = Command::new(&suricata_path).arg("-V").output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Some(version) = parse_suricata_version_from_text(&stdout) {
-        return Some(version);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    parse_suricata_version_from_text(&stderr)
+fn suricata_runtime_version(paths: &Paths) -> Option<Version> {
+    let mut command = Command::new(find_suricata_executable(paths)?);
+    command.arg("-V");
+    crate::suricata::run_version_command(command).ok().flatten()
 }
 
-fn parse_suricata_version_from_text(text: &str) -> Option<String> {
-    use std::sync::LazyLock;
-
-    static VERSION_HINT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\b(?:suricata\s+)?version\s+([0-9]+(?:\.[0-9]+){1,3}(?:-[0-9]+)?)\b",
-        )
-        .expect("hardcoded regex is valid")
-    });
-    static SEMVER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\b([0-9]+(?:\.[0-9]+){1,3}(?:-[0-9]+)?)\b")
-            .expect("hardcoded regex is valid")
-    });
-
-    if let Some(caps) = VERSION_HINT_RE.captures(text)
-        && let Some(candidate) = caps.get(1)
-        && let Some(version) = normalize_suricata_version(candidate.as_str())
-    {
-        return Some(version);
-    }
-
-    for caps in SEMVER_RE.captures_iter(text) {
-        if let Some(candidate) = caps.get(1)
-            && let Some(version) = normalize_suricata_version(candidate.as_str())
-        {
-            return Some(version);
-        }
-    }
-
-    None
-}
-
-fn normalize_suricata_version(version: &str) -> Option<String> {
-    let candidate = version
-        .trim()
-        .trim_matches(['"', '\''])
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .split('-')
-        .next()
-        .unwrap_or("")
-        .trim_matches(|ch: char| !ch.is_ascii_digit() && ch != '.');
-
-    if parse_version_parts(candidate).is_some() {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
+/// Rule sources are selected by release, without any pre-release or
+/// build suffix.
+fn release_version(version: &Version) -> String {
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
 }
 
 pub(super) fn update_sources(paths: &Paths) -> Result<()> {

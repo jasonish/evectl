@@ -481,6 +481,11 @@ mod tests {
             parse_version("Suricata 9.0.0-dev"),
             Some(Version::parse("9.0.0-dev").unwrap())
         );
+        // A packaging revision, as the Windows installer may report.
+        assert_eq!(
+            parse_version("Suricata version 8.0.6-1"),
+            Some(Version::parse("8.0.6-1").unwrap())
+        );
         assert_eq!(parse_version("unrecognized output"), None);
 
         assert!(!version_is_supported(&Version::parse("8.0.6-rc1").unwrap()));
