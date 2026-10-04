@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use super::paths::{ensure_dir, get_evebox_data_dir, get_evebox_install_dir, get_evebox_root_dir};
+use super::paths::{Paths, ensure_dir};
 use crate::config::EveBoxChannel;
 use crate::prelude::*;
 use anyhow::ensure;
@@ -96,9 +96,9 @@ pub(super) const EVEBOX_CHANNEL_MARKER: &str = ".evectl-evebox-channel";
 /// Replace the EveBox "admin" user, prompting for the new password.
 /// Uses the server's data directory, where EveBox keeps its
 /// configuration database.
-pub(super) fn reset_evebox_admin_password() -> Result<()> {
-    let evebox_exe = get_evebox_exe_path()?;
-    let data_dir = get_evebox_data_dir()?;
+pub(super) fn reset_evebox_admin_password(paths: &Paths) -> Result<()> {
+    let evebox_exe = get_evebox_exe_path(paths)?;
+    let data_dir = paths.evebox_data_dir();
     ensure_dir(&data_dir)?;
 
     // Removal fails if the user does not exist yet.
@@ -147,8 +147,8 @@ pub(super) fn find_evebox_exe(dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-pub(super) fn get_evebox_exe_path() -> Result<PathBuf> {
-    find_evebox_exe(&get_evebox_install_dir()?)?
+pub(super) fn get_evebox_exe_path(paths: &Paths) -> Result<PathBuf> {
+    find_evebox_exe(&paths.evebox_install_dir())?
         .ok_or_else(|| anyhow!("EveBox is not installed. Run 'evectl install' first."))
 }
 
@@ -167,8 +167,8 @@ fn extract_evebox_version_from_path(path: &Path) -> Option<String> {
     None
 }
 
-pub(super) fn get_evebox_installed_version() -> Result<Option<String>> {
-    evebox_installed_version(&get_evebox_install_dir()?)
+pub(super) fn get_evebox_installed_version(paths: &Paths) -> Result<Option<String>> {
+    evebox_installed_version(&paths.evebox_install_dir())
 }
 
 pub(super) fn evebox_installed_version(install_dir: &Path) -> Result<Option<String>> {
@@ -214,8 +214,8 @@ pub(super) fn evebox_installed_channel(install_dir: &Path) -> Result<Option<EveB
     }))
 }
 
-pub(super) fn uninstall_evebox() -> Result<()> {
-    let root_dir = get_evebox_root_dir()?;
+pub(super) fn uninstall_evebox(paths: &Paths) -> Result<()> {
+    let root_dir = paths.evebox_dir();
 
     if !root_dir.exists() {
         info!(

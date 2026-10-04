@@ -151,46 +151,49 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
     use super::menu::{
         config_set_evebox_channel, log_status, menu_main, project_info, windows_status,
     };
-    use super::paths::load_evectl_config;
+    use super::paths::{Paths, load_evectl_config};
     use super::rules::{
         disable_ruleset, enable_ruleset, list_enabled_rulesets, update_rules, update_sources,
     };
     use super::stack::{restart_stack, run_housekeeper, start_stack, stop_stack};
     use super::uninstall::uninstall;
 
+    let paths = Paths::discover()?;
     match args.command {
-        Some(Commands::Start { debug, guid }) => start_stack(debug, guid),
-        Some(Commands::Housekeep { retention_days }) => run_housekeeper(retention_days),
-        Some(Commands::Stop) => stop_stack(),
-        Some(Commands::Restart) => restart_stack(),
+        Some(Commands::Start { debug, guid }) => start_stack(&paths, debug, guid),
+        Some(Commands::Housekeep { retention_days }) => run_housekeeper(&paths, retention_days),
+        Some(Commands::Stop) => stop_stack(&paths),
+        Some(Commands::Restart) => restart_stack(&paths),
         Some(Commands::Status) => {
-            let config = load_evectl_config()?;
-            log_status(windows_status(&config)?, &config);
+            let config = load_evectl_config(&paths)?;
+            log_status(windows_status(&paths, &config)?, &config);
             Ok(())
         }
-        Some(Commands::UpdateRules) => update_rules(false, false),
-        Some(Commands::Update) => upgrade_windows_components().map(|_| ()),
+        Some(Commands::UpdateRules) => update_rules(&paths, false, false),
+        Some(Commands::Update) => upgrade_windows_components(&paths).map(|_| ()),
         Some(Commands::Version) => {
             println!("{}", env!("EVECTL_VERSION"));
             Ok(())
         }
-        Some(Commands::Info) => project_info(),
-        Some(Commands::Install) => install(),
-        Some(Commands::Uninstall { config, all, yes }) => uninstall(config, all, yes),
+        Some(Commands::Info) => project_info(&paths),
+        Some(Commands::Install) => install(&paths),
+        Some(Commands::Uninstall { config, all, yes }) => uninstall(&paths, config, all, yes),
         Some(Commands::ListInterfaces) => list_interfaces(),
-        Some(Commands::AddShortcuts) => add_shortcuts(),
+        Some(Commands::AddShortcuts) => add_shortcuts(&paths),
         Some(Commands::Config { command }) => match command {
-            ConfigCommands::SetInterface => config_set_interface(),
-            ConfigCommands::SetEveBoxChannel { channel } => config_set_evebox_channel(channel),
+            ConfigCommands::SetInterface => config_set_interface(&paths),
+            ConfigCommands::SetEveBoxChannel { channel } => {
+                config_set_evebox_channel(&paths, channel)
+            }
         },
         Some(Commands::Rules { command }) => match command {
-            RulesCommands::Update { force, quiet } => update_rules(force, quiet),
-            RulesCommands::UpdateSources => update_sources(),
-            RulesCommands::EnableRuleset { name } => enable_ruleset(name.as_deref()),
-            RulesCommands::DisableRuleset { name } => disable_ruleset(&name),
-            RulesCommands::ListEnabledRulesets => list_enabled_rulesets(),
+            RulesCommands::Update { force, quiet } => update_rules(&paths, force, quiet),
+            RulesCommands::UpdateSources => update_sources(&paths),
+            RulesCommands::EnableRuleset { name } => enable_ruleset(&paths, name.as_deref()),
+            RulesCommands::DisableRuleset { name } => disable_ruleset(&paths, &name),
+            RulesCommands::ListEnabledRulesets => list_enabled_rulesets(&paths),
         },
-        None => menu_main(),
+        None => menu_main(&paths),
     }
 }
 

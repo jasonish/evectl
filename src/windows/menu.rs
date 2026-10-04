@@ -14,16 +14,10 @@ use super::interfaces::{
     get_configured_interface_guid, get_configured_interface_value, get_windows_interfaces,
     list_interfaces,
 };
-use super::paths::{
-    ensure_dir, get_evebox_data_dir, get_evebox_install_dir, get_evebox_pid_path,
-    get_evebox_root_dir, get_evebox_runtime_path, get_evectl_config_path, get_evectl_data_dir,
-    get_suricata_filestore_dir, get_suricata_pcap_dir, load_evectl_config,
-};
+use super::paths::{Paths, ensure_dir, load_evectl_config};
 use super::rules::{WindowsRulesBackend, update_rules};
-use super::runtime::{
-    ROLE_EVEBOX, ROLE_EVEBOX_AGENT, ROLE_HOUSEKEEPER, ROLE_SURICATA, count_named_processes,
-    managed_process_is_running,
-};
+use super::runtime::Role;
+use super::runtime::{count_named_processes, managed_process_is_running};
 use super::stack::{evebox_server_url, restart_stack, start_stack, stop_stack};
 use super::suricata::find_suricata_executable;
 use super::uninstall::uninstall_windows_components;
@@ -80,18 +74,21 @@ impl WindowsStatus {
     }
 }
 
-pub(super) fn windows_status(config: &crate::config::Config) -> Result<WindowsStatus> {
+pub(super) fn windows_status(
+    paths: &Paths,
+    config: &crate::config::Config,
+) -> Result<WindowsStatus> {
     Ok(WindowsStatus {
         suricata_enabled: config.suricata.enabled,
-        suricata_installed: find_suricata_executable().is_some(),
-        suricata_running: managed_process_is_running(ROLE_SURICATA)?,
-        evebox_installed: find_evebox_exe(&get_evebox_install_dir()?)?.is_some(),
+        suricata_installed: find_suricata_executable(paths).is_some(),
+        suricata_running: managed_process_is_running(paths, Role::Suricata)?,
+        evebox_installed: find_evebox_exe(&paths.evebox_install_dir())?.is_some(),
         evebox_server_enabled: config.evebox_server.enabled,
-        evebox_server_running: managed_process_is_running(ROLE_EVEBOX)?,
+        evebox_server_running: managed_process_is_running(paths, Role::EveBoxServer)?,
         evebox_agent_enabled: config.evebox_agent.enabled,
-        evebox_agent_running: managed_process_is_running(ROLE_EVEBOX_AGENT)?,
+        evebox_agent_running: managed_process_is_running(paths, Role::EveBoxAgent)?,
         housekeeper_enabled: super::file_extraction::cleanup_enabled(config),
-        housekeeper_running: managed_process_is_running(ROLE_HOUSEKEEPER)?,
+        housekeeper_running: managed_process_is_running(paths, Role::Housekeeper)?,
     })
 }
 
@@ -146,27 +143,29 @@ pub(super) fn log_status(status: WindowsStatus, config: &crate::config::Config) 
     }
 }
 
-pub(super) fn menu_main() -> Result<()> {
+pub(super) fn menu_main(paths: &Paths) -> Result<()> {
     // Like the Linux menu, the configuration is held in memory,
     // mutated by the configure menus, and only saved here.
-    let mut config = match load_evectl_config() {
+    let mut config = match load_evectl_config(paths) {
         Ok(config) => config,
         Err(err) => {
             error!("Failed to load configuration: {}", err);
-            crate::config::Config::default_with_filename(&get_evectl_config_path()?)
+            crate::config::Config::default_with_filename(&paths.config_file())
         }
     };
 
-    offer_install_if_missing(&mut config);
+    offer_install_if_missing(paths, &mut config);
 
-    crate::menu::main::menu(&mut config, &mut WindowsMainMenuBackend)
+    crate::menu::main::menu(&mut config, &mut WindowsMainMenuBackend { paths })
 }
 
-struct WindowsMainMenuBackend;
+struct WindowsMainMenuBackend<'a> {
+    paths: &'a Paths,
+}
 
-impl crate::menu::main::Backend for WindowsMainMenuBackend {
+impl crate::menu::main::Backend for WindowsMainMenuBackend<'_> {
     fn status(&mut self, config: &crate::config::Config) -> crate::menu::main::Status {
-        let status = match windows_status(config) {
+        let status = match windows_status(self.paths, config) {
             Ok(status) => status,
             Err(err) => {
                 error!("Failed to determine Windows service status: {}", err);
@@ -174,9 +173,7 @@ impl crate::menu::main::Backend for WindowsMainMenuBackend {
             }
         };
         log_status(status, config);
-        let restart_recommended = get_evectl_data_dir()
-            .map(|data_dir| super::update::restart_recommended(&data_dir))
-            .unwrap_or(false);
+        let restart_recommended = super::update::restart_recommended(self.paths.root());
         crate::menu::main::Status {
             running: status.any_running(),
             ready_to_start: status.ready_to_start(),
@@ -185,7 +182,7 @@ impl crate::menu::main::Backend for WindowsMainMenuBackend {
     }
 
     fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
-        ensure_dir(&get_evectl_data_dir()?)?;
+        ensure_dir(self.paths.root())?;
         config.save()
     }
 
@@ -205,58 +202,58 @@ impl crate::menu::main::Backend for WindowsMainMenuBackend {
     }
 
     fn start(&mut self, _config: &crate::config::Config) -> Result<()> {
-        start_stack(false, None)
+        start_stack(self.paths, false, None)
     }
 
     fn stop(&mut self, _config: &crate::config::Config) -> Result<()> {
-        stop_stack()
+        stop_stack(self.paths)
     }
 
     fn restart(&mut self, _config: &crate::config::Config) -> Result<()> {
-        restart_stack()
+        restart_stack(self.paths)
     }
 
     fn install(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        install_with(config)
+        install_with(self.paths, config)
     }
 
     fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
-        update_rules(false, false)
+        update_rules(self.paths, false, false)
     }
 
     fn rules(&mut self, _config: &crate::config::Config) -> Box<dyn crate::rules::Backend + '_> {
-        Box::new(WindowsRulesBackend)
+        Box::new(WindowsRulesBackend { paths: self.paths })
     }
 
     fn update(
         &mut self,
         _config: &crate::config::Config,
     ) -> Result<crate::menu::main::UpdateOutcome> {
-        Ok(match upgrade_windows_components()? {
+        Ok(match upgrade_windows_components(self.paths)? {
             UpdateOutcome::Completed => crate::menu::main::UpdateOutcome::Completed,
             UpdateOutcome::RestartEveCtl => crate::menu::main::UpdateOutcome::ExitMenu,
         })
     }
 
     fn configure(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        crate::menu::configure::menu(config, &mut WindowsConfigureBackend)
+        crate::menu::configure::menu(config, &mut WindowsConfigureBackend { paths: self.paths })
     }
 
     fn other(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        other_menu(config)
+        other_menu(self.paths, config)
     }
 }
 
 /// Mirror the Linux onboarding: on first run walk through the setup
 /// wizard; afterwards, offer to install any missing components.
-fn offer_install_if_missing(config: &mut crate::config::Config) {
-    let status = match windows_status(config) {
+fn offer_install_if_missing(paths: &Paths, config: &mut crate::config::Config) {
+    let status = match windows_status(paths, config) {
         Ok(status) => status,
         Err(_) => return,
     };
 
     if !status.any_enabled() {
-        if let Err(err) = wizard(config)
+        if let Err(err) = wizard(paths, config)
             && !prompt_was_cancelled(&err)
         {
             error!("{}", err);
@@ -279,26 +276,28 @@ fn offer_install_if_missing(config: &mut crate::config::Config) {
     if let Ok(true) = inquire::Confirm::new("Required components not installed, install now?")
         .with_default(true)
         .prompt()
-        && let Err(err) = install_configured_components(config)
+        && let Err(err) = install_configured_components(paths, config)
     {
         error!("Failed to install components: {}", err);
         crate::prompt::enter();
     }
 }
 
-pub(super) fn wizard(config: &mut crate::config::Config) -> Result<()> {
-    crate::menu::wizard::menu(config, &mut WindowsWizardBackend)
+pub(super) fn wizard(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
+    crate::menu::wizard::menu(config, &mut WindowsWizardBackend { paths })
 }
 
-struct WindowsWizardBackend;
+struct WindowsWizardBackend<'a> {
+    paths: &'a Paths,
+}
 
-impl crate::menu::wizard::Backend for WindowsWizardBackend {
+impl crate::menu::wizard::Backend for WindowsWizardBackend<'_> {
     fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(WindowsSuricataBackend)
+        Box::new(WindowsSuricataBackend { paths: self.paths })
     }
 
     fn evebox_server(&self) -> Box<dyn crate::evebox::configuration::Backend + '_> {
-        Box::new(WindowsEveBoxServerBackend)
+        Box::new(WindowsEveBoxServerBackend { paths: self.paths })
     }
 
     fn platform_questions(&mut self, config: &mut crate::config::Config) -> Result<bool> {
@@ -310,15 +309,15 @@ impl crate::menu::wizard::Backend for WindowsWizardBackend {
     }
 
     fn install(&mut self, config: &crate::config::Config) -> Result<()> {
-        install_configured_components(config)
+        install_configured_components(self.paths, config)
     }
 
     fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
-        update_rules(false, false)
+        update_rules(self.paths, false, false)
     }
 
     fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
-        ensure_dir(&get_evectl_data_dir()?)?;
+        ensure_dir(self.paths.root())?;
         config.save()
     }
 }
@@ -346,15 +345,18 @@ fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
     .map(|selection| selection.tag)
 }
 
-pub(super) fn config_set_evebox_channel(channel: Option<EveBoxChannel>) -> Result<()> {
-    let mut config = load_evectl_config()?;
+pub(super) fn config_set_evebox_channel(
+    paths: &Paths,
+    channel: Option<EveBoxChannel>,
+) -> Result<()> {
+    let mut config = load_evectl_config(paths)?;
     let Some(channel) =
         channel.or_else(|| prompt_for_evebox_channel(config.windows.evebox_channel))
     else {
         return Ok(());
     };
     config.windows.evebox_channel = channel;
-    ensure_dir(&get_evectl_data_dir()?)?;
+    ensure_dir(paths.root())?;
     config.save()?;
     println!(
         "EveBox channel saved as {channel}. Run 'evectl update' to apply it to an existing installation."
@@ -362,22 +364,24 @@ pub(super) fn config_set_evebox_channel(channel: Option<EveBoxChannel>) -> Resul
     Ok(())
 }
 
-struct WindowsConfigureBackend;
+struct WindowsConfigureBackend<'a> {
+    paths: &'a Paths,
+}
 
 const CONFIGURE_EVEBOX_CHANNEL: &str = "evebox-channel";
 const CONFIGURE_SHORTCUTS: &str = "shortcuts";
 
-impl crate::menu::configure::Backend for WindowsConfigureBackend {
+impl crate::menu::configure::Backend for WindowsConfigureBackend<'_> {
     fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(WindowsSuricataBackend)
+        Box::new(WindowsSuricataBackend { paths: self.paths })
     }
 
     fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_> {
-        Box::new(WindowsFpcBackend)
+        Box::new(WindowsFpcBackend { paths: self.paths })
     }
 
     fn configure_evebox_server(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        crate::menu::evebox_server::menu(config, &WindowsEveBoxServerBackend)
+        crate::menu::evebox_server::menu(config, &WindowsEveBoxServerBackend { paths: self.paths })
     }
 
     fn platform_options(
@@ -404,7 +408,9 @@ impl crate::menu::configure::Backend for WindowsConfigureBackend {
                 }
             }
             CONFIGURE_SHORTCUTS => {
-                run_menu_action_with_pause("Failed to add desktop shortcuts", add_shortcuts)
+                run_menu_action_with_pause("Failed to add desktop shortcuts", || {
+                    add_shortcuts(self.paths)
+                })
             }
             _ => bail!("Unknown configuration option: {id}"),
         }
@@ -412,11 +418,13 @@ impl crate::menu::configure::Backend for WindowsConfigureBackend {
     }
 }
 
-struct WindowsFpcBackend;
+struct WindowsFpcBackend<'a> {
+    paths: &'a Paths,
+}
 
-impl crate::fpc::Backend for WindowsFpcBackend {
+impl crate::fpc::Backend for WindowsFpcBackend<'_> {
     fn spool_dir(&self) -> Result<PathBuf> {
-        get_suricata_pcap_dir()
+        Ok(self.paths.suricata_pcap_dir())
     }
 
     fn check_remove_spool(&self) -> Result<()> {
@@ -437,9 +445,11 @@ impl crate::fpc::Backend for WindowsFpcBackend {
     }
 }
 
-struct WindowsSuricataBackend;
+struct WindowsSuricataBackend<'a> {
+    paths: &'a Paths,
+}
 
-impl crate::suricata::configuration::Backend for WindowsSuricataBackend {
+impl crate::suricata::configuration::Backend for WindowsSuricataBackend<'_> {
     fn interfaces(&self) -> Result<Vec<crate::suricata::configuration::Interface>> {
         Ok(get_windows_interfaces()?
             .into_iter()
@@ -455,11 +465,13 @@ impl crate::suricata::configuration::Backend for WindowsSuricataBackend {
     }
 
     fn filestore_dir(&self) -> Result<PathBuf> {
-        get_suricata_filestore_dir()
+        Ok(self.paths.suricata_filestore_dir())
     }
 
     fn check_remove_extracted_files(&self) -> Result<()> {
-        if count_named_processes("suricata")? > 0 || managed_process_is_running(ROLE_HOUSEKEEPER)? {
+        if count_named_processes("suricata")? > 0
+            || managed_process_is_running(self.paths, Role::Housekeeper)?
+        {
             bail!(
                 "Suricata or housekeeping is running; stop services before removing extracted files"
             );
@@ -478,9 +490,11 @@ impl crate::suricata::configuration::Backend for WindowsSuricataBackend {
     }
 }
 
-struct WindowsEveBoxServerBackend;
+struct WindowsEveBoxServerBackend<'a> {
+    paths: &'a Paths,
+}
 
-impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend {
+impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend<'_> {
     fn supports_search_engines(&self) -> bool {
         false
     }
@@ -497,11 +511,11 @@ impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend {
     }
 
     fn reset_password(&self) -> Result<()> {
-        reset_evebox_admin_password()
+        reset_evebox_admin_password(self.paths)
     }
 }
 
-fn other_menu(config: &mut crate::config::Config) -> Result<()> {
+fn other_menu(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
     loop {
         crate::term::title("EveCtl: Other Menu Items");
 
@@ -520,7 +534,7 @@ fn other_menu(config: &mut crate::config::Config) -> Result<()> {
 
         match selection.tag {
             OtherMenuOption::Install => {
-                run_menu_action_with_pause("Installation failed", || install_with(config))
+                run_menu_action_with_pause("Installation failed", || install_with(paths, config))
             }
             OtherMenuOption::Uninstall => {
                 let uninstall =
@@ -529,17 +543,18 @@ fn other_menu(config: &mut crate::config::Config) -> Result<()> {
                         .prompt()
                         .unwrap_or(false);
                 if uninstall {
-                    run_menu_action_with_pause(
-                        "Uninstallation failed",
-                        uninstall_windows_components,
-                    );
+                    run_menu_action_with_pause("Uninstallation failed", || {
+                        uninstall_windows_components(paths)
+                    });
                 }
             }
             OtherMenuOption::Interfaces => {
                 run_menu_action_with_pause("Failed to list network interfaces", list_interfaces)
             }
             OtherMenuOption::Info => {
-                run_menu_action_with_pause("Failed to show project information", project_info)
+                run_menu_action_with_pause("Failed to show project information", || {
+                    project_info(paths)
+                })
             }
             OtherMenuOption::Return => break,
         }
@@ -566,25 +581,13 @@ fn prompt_was_cancelled(err: &anyhow::Error) -> bool {
     )
 }
 
-pub(super) fn project_info() -> Result<()> {
-    let data_root = get_evectl_data_dir()?;
-
-    let evectl_config = data_root.join("evectl.toml");
-    let suricata_config_dir = data_root.join("suricata");
-    let suricata_rules_dir = suricata_config_dir.join("lib").join("rules");
-    let suricata_update_dir = suricata_config_dir.join("lib").join("update");
-    let suricata_update_cache_dir = suricata_update_dir.join("cache");
-    let suricata_install_dir = data_root.join("suricata").join("install");
-    let suricata_log_dir = data_root.join("suricata").join("log");
-    let suricata_run_dir = data_root.join("suricata").join("run");
-    let evebox_root_dir = get_evebox_root_dir()?;
-    let evebox_install_dir = get_evebox_install_dir()?;
-    let evebox_data_dir = get_evebox_data_dir()?;
+pub(super) fn project_info(paths: &Paths) -> Result<()> {
+    let evebox_install_dir = paths.evebox_install_dir();
     let evebox_exe = find_evebox_exe(&evebox_install_dir)?;
     let evectl_exe = std::env::current_exe().ok();
 
     println!("Windows path-based directories:");
-    println!("  Data root:                 {}", data_root.display());
+    println!("  Data root:                 {}", paths.root().display());
     if let Some(evectl_exe) = &evectl_exe {
         println!("  Current EveCtl binary:     {}", evectl_exe.display());
     } else {
@@ -593,76 +596,85 @@ pub(super) fn project_info() -> Result<()> {
     println!();
 
     println!("Config and rules paths in use:");
-    println!("  EveCtl config file:        {}", evectl_config.display());
-    match get_configured_interface_value() {
+    println!(
+        "  EveCtl config file:        {}",
+        paths.config_file().display()
+    );
+    match get_configured_interface_value(paths) {
         Ok(Some(interface)) => println!("  Configured interface:      {}", interface),
         Ok(None) => println!("  Configured interface:      <not set>"),
         Err(err) => println!("  Configured interface:      <error: {}>", err),
     }
-    match get_configured_interface_guid() {
+    match get_configured_interface_guid(paths) {
         Ok(Some(guid)) => println!("  Resolved interface GUID:   {}", guid),
         Ok(None) => println!("  Resolved interface GUID:   <not set>"),
         Err(err) => println!("  Resolved interface GUID:   <error: {}>", err),
     }
     println!(
         "  Suricata config directory: {}",
-        suricata_config_dir.display()
+        paths.suricata_dir().display()
     );
     println!(
         "  Suricata rules directory:  {}",
-        suricata_rules_dir.display()
+        paths.suricata_rules_dir().display()
     );
     println!(
         "  Rule update state:         {}",
-        suricata_update_dir.display()
+        paths.suricata_update_dir().display()
     );
     println!(
         "  Rule update cache:         {}",
-        suricata_update_cache_dir.display()
+        paths.suricata_update_dir().join("cache").display()
     );
     println!();
 
     println!("Suricata paths in use:");
     println!(
         "  Suricata install dir:      {}",
-        suricata_install_dir.display()
+        paths.suricata_install_dir().display()
     );
     println!(
         "  Suricata logs:             {}",
-        suricata_log_dir.display()
+        paths.suricata_log_dir().display()
     );
     println!(
         "  Suricata packet captures:  {}",
-        get_suricata_pcap_dir()?.display()
+        paths.suricata_pcap_dir().display()
     );
     println!(
         "  Suricata runtime files:    {}",
-        suricata_run_dir.display()
+        paths.suricata_run_dir().display()
     );
     println!();
 
     println!("Other Windows data paths:");
-    println!("  EveBox root directory:     {}", evebox_root_dir.display());
+    println!(
+        "  EveBox root directory:     {}",
+        paths.evebox_dir().display()
+    );
     println!(
         "  EveBox install directory:  {}",
         evebox_install_dir.display()
     );
-    println!("  EveBox data directory:     {}", evebox_data_dir.display());
+    println!(
+        "  EveBox data directory:     {}",
+        paths.evebox_data_dir().display()
+    );
     println!(
         "  Selected EveBox channel:   {}",
-        load_evectl_config()?.windows.evebox_channel
+        load_evectl_config(paths)?.windows.evebox_channel
     );
     println!(
         "  EveBox PID file:           {}",
-        get_evebox_pid_path()?.display()
+        Role::EveBoxServer.pid_path(paths).display()
     );
     println!(
         "  EveBox runtime metadata:   {}",
-        get_evebox_runtime_path()?.display()
+        Role::EveBoxServer.runtime_path(paths).display()
     );
     if let Some(evebox_exe) = evebox_exe {
         println!("  Current EveBox binary:     {}", evebox_exe.display());
-        if let Some(version) = get_evebox_installed_version()? {
+        if let Some(version) = get_evebox_installed_version(paths)? {
             println!("  Current EveBox version:    {}", version);
         }
         if let Some(channel) = evebox_installed_channel(&evebox_install_dir)? {

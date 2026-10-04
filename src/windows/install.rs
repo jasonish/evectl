@@ -9,10 +9,7 @@ use super::evebox::{
 };
 use super::menu::wizard;
 use super::npcap::{download_npcap, maybe_upgrade_npcap, npcap_upgrade_needed};
-use super::paths::{
-    get_desktop_dir, get_evebox_data_dir, get_evebox_install_dir, get_evebox_root_dir,
-    get_evectl_data_dir, load_evectl_config,
-};
+use super::paths::{Paths, load_evectl_config};
 use super::stack::{
     capture_restart_plan, evebox_server_url, restart_managed_components, stop_stack,
 };
@@ -143,8 +140,12 @@ pub(super) fn wait_for_installer_completion() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn add_shortcuts() -> Result<()> {
-    let desktop_dir = get_desktop_dir()?;
+pub(super) fn desktop_dir() -> Result<PathBuf> {
+    dirs::desktop_dir().ok_or_else(|| anyhow!("Could not find desktop directory"))
+}
+
+pub(super) fn add_shortcuts(paths: &Paths) -> Result<()> {
+    let desktop_dir = desktop_dir()?;
     let evectl_exe =
         std::env::current_exe().context("Failed to locate current EveCtl executable")?;
 
@@ -162,7 +163,7 @@ pub(super) fn add_shortcuts() -> Result<()> {
         start_shortcut.display()
     ))?;
 
-    let evebox_url = evebox_server_url(&load_evectl_config()?);
+    let evebox_url = evebox_server_url(&load_evectl_config(paths)?);
     let evebox_contents = format!("[InternetShortcut]\r\nURL={}\r\n", evebox_url);
     std::fs::write(&evebox_shortcut, evebox_contents).context(format!(
         "Failed to write desktop shortcut {}",
@@ -179,30 +180,33 @@ pub(super) fn add_shortcuts() -> Result<()> {
 
 /// Install what the configuration calls for, running the setup
 /// wizard first if nothing has been configured yet.
-pub(super) fn install() -> Result<()> {
-    let mut config = load_evectl_config()?;
-    install_with(&mut config)
+pub(super) fn install(paths: &Paths) -> Result<()> {
+    let mut config = load_evectl_config(paths)?;
+    install_with(paths, &mut config)
 }
 
-pub(super) fn install_with(config: &mut crate::config::Config) -> Result<()> {
+pub(super) fn install_with(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
     if !(config.suricata.enabled || config.evebox_server.enabled || config.evebox_agent.enabled) {
-        return wizard(config);
+        return wizard(paths, config);
     }
 
-    install_configured_components(config)
+    install_configured_components(paths, config)
 }
 
 /// Install the components required by the enabled services: Npcap and
 /// Suricata only when Suricata is enabled, EveBox for a server or
 /// agent.
-pub(super) fn install_configured_components(config: &crate::config::Config) -> Result<()> {
+pub(super) fn install_configured_components(
+    paths: &Paths,
+    config: &crate::config::Config,
+) -> Result<()> {
     if config.suricata.enabled {
-        download_npcap()?;
-        install_or_upgrade_suricata(false)?;
+        download_npcap(paths)?;
+        install_or_upgrade_suricata(paths, false)?;
     }
 
     if config.evebox_server.enabled || config.evebox_agent.enabled {
-        install_evebox(config.windows.evebox_channel)?;
+        install_evebox(paths, config.windows.evebox_channel)?;
     }
 
     Ok(())
@@ -211,13 +215,13 @@ pub(super) fn install_configured_components(config: &crate::config::Config) -> R
 /// Only the components required by the enabled services are
 /// considered for upgrade; a server-only install for example must
 /// not pull in Npcap or Suricata.
-fn build_upgrade_plan(config: &crate::config::Config) -> Result<UpgradePlan> {
+fn build_upgrade_plan(paths: &Paths, config: &crate::config::Config) -> Result<UpgradePlan> {
     let use_suricata = config.suricata.enabled;
     let use_evebox = config.evebox_server.enabled || config.evebox_agent.enabled;
 
     Ok(UpgradePlan {
         npcap: use_suricata && npcap_upgrade_needed()?,
-        suricata: use_suricata && suricata_upgrade_needed()?,
+        suricata: use_suricata && suricata_upgrade_needed(paths)?,
         // Always refresh the selected channel on an explicit update. This
         // covers same-version development revisions and intentional channel
         // switches (including development -> an older stable release).
@@ -225,45 +229,42 @@ fn build_upgrade_plan(config: &crate::config::Config) -> Result<UpgradePlan> {
     })
 }
 
-pub(super) fn upgrade_windows_components() -> Result<UpdateOutcome> {
-    let data_dir = get_evectl_data_dir()?;
-    super::update::run(
-        crate::selfupdate::self_update(),
-        &data_dir,
-        upgrade_components,
-    )
+pub(super) fn upgrade_windows_components(paths: &Paths) -> Result<UpdateOutcome> {
+    super::update::run(crate::selfupdate::self_update(), paths.root(), || {
+        upgrade_components(paths)
+    })
 }
 
-fn upgrade_components() -> Result<()> {
-    let config = load_evectl_config()?;
-    let plan = build_upgrade_plan(&config)?;
+fn upgrade_components(paths: &Paths) -> Result<()> {
+    let config = load_evectl_config(paths)?;
+    let plan = build_upgrade_plan(paths, &config)?;
     if !plan.any() {
         info!("No component upgrades are available.");
         return Ok(());
     }
 
-    let restart_plan = capture_restart_plan()?;
+    let restart_plan = capture_restart_plan(paths)?;
     if restart_plan.any() {
         info!("Stopping managed Windows services before upgrade");
-        stop_stack()?;
+        stop_stack(paths)?;
     }
 
     let upgrade_result = (|| {
         if plan.npcap {
-            maybe_upgrade_npcap()?;
+            maybe_upgrade_npcap(paths)?;
         }
         if plan.suricata {
-            maybe_upgrade_suricata()?;
+            maybe_upgrade_suricata(paths)?;
         }
         if plan.evebox {
-            install_or_upgrade_evebox(true, config.windows.evebox_channel)?;
+            install_or_upgrade_evebox(paths, true, config.windows.evebox_channel)?;
         }
         Ok(())
     })();
 
     if let Err(err) = upgrade_result {
         if restart_plan.any()
-            && let Err(restart_err) = restart_managed_components(&restart_plan)
+            && let Err(restart_err) = restart_managed_components(paths, &restart_plan)
         {
             return Err(anyhow!(
                 "Upgrade failed: {}\nAdditionally failed to restart previously running services: {}",
@@ -275,20 +276,20 @@ fn upgrade_components() -> Result<()> {
     }
 
     if restart_plan.any() {
-        restart_managed_components(&restart_plan)?;
+        restart_managed_components(paths, &restart_plan)?;
     }
 
     Ok(())
 }
 
-fn install_evebox(channel: EveBoxChannel) -> Result<()> {
-    install_or_upgrade_evebox(false, channel)
+fn install_evebox(paths: &Paths, channel: EveBoxChannel) -> Result<()> {
+    install_or_upgrade_evebox(paths, false, channel)
 }
 
-fn install_or_upgrade_evebox(upgrade: bool, channel: EveBoxChannel) -> Result<()> {
-    let root_dir = get_evebox_root_dir()?;
-    let install_dir = get_evebox_install_dir()?;
-    let data_dir = get_evebox_data_dir()?;
+fn install_or_upgrade_evebox(paths: &Paths, upgrade: bool, channel: EveBoxChannel) -> Result<()> {
+    let root_dir = paths.evebox_dir();
+    let install_dir = paths.evebox_install_dir();
+    let data_dir = paths.evebox_data_dir();
 
     if !upgrade && find_evebox_exe(&install_dir)?.is_some() {
         info!(
@@ -393,6 +394,8 @@ mod tests {
 
     #[test]
     fn evebox_updates_refresh_both_channels_only_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_path_buf());
         for channel in [EveBoxChannel::Release, EveBoxChannel::Development] {
             for (server, agent) in [(false, false), (true, false), (false, true), (true, true)] {
                 let mut config = crate::config::Config::default();
@@ -400,7 +403,7 @@ mod tests {
                 config.evebox_agent.enabled = agent;
                 config.windows.evebox_channel = channel;
                 for _ in 0..2 {
-                    let plan = build_upgrade_plan(&config).unwrap();
+                    let plan = build_upgrade_plan(&paths, &config).unwrap();
                     assert_eq!(plan.evebox, server || agent);
                     assert!(!plan.npcap);
                     assert!(!plan.suricata);

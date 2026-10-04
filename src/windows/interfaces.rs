@@ -3,7 +3,7 @@
 
 //! Network interface enumeration and selection.
 
-use super::paths::{ensure_dir, get_evectl_config_path, get_evectl_data_dir, load_evectl_config};
+use super::paths::{Paths, ensure_dir, load_evectl_config};
 use crate::prelude::*;
 use colored::Colorize;
 use std::collections::BTreeMap;
@@ -227,8 +227,8 @@ pub(super) fn normalize_interface_guid(value: &str) -> Option<String> {
     }
 }
 
-pub(super) fn get_configured_interface_value() -> Result<Option<String>> {
-    let config = load_evectl_config()?;
+pub(super) fn get_configured_interface_value(paths: &Paths) -> Result<Option<String>> {
+    let config = load_evectl_config(paths)?;
     Ok(config
         .suricata
         .interfaces
@@ -258,8 +258,8 @@ fn find_windows_interface_by_guid(guid: &str) -> Result<Option<WindowsInterface>
     }))
 }
 
-pub(super) fn get_configured_interface_guid() -> Result<Option<String>> {
-    let value = match get_configured_interface_value()? {
+pub(super) fn get_configured_interface_guid(paths: &Paths) -> Result<Option<String>> {
+    let value = match get_configured_interface_value(paths)? {
         Some(value) => value,
         None => return Ok(None),
     };
@@ -271,11 +271,11 @@ pub(super) fn get_configured_interface_guid() -> Result<Option<String>> {
     Ok(find_windows_interface_by_name(&value)?.map(|interface| interface.guid))
 }
 
-fn set_configured_interface_name(name: &str) -> Result<PathBuf> {
-    let config_path = get_evectl_config_path()?;
-    ensure_dir(&get_evectl_data_dir()?)?;
+fn set_configured_interface_name(paths: &Paths, name: &str) -> Result<PathBuf> {
+    let config_path = paths.config_file();
+    ensure_dir(paths.root())?;
 
-    let mut config = load_evectl_config()?;
+    let mut config = load_evectl_config(paths)?;
     config.suricata.interfaces = vec![name.to_string()];
     config.save()?;
 
@@ -302,7 +302,7 @@ fn prompt_for_interface(prompt: &str) -> Result<WindowsInterface> {
     Ok(selection.tag)
 }
 
-fn prompt_for_interface_and_maybe_save() -> Result<WindowsInterface> {
+fn prompt_for_interface_and_maybe_save(paths: &Paths) -> Result<WindowsInterface> {
     let interface =
         prompt_for_interface("Suricata: What network interface should Suricata listen on?")?;
 
@@ -310,7 +310,7 @@ fn prompt_for_interface_and_maybe_save() -> Result<WindowsInterface> {
         .with_default(true)
         .prompt()?
     {
-        let config_path = set_configured_interface_name(&interface.name)?;
+        let config_path = set_configured_interface_name(paths, &interface.name)?;
         println!("Saved default interface: {}", interface.name);
         println!("Resolved interface GUID: {}", interface.guid);
         println!("Config file: {}", config_path.display());
@@ -319,7 +319,11 @@ fn prompt_for_interface_and_maybe_save() -> Result<WindowsInterface> {
     Ok(interface)
 }
 
-pub(super) fn resolve_interface_guid(guid: Option<String>, allow_prompt: bool) -> Result<String> {
+pub(super) fn resolve_interface_guid(
+    paths: &Paths,
+    guid: Option<String>,
+    allow_prompt: bool,
+) -> Result<String> {
     if let Some(value) = guid.as_deref().and_then(normalize_interface_name) {
         if let Some(guid) = normalize_interface_guid(&value) {
             return Ok(guid);
@@ -332,12 +336,12 @@ pub(super) fn resolve_interface_guid(guid: Option<String>, allow_prompt: bool) -
         bail!("Network interface '{}' was not found", value);
     }
 
-    if let Some(guid) = get_configured_interface_guid()? {
+    if let Some(guid) = get_configured_interface_guid(paths)? {
         return Ok(guid);
     }
 
     if allow_prompt {
-        Ok(prompt_for_interface_and_maybe_save()?.guid)
+        Ok(prompt_for_interface_and_maybe_save(paths)?.guid)
     } else {
         bail!(
             "No interface is configured. Use 'evectl config set-interface', pass --guid <GUID>, or run interactively to choose one."
@@ -345,9 +349,9 @@ pub(super) fn resolve_interface_guid(guid: Option<String>, allow_prompt: bool) -
     }
 }
 
-pub(super) fn config_set_interface() -> Result<()> {
+pub(super) fn config_set_interface(paths: &Paths) -> Result<()> {
     let interface = prompt_for_interface("Select Interface")?;
-    let config_path = set_configured_interface_name(&interface.name)?;
+    let config_path = set_configured_interface_name(paths, &interface.name)?;
 
     println!("Saved default interface: {}", interface.name);
     println!("Resolved interface GUID: {}", interface.guid);

@@ -4,7 +4,7 @@
 //! Npcap installation, upgrade, and removal.
 
 use super::install::{download_file, launch_windows_installer, wait_for_installer_completion};
-use super::paths::{ensure_dir, get_evectl_data_dir};
+use super::paths::{Paths, ensure_dir};
 use super::version::compare_versions;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
@@ -13,11 +13,11 @@ use std::process::Command;
 const NPCAP_VERSION: &str = "1.88";
 const NPCAP_INSTALLED_MARKER: &str = ".evectl-npcap-installed";
 
-pub(super) fn download_npcap() -> Result<()> {
-    install_or_upgrade_npcap(false)
+pub(super) fn download_npcap(paths: &Paths) -> Result<()> {
+    install_or_upgrade_npcap(paths, false)
 }
 
-fn install_or_upgrade_npcap(upgrade: bool) -> Result<()> {
+fn install_or_upgrade_npcap(paths: &Paths, upgrade: bool) -> Result<()> {
     let installed = is_npcap_installed();
     let should_mark_as_managed = !installed;
 
@@ -50,7 +50,7 @@ fn install_or_upgrade_npcap(upgrade: bool) -> Result<()> {
 
     if should_mark_as_managed {
         if is_npcap_installed() {
-            mark_npcap_managed_installed()?;
+            mark_npcap_managed_installed(paths)?;
             info!("Recorded Npcap as installed by evectl.");
         } else {
             warn!(
@@ -62,19 +62,18 @@ fn install_or_upgrade_npcap(upgrade: bool) -> Result<()> {
     Ok(())
 }
 
-fn get_npcap_installed_marker_path() -> Result<PathBuf> {
-    Ok(get_evectl_data_dir()?.join(NPCAP_INSTALLED_MARKER))
+fn installed_marker_path(paths: &Paths) -> PathBuf {
+    paths.root().join(NPCAP_INSTALLED_MARKER)
 }
 
-fn is_npcap_managed_installed() -> Result<bool> {
-    Ok(get_npcap_installed_marker_path()?.exists())
+fn is_npcap_managed_installed(paths: &Paths) -> Result<bool> {
+    Ok(installed_marker_path(paths).exists())
 }
 
-fn mark_npcap_managed_installed() -> Result<()> {
-    let data_dir = get_evectl_data_dir()?;
-    ensure_dir(&data_dir)?;
+fn mark_npcap_managed_installed(paths: &Paths) -> Result<()> {
+    ensure_dir(paths.root())?;
 
-    let marker_path = get_npcap_installed_marker_path()?;
+    let marker_path = installed_marker_path(paths);
     std::fs::write(
         &marker_path,
         format!("version={NPCAP_VERSION}\ninstalled_by=evectl\n"),
@@ -82,8 +81,8 @@ fn mark_npcap_managed_installed() -> Result<()> {
     .context(format!("Failed to write {}", marker_path.display()))
 }
 
-fn clear_npcap_managed_installed_marker() -> Result<()> {
-    let marker_path = get_npcap_installed_marker_path()?;
+fn clear_npcap_managed_installed_marker(paths: &Paths) -> Result<()> {
+    let marker_path = installed_marker_path(paths);
     if marker_path.exists() {
         std::fs::remove_file(&marker_path)
             .context(format!("Failed to remove {}", marker_path.display()))?;
@@ -129,13 +128,13 @@ pub(super) fn npcap_upgrade_needed() -> Result<bool> {
     Ok(comparison == std::cmp::Ordering::Less)
 }
 
-pub(super) fn maybe_upgrade_npcap() -> Result<()> {
+pub(super) fn maybe_upgrade_npcap(paths: &Paths) -> Result<()> {
     if !is_npcap_installed() {
         info!(
             "Npcap was not detected. Installing version {} before Suricata upgrade...",
             NPCAP_VERSION
         );
-        return install_or_upgrade_npcap(true);
+        return install_or_upgrade_npcap(paths, true);
     }
 
     let installed_version = match get_npcap_installed_version()? {
@@ -165,7 +164,7 @@ pub(super) fn maybe_upgrade_npcap() -> Result<()> {
                 "Npcap {} is older than bundled {}. Upgrading Npcap...",
                 installed_version, NPCAP_VERSION
             );
-            install_or_upgrade_npcap(true)
+            install_or_upgrade_npcap(paths, true)
         }
         std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
             info!(
@@ -212,8 +211,8 @@ Write-Output $entry.DisplayVersion
     }
 }
 
-pub(super) fn uninstall_npcap() -> Result<()> {
-    if !is_npcap_managed_installed()? {
+pub(super) fn uninstall_npcap(paths: &Paths) -> Result<()> {
+    if !is_npcap_managed_installed(paths)? {
         if is_npcap_installed() {
             info!(
                 "Npcap is installed, but it was not installed by evectl. Skipping Npcap uninstall."
@@ -228,7 +227,7 @@ pub(super) fn uninstall_npcap() -> Result<()> {
         info!(
             "Npcap was marked as installed by evectl, but no Npcap installation was detected. Clearing marker."
         );
-        clear_npcap_managed_installed_marker()?;
+        clear_npcap_managed_installed_marker(paths)?;
         return Ok(());
     }
 
@@ -287,11 +286,11 @@ exit $process.ExitCode
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.contains("NOT_FOUND") {
         info!("Npcap uninstall entry not found. Clearing evectl ownership marker.");
-        clear_npcap_managed_installed_marker()?;
+        clear_npcap_managed_installed_marker(paths)?;
         return Ok(());
     }
 
-    clear_npcap_managed_installed_marker()?;
+    clear_npcap_managed_installed_marker(paths)?;
     info!("Npcap uninstall completed");
     Ok(())
 }

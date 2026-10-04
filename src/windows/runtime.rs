@@ -4,29 +4,69 @@
 //! Managed background processes: PID and runtime metadata files,
 //! process queries, and detached launches.
 
-use super::paths::{
-    get_evebox_agent_pid_path, get_evebox_agent_runtime_path, get_evebox_pid_path,
-    get_evebox_runtime_path, get_suricata_pid_path, get_suricata_run_dir,
-    get_suricata_runtime_path,
-};
+use super::paths::Paths;
 use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(super) const ROLE_SURICATA: &str = "suricata";
-pub(super) const ROLE_EVEBOX: &str = "evebox";
-pub(super) const ROLE_EVEBOX_AGENT: &str = "evebox-agent";
-pub(super) const ROLE_HOUSEKEEPER: &str = "housekeeper";
-
 const EVEBOX_STARTUP_GRACE_PERIOD: Duration = Duration::from_millis(750);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A managed background process. The serialized names are stored in
+/// the runtime metadata files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum Role {
+    #[serde(rename = "suricata")]
+    Suricata,
+    #[serde(rename = "evebox")]
+    EveBoxServer,
+    #[serde(rename = "evebox-agent")]
+    EveBoxAgent,
+    #[serde(rename = "housekeeper")]
+    Housekeeper,
+}
+
+impl Role {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Role::Suricata => "suricata",
+            Role::EveBoxServer => "evebox",
+            Role::EveBoxAgent => "evebox-agent",
+            Role::Housekeeper => "housekeeper",
+        }
+    }
+
+    /// Directory holding the PID and runtime metadata files.
+    fn run_dir(self, paths: &Paths) -> PathBuf {
+        match self {
+            Role::Suricata | Role::Housekeeper => paths.suricata_run_dir(),
+            Role::EveBoxServer => paths.evebox_dir(),
+            Role::EveBoxAgent => paths.evebox_agent_dir(),
+        }
+    }
+
+    pub(super) fn pid_path(self, paths: &Paths) -> PathBuf {
+        self.run_dir(paths).join(format!("{}.pid", self.as_str()))
+    }
+
+    pub(super) fn runtime_path(self, paths: &Paths) -> PathBuf {
+        self.run_dir(paths)
+            .join(format!("{}.runtime.json", self.as_str()))
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(super) struct RuntimeMetadata {
     pub(super) pid: u32,
-    pub(super) role: String,
+    pub(super) role: Role,
     pub(super) exe_path: String,
     pub(super) argv: Vec<String>,
     started_at: u64,
@@ -111,7 +151,7 @@ pub(super) fn command_argv(command: &Command) -> Vec<String> {
 }
 
 pub(super) fn build_runtime_metadata(
-    role: &str,
+    role: Role,
     command: &Command,
     pid: u32,
     stdout_path: Option<&Path>,
@@ -124,7 +164,7 @@ pub(super) fn build_runtime_metadata(
 
     Ok(RuntimeMetadata {
         pid,
-        role: role.to_string(),
+        role,
         exe_path: command.get_program().to_string_lossy().to_string(),
         argv: command_argv(command),
         started_at,
@@ -401,31 +441,17 @@ pub(super) fn stop_pid(pid: u32) -> Result<()> {
     bail!("Process {} did not exit after taskkill", pid)
 }
 
-pub(super) fn role_paths(role: &str) -> Result<(PathBuf, PathBuf)> {
-    match role {
-        ROLE_SURICATA => Ok((get_suricata_pid_path()?, get_suricata_runtime_path()?)),
-        ROLE_EVEBOX => Ok((get_evebox_pid_path()?, get_evebox_runtime_path()?)),
-        ROLE_EVEBOX_AGENT => Ok((
-            get_evebox_agent_pid_path()?,
-            get_evebox_agent_runtime_path()?,
-        )),
-        ROLE_HOUSEKEEPER => Ok((
-            get_suricata_run_dir()?.join("housekeeper.pid"),
-            get_suricata_run_dir()?.join("housekeeper.runtime.json"),
-        )),
-        _ => bail!("Unknown runtime role {}", role),
-    }
-}
-
-pub(super) fn cleanup_runtime_files(role: &str) -> Result<()> {
-    let (pid_path, runtime_path) = role_paths(role)?;
+pub(super) fn cleanup_runtime_files(paths: &Paths, role: Role) -> Result<()> {
+    let pid_path = role.pid_path(paths);
+    let runtime_path = role.runtime_path(paths);
     remove_file_if_exists(&pid_path)?;
     remove_file_if_exists(&runtime_path)?;
     Ok(())
 }
 
-pub(super) fn managed_process_is_running(role: &str) -> Result<bool> {
-    let (pid_path, runtime_path) = role_paths(role)?;
+pub(super) fn managed_process_is_running(paths: &Paths, role: Role) -> Result<bool> {
+    let pid_path = role.pid_path(paths);
+    let runtime_path = role.runtime_path(paths);
     let metadata = match read_runtime_metadata(&runtime_path)? {
         Some(metadata) => metadata,
         None => {
@@ -443,12 +469,12 @@ pub(super) fn managed_process_is_running(role: &str) -> Result<bool> {
             metadata.role,
             role
         );
-        cleanup_runtime_files(role)?;
+        cleanup_runtime_files(paths, role)?;
         return Ok(false);
     }
 
     if !is_pid_running(metadata.pid) {
-        cleanup_runtime_files(role)?;
+        cleanup_runtime_files(paths, role)?;
         return Ok(false);
     }
 
@@ -457,7 +483,7 @@ pub(super) fn managed_process_is_running(role: &str) -> Result<bool> {
             "PID {} for role {} no longer matches {}. Cleaning up stale state.",
             metadata.pid, role, metadata.exe_path
         );
-        cleanup_runtime_files(role)?;
+        cleanup_runtime_files(paths, role)?;
         return Ok(false);
     }
 
@@ -475,8 +501,9 @@ pub(super) fn managed_process_is_running(role: &str) -> Result<bool> {
     Ok(true)
 }
 
-pub(super) fn stop_managed_process(role: &str) -> Result<()> {
-    let (pid_path, runtime_path) = role_paths(role)?;
+pub(super) fn stop_managed_process(paths: &Paths, role: Role) -> Result<()> {
+    let pid_path = role.pid_path(paths);
+    let runtime_path = role.runtime_path(paths);
     let metadata = match read_runtime_metadata(&runtime_path)? {
         Some(metadata) => metadata,
         None => {
@@ -492,7 +519,7 @@ pub(super) fn stop_managed_process(role: &str) -> Result<()> {
             metadata.role,
             role
         );
-        cleanup_runtime_files(role)?;
+        cleanup_runtime_files(paths, role)?;
         return Ok(());
     }
 
@@ -507,16 +534,18 @@ pub(super) fn stop_managed_process(role: &str) -> Result<()> {
         );
     }
 
-    cleanup_runtime_files(role)
+    cleanup_runtime_files(paths, role)
 }
 
-pub(super) fn get_managed_runtime_metadata(role: &str) -> Result<Option<RuntimeMetadata>> {
-    if !managed_process_is_running(role)? {
+pub(super) fn get_managed_runtime_metadata(
+    paths: &Paths,
+    role: Role,
+) -> Result<Option<RuntimeMetadata>> {
+    if !managed_process_is_running(paths, role)? {
         return Ok(None);
     }
 
-    let (_, runtime_path) = role_paths(role)?;
-    read_runtime_metadata(&runtime_path)
+    read_runtime_metadata(&role.runtime_path(paths))
 }
 
 pub(super) fn validate_background_process_started(metadata: &RuntimeMetadata) -> Result<()> {
@@ -552,4 +581,32 @@ pub(super) fn format_command_line(command: &Command) -> String {
         parts.push(quote(&arg.to_string_lossy()));
     }
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_names_and_runtime_files_are_stable() {
+        let paths = Paths::new(PathBuf::from(r"C:\evectl"));
+        for (role, name, dir) in [
+            (Role::Suricata, "suricata", paths.suricata_run_dir()),
+            (Role::EveBoxServer, "evebox", paths.evebox_dir()),
+            (Role::EveBoxAgent, "evebox-agent", paths.evebox_agent_dir()),
+            (Role::Housekeeper, "housekeeper", paths.suricata_run_dir()),
+        ] {
+            assert_eq!(role.as_str(), name);
+            assert_eq!(serde_json::to_string(&role).unwrap(), format!("\"{name}\""));
+            assert_eq!(
+                serde_json::from_str::<Role>(&format!("\"{name}\"")).unwrap(),
+                role
+            );
+            assert_eq!(role.pid_path(&paths), dir.join(format!("{name}.pid")));
+            assert_eq!(
+                role.runtime_path(&paths),
+                dir.join(format!("{name}.runtime.json"))
+            );
+        }
+    }
 }

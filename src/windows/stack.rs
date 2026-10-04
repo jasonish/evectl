@@ -8,19 +8,13 @@ use super::interfaces::{
     WindowsInterface, get_configured_interface_guid, get_windows_interfaces,
     normalize_interface_guid, resolve_interface_guid,
 };
-use super::paths::{
-    ensure_dir, get_evebox_agent_data_dir, get_evebox_agent_dir, get_evebox_agent_pid_path,
-    get_evebox_agent_runtime_path, get_evebox_data_dir, get_evebox_pid_path, get_evebox_root_dir,
-    get_evebox_runtime_path, get_evectl_data_dir, get_suricata_eve_json_path,
-    get_suricata_filestore_dir, get_suricata_log_dir, get_suricata_pcap_dir, get_suricata_run_dir,
-    load_evectl_config,
-};
+use super::paths::{Paths, ensure_dir, load_evectl_config};
+use super::runtime::Role;
 use super::runtime::{
-    ROLE_EVEBOX, ROLE_EVEBOX_AGENT, ROLE_HOUSEKEEPER, ROLE_SURICATA, RuntimeMetadata,
-    build_runtime_metadata, cleanup_runtime_files, command_argv, count_named_processes,
-    format_command_line, get_managed_runtime_metadata, managed_process_is_running, role_paths,
-    spawn_detached, spawn_detached_with_logs, stop_managed_process, stop_pid,
-    validate_background_process_started, write_pid, write_runtime_metadata,
+    RuntimeMetadata, build_runtime_metadata, cleanup_runtime_files, command_argv,
+    count_named_processes, format_command_line, get_managed_runtime_metadata,
+    managed_process_is_running, spawn_detached, spawn_detached_with_logs, stop_managed_process,
+    stop_pid, validate_background_process_started, write_pid, write_runtime_metadata,
 };
 use super::suricata::{
     build_suricata_command, ensure_suricata_start_allowed, start_suricata_background,
@@ -140,26 +134,26 @@ fn suricata_guid_from_metadata(metadata: &RuntimeMetadata) -> Option<String> {
     })
 }
 
-pub(super) fn capture_restart_plan() -> Result<RestartPlan> {
-    let suricata_running = get_managed_runtime_metadata(ROLE_SURICATA)?;
+pub(super) fn capture_restart_plan(paths: &Paths) -> Result<RestartPlan> {
+    let suricata_running = get_managed_runtime_metadata(paths, Role::Suricata)?;
     let suricata_guid = suricata_running
         .as_ref()
         .and_then(suricata_guid_from_metadata)
-        .or_else(|| get_configured_interface_guid().ok().flatten());
+        .or_else(|| get_configured_interface_guid(paths).ok().flatten());
 
-    let evebox_server_running = get_managed_runtime_metadata(ROLE_EVEBOX)?.is_some();
-    let evebox_agent_running = get_managed_runtime_metadata(ROLE_EVEBOX_AGENT)?.is_some();
+    let evebox_server_running = get_managed_runtime_metadata(paths, Role::EveBoxServer)?.is_some();
+    let evebox_agent_running = get_managed_runtime_metadata(paths, Role::EveBoxAgent)?.is_some();
 
     Ok(RestartPlan {
         suricata_running: suricata_running.is_some(),
         suricata_guid,
         evebox_server_running,
         evebox_agent_running,
-        housekeeper_running: managed_process_is_running(ROLE_HOUSEKEEPER)?,
+        housekeeper_running: managed_process_is_running(paths, Role::Housekeeper)?,
     })
 }
 
-pub(super) fn restart_managed_components(plan: &RestartPlan) -> Result<()> {
+pub(super) fn restart_managed_components(paths: &Paths, plan: &RestartPlan) -> Result<()> {
     let result = (|| {
         if plan.suricata_running {
             let guid = plan.suricata_guid.as_deref().ok_or_else(|| {
@@ -168,28 +162,28 @@ pub(super) fn restart_managed_components(plan: &RestartPlan) -> Result<()> {
                 )
             })?;
 
-            let suricata = start_suricata_background(guid)?;
-            wait_for_suricata_readiness(&suricata)?;
+            let suricata = start_suricata_background(paths, guid)?;
+            wait_for_suricata_readiness(paths, &suricata)?;
         }
 
         if plan.evebox_server_running {
-            let evebox = start_evebox_background()?;
+            let evebox = start_evebox_background(paths)?;
             validate_background_process_started(&evebox)?;
         }
 
         if plan.evebox_agent_running {
-            let agent = start_evebox_agent_background()?;
+            let agent = start_evebox_agent_background(paths)?;
             validate_background_process_started(&agent)?;
         }
         if plan.suricata_running || plan.housekeeper_running {
-            reconcile_housekeeper(&load_evectl_config()?)?;
+            reconcile_housekeeper(paths, &load_evectl_config(paths)?)?;
         }
 
         Ok(())
     })();
 
     if result.is_err() {
-        let _ = stop_stack();
+        let _ = stop_stack(paths);
     }
 
     result
@@ -225,8 +219,10 @@ fn process_output_handler(child: &mut Child, label: &'static str) {
 /// Pre-flight check used before starting any EveBox process. The
 /// per-role checks in the start functions are skipped here so a
 /// server and an agent can be started in sequence.
-fn ensure_evebox_start_allowed() -> Result<()> {
-    if managed_process_is_running(ROLE_EVEBOX)? || managed_process_is_running(ROLE_EVEBOX_AGENT)? {
+fn ensure_evebox_start_allowed(paths: &Paths) -> Result<()> {
+    if managed_process_is_running(paths, Role::EveBoxServer)?
+        || managed_process_is_running(paths, Role::EveBoxAgent)?
+    {
         bail!("A managed EveBox process is already running. Use 'evectl stop' first.");
     }
 
@@ -241,8 +237,8 @@ fn ensure_evebox_start_allowed() -> Result<()> {
     Ok(())
 }
 
-fn start_stack_foreground(guid: Option<String>) -> Result<()> {
-    fn stop_children(children: &mut Vec<(&'static str, Child)>) {
+fn start_stack_foreground(paths: &Paths, guid: Option<String>) -> Result<()> {
+    fn stop_children(children: &mut [(Role, Child)]) {
         // Housekeeping is spawned last; stop it before its producers/readers.
         for (_, child) in children.iter().rev() {
             let _ = stop_pid(child.id());
@@ -254,21 +250,21 @@ fn start_stack_foreground(guid: Option<String>) -> Result<()> {
 
     fn spawn_foreground(
         mut command: Command,
-        role: &'static str,
-        children: &mut Vec<(&'static str, Child)>,
+        role: Role,
+        children: &mut Vec<(Role, Child)>,
     ) -> Result<u32> {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         info!("Running command: {}", format_command_line(&command));
         let mut child = command
             .spawn()
             .context(format!("Failed to start {}", role))?;
-        process_output_handler(&mut child, role);
+        process_output_handler(&mut child, role.as_str());
         let pid = child.id();
         children.push((role, child));
         Ok(pid)
     }
 
-    let config = load_evectl_config()?;
+    let config = load_evectl_config(paths)?;
     let use_suricata = config.suricata.enabled;
     let use_server = config.evebox_server.enabled;
     let use_agent = config.evebox_agent.enabled;
@@ -278,45 +274,49 @@ fn start_stack_foreground(guid: Option<String>) -> Result<()> {
     }
 
     if use_suricata {
-        ensure_suricata_start_allowed()?;
+        ensure_suricata_start_allowed(paths)?;
     }
     if use_server || use_agent {
-        ensure_evebox_start_allowed()?;
-        let _ = get_evebox_exe_path()?;
+        ensure_evebox_start_allowed(paths)?;
+        let _ = get_evebox_exe_path(paths)?;
     }
 
-    if managed_process_is_running(ROLE_HOUSEKEEPER)? {
+    if managed_process_is_running(paths, Role::Housekeeper)? {
         bail!("Managed housekeeping is already running. Use 'evectl stop' first.");
     }
     ensure_ctrlc_handler()?;
     CTRL_C_RECEIVED.store(false, Ordering::SeqCst);
 
-    let mut children: Vec<(&'static str, Child)> = vec![];
+    let mut children: Vec<(Role, Child)> = vec![];
 
     let startup = (|| -> Result<()> {
         if use_suricata {
-            let guid = resolve_interface_guid(guid, true)?;
-            let command = build_suricata_command(&guid)?;
+            let guid = resolve_interface_guid(paths, guid, true)?;
+            let command = build_suricata_command(paths, &guid)?;
             let suricata_exe = PathBuf::from(command.get_program());
-            let pid = spawn_foreground(command, ROLE_SURICATA, &mut children)?;
-            wait_for_suricata_pid_readiness(pid, &suricata_exe)?;
+            let pid = spawn_foreground(command, Role::Suricata, &mut children)?;
+            wait_for_suricata_pid_readiness(paths, pid, &suricata_exe)?;
         }
 
         if use_server {
-            spawn_foreground(build_evebox_command()?, ROLE_EVEBOX, &mut children)?;
+            spawn_foreground(
+                build_evebox_command(paths)?,
+                Role::EveBoxServer,
+                &mut children,
+            )?;
         }
 
         if use_agent {
             spawn_foreground(
-                build_evebox_agent_command()?,
-                ROLE_EVEBOX_AGENT,
+                build_evebox_agent_command(paths)?,
+                Role::EveBoxAgent,
                 &mut children,
             )?;
         }
         if super::file_extraction::cleanup_enabled(&config) {
-            let command = build_housekeeper_command(&config)?;
+            let command = build_housekeeper_command(paths, &config)?;
             prepare_housekeeper_executable(&command)?;
-            spawn_foreground(command, ROLE_HOUSEKEEPER, &mut children)?;
+            spawn_foreground(command, Role::Housekeeper, &mut children)?;
         }
 
         Ok(())
@@ -383,15 +383,15 @@ fn start_stack_foreground(guid: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn build_evebox_command() -> Result<Command> {
-    let evebox_exe = get_evebox_exe_path()?;
+fn build_evebox_command(paths: &Paths) -> Result<Command> {
+    let evebox_exe = get_evebox_exe_path(paths)?;
 
-    let evebox_root_dir = get_evebox_root_dir()?;
-    let evebox_data_dir = get_evebox_data_dir()?;
+    let evebox_root_dir = paths.evebox_dir();
+    let evebox_data_dir = paths.evebox_data_dir();
     ensure_dir(&evebox_root_dir)?;
     ensure_dir(&evebox_data_dir)?;
 
-    let config = load_evectl_config()?;
+    let config = load_evectl_config(paths)?;
     let mut command = Command::new(&evebox_exe);
     command.current_dir(&evebox_data_dir);
     command.arg("server");
@@ -402,49 +402,49 @@ fn build_evebox_command() -> Result<Command> {
     )?);
     command.arg("-D");
     command.arg(&evebox_data_dir);
-    command.arg(get_suricata_eve_json_path()?);
-    super::fpc::configure_evebox_command(&mut command, &config, &get_suricata_pcap_dir()?);
+    command.arg(paths.suricata_eve_json());
+    super::fpc::configure_evebox_command(&mut command, &config, &paths.suricata_pcap_dir());
     super::file_extraction::configure_evebox_command(
         &mut command,
         &config,
-        &get_suricata_filestore_dir()?,
+        &paths.suricata_filestore_dir(),
     );
 
     Ok(command)
 }
 
-fn start_evebox_background() -> Result<RuntimeMetadata> {
-    if managed_process_is_running(ROLE_EVEBOX)? {
+fn start_evebox_background(paths: &Paths) -> Result<RuntimeMetadata> {
+    if managed_process_is_running(paths, Role::EveBoxServer)? {
         bail!("A managed EveBox server is already running. Use 'evectl stop' first.");
     }
 
-    let mut command = build_evebox_command()?;
+    let mut command = build_evebox_command(paths)?;
     info!("Running command: {}", format_command_line(&command));
     let pid = spawn_detached(&mut command)?;
-    let metadata = build_runtime_metadata(ROLE_EVEBOX, &command, pid, None, None)?;
+    let metadata = build_runtime_metadata(Role::EveBoxServer, &command, pid, None, None)?;
 
-    write_pid(&get_evebox_pid_path()?, pid)?;
-    write_runtime_metadata(&get_evebox_runtime_path()?, &metadata)?;
+    write_pid(&Role::EveBoxServer.pid_path(paths), pid)?;
+    write_runtime_metadata(&Role::EveBoxServer.runtime_path(paths), &metadata)?;
 
     Ok(metadata)
 }
 
 /// Write the EveBox agent input configuration with Windows paths.
 /// Forward slashes keep the YAML free of escape issues.
-fn write_evebox_agent_config() -> Result<PathBuf> {
+fn write_evebox_agent_config(paths: &Paths) -> Result<PathBuf> {
     fn yaml_path(path: &Path) -> String {
         path.to_string_lossy().replace('\\', "/")
     }
 
-    let agent_dir = get_evebox_agent_dir()?;
-    let data_dir = get_evebox_agent_data_dir()?;
+    let agent_dir = paths.evebox_agent_dir();
+    let data_dir = paths.evebox_agent_data_dir();
     ensure_dir(&data_dir)?;
 
     let config_path = agent_dir.join("evectl-input.yaml");
     let contents = format!(
         "# Generated by evectl. Do not edit.\ndata-directory: \"{}\"\ninput:\n  paths:\n    - \"{}\"\n",
         yaml_path(&data_dir),
-        yaml_path(&get_suricata_eve_json_path()?)
+        yaml_path(&paths.suricata_eve_json())
     );
 
     std::fs::write(&config_path, contents).context(format!(
@@ -455,16 +455,16 @@ fn write_evebox_agent_config() -> Result<PathBuf> {
     Ok(config_path)
 }
 
-fn build_evebox_agent_command() -> Result<Command> {
-    let config = load_evectl_config()?;
+fn build_evebox_agent_command(paths: &Paths) -> Result<Command> {
+    let config = load_evectl_config(paths)?;
     if config.evebox_agent.server.trim().is_empty() {
         bail!("The EveBox agent server URL is not configured");
     }
 
-    let evebox_exe = get_evebox_exe_path()?;
-    let agent_dir = get_evebox_agent_dir()?;
+    let evebox_exe = get_evebox_exe_path(paths)?;
+    let agent_dir = paths.evebox_agent_dir();
     ensure_dir(&agent_dir)?;
-    let config_path = write_evebox_agent_config()?;
+    let config_path = write_evebox_agent_config(paths)?;
 
     let mut command = Command::new(&evebox_exe);
     command.current_dir(&agent_dir);
@@ -476,44 +476,44 @@ fn build_evebox_agent_command() -> Result<Command> {
     if config.evebox_agent.disable_certificate_validation {
         command.arg("--disable-certificate-check");
     }
-    super::fpc::configure_agent_command(&mut command, &config, &get_suricata_pcap_dir()?);
+    super::fpc::configure_agent_command(&mut command, &config, &paths.suricata_pcap_dir());
     super::file_extraction::configure_evebox_command(
         &mut command,
         &config,
-        &get_suricata_filestore_dir()?,
+        &paths.suricata_filestore_dir(),
     );
 
     Ok(command)
 }
 
-fn start_evebox_agent_background() -> Result<RuntimeMetadata> {
-    if managed_process_is_running(ROLE_EVEBOX_AGENT)? {
+fn start_evebox_agent_background(paths: &Paths) -> Result<RuntimeMetadata> {
+    if managed_process_is_running(paths, Role::EveBoxAgent)? {
         bail!("A managed EveBox agent is already running. Use 'evectl stop' first.");
     }
 
-    let mut command = build_evebox_agent_command()?;
+    let mut command = build_evebox_agent_command(paths)?;
     info!("Running command: {}", format_command_line(&command));
     let pid = spawn_detached(&mut command)?;
-    let metadata = build_runtime_metadata(ROLE_EVEBOX_AGENT, &command, pid, None, None)?;
+    let metadata = build_runtime_metadata(Role::EveBoxAgent, &command, pid, None, None)?;
 
-    write_pid(&get_evebox_agent_pid_path()?, pid)?;
-    write_runtime_metadata(&get_evebox_agent_runtime_path()?, &metadata)?;
+    write_pid(&Role::EveBoxAgent.pid_path(paths), pid)?;
+    write_runtime_metadata(&Role::EveBoxAgent.runtime_path(paths), &metadata)?;
 
     Ok(metadata)
 }
 
-fn stop_evebox_managed() -> Result<()> {
-    stop_managed_process(ROLE_EVEBOX)
+fn stop_evebox_managed(paths: &Paths) -> Result<()> {
+    stop_managed_process(paths, Role::EveBoxServer)
 }
 
-fn stop_evebox_agent_managed() -> Result<()> {
-    stop_managed_process(ROLE_EVEBOX_AGENT)
+fn stop_evebox_agent_managed(paths: &Paths) -> Result<()> {
+    stop_managed_process(paths, Role::EveBoxAgent)
 }
 
 /// Use a separate executable so the worker does not lock the EveCtl launcher
 /// against replacement by a staged self-update.
-fn build_housekeeper_command(config: &Config) -> Result<Command> {
-    let mut command = Command::new(get_suricata_run_dir()?.join("housekeeper.exe"));
+fn build_housekeeper_command(paths: &Paths, config: &Config) -> Result<Command> {
+    let mut command = Command::new(paths.housekeeper_exe());
     command
         .arg("housekeep")
         .arg("--retention-days")
@@ -530,8 +530,8 @@ fn prepare_housekeeper_executable(command: &Command) -> Result<()> {
     .context("Failed to prepare the housekeeping executable")
 }
 
-pub(super) fn run_housekeeper(retention_days: u32) -> Result<()> {
-    let directory = get_suricata_filestore_dir()?;
+pub(super) fn run_housekeeper(paths: &Paths, retention_days: u32) -> Result<()> {
+    let directory = paths.suricata_filestore_dir();
     ensure_ctrlc_handler()?;
     info!(
         "Filestore cleanup: {} (retention: {retention_days} days)",
@@ -553,52 +553,51 @@ pub(super) fn run_housekeeper(retention_days: u32) -> Result<()> {
 }
 
 /// Restore a stopped worker or replace one whose retention settings changed.
-fn reconcile_housekeeper(config: &Config) -> Result<Option<RuntimeMetadata>> {
+fn reconcile_housekeeper(paths: &Paths, config: &Config) -> Result<Option<RuntimeMetadata>> {
     if !super::file_extraction::cleanup_enabled(config) {
-        stop_managed_process(ROLE_HOUSEKEEPER)?;
+        stop_managed_process(paths, Role::Housekeeper)?;
         return Ok(None);
     }
-    let mut command = build_housekeeper_command(config)?;
-    if let Some(metadata) = get_managed_runtime_metadata(ROLE_HOUSEKEEPER)? {
+    let mut command = build_housekeeper_command(paths, config)?;
+    if let Some(metadata) = get_managed_runtime_metadata(paths, Role::Housekeeper)? {
         if metadata.argv == command_argv(&command) {
             return Ok(Some(metadata));
         }
-        stop_managed_process(ROLE_HOUSEKEEPER)?;
+        stop_managed_process(paths, Role::Housekeeper)?;
     }
-    ensure_dir(&get_suricata_run_dir()?)?;
-    ensure_dir(&get_suricata_log_dir()?)?;
-    let stdout = get_suricata_log_dir()?.join("housekeeper-stdout.log");
-    let stderr = get_suricata_log_dir()?.join("housekeeper-stderr.log");
+    ensure_dir(&paths.suricata_run_dir())?;
+    ensure_dir(&paths.suricata_log_dir())?;
+    let stdout = paths.housekeeper_stdout_log();
+    let stderr = paths.housekeeper_stderr_log();
     prepare_housekeeper_executable(&command)?;
     info!("Running command: {}", format_command_line(&command));
     let pid = spawn_detached_with_logs(&mut command, Some(&stdout), Some(&stderr))?;
     let result = (|| {
         let metadata = build_runtime_metadata(
-            ROLE_HOUSEKEEPER,
+            Role::Housekeeper,
             &command,
             pid,
             Some(&stdout),
             Some(&stderr),
         )?;
-        let (pid_path, runtime_path) = role_paths(ROLE_HOUSEKEEPER)?;
-        write_pid(&pid_path, pid)?;
-        write_runtime_metadata(&runtime_path, &metadata)?;
+        write_pid(&Role::Housekeeper.pid_path(paths), pid)?;
+        write_runtime_metadata(&Role::Housekeeper.runtime_path(paths), &metadata)?;
         validate_background_process_started(&metadata)?;
         Ok(Some(metadata))
     })();
     if result.is_err() {
         let _ = stop_pid(pid);
-        let _ = cleanup_runtime_files(ROLE_HOUSEKEEPER);
+        let _ = cleanup_runtime_files(paths, Role::Housekeeper);
     }
     result
 }
 
-pub(super) fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
+pub(super) fn start_stack(paths: &Paths, debug: bool, guid: Option<String>) -> Result<()> {
     if debug {
-        return start_stack_foreground(guid);
+        return start_stack_foreground(paths, guid);
     }
 
-    let config = load_evectl_config()?;
+    let config = load_evectl_config(paths)?;
     let use_suricata = config.suricata.enabled;
     let use_server = config.evebox_server.enabled;
     let use_agent = config.evebox_agent.enabled;
@@ -607,40 +606,40 @@ pub(super) fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
         bail!("No services are enabled. Run 'evectl install' first.");
     }
 
-    if managed_process_is_running(ROLE_SURICATA)?
-        || managed_process_is_running(ROLE_EVEBOX)?
-        || managed_process_is_running(ROLE_EVEBOX_AGENT)?
+    if managed_process_is_running(paths, Role::Suricata)?
+        || managed_process_is_running(paths, Role::EveBoxServer)?
+        || managed_process_is_running(paths, Role::EveBoxAgent)?
     {
         bail!("The Windows-managed stack is already running. Use 'evectl stop' first.");
     }
 
     if use_server || use_agent {
-        ensure_evebox_start_allowed()?;
-        let _ = get_evebox_exe_path()?;
+        ensure_evebox_start_allowed(paths)?;
+        let _ = get_evebox_exe_path(paths)?;
     }
 
     let result = (|| -> Result<Vec<RuntimeMetadata>> {
         let mut started = vec![];
 
         if use_suricata {
-            let guid = resolve_interface_guid(guid, true)?;
-            let suricata = start_suricata_background(&guid)?;
-            wait_for_suricata_readiness(&suricata)?;
+            let guid = resolve_interface_guid(paths, guid, true)?;
+            let suricata = start_suricata_background(paths, &guid)?;
+            wait_for_suricata_readiness(paths, &suricata)?;
             started.push(suricata);
         }
 
         if use_server {
-            let evebox = start_evebox_background()?;
+            let evebox = start_evebox_background(paths)?;
             validate_background_process_started(&evebox)?;
             started.push(evebox);
         }
 
         if use_agent {
-            let agent = start_evebox_agent_background()?;
+            let agent = start_evebox_agent_background(paths)?;
             validate_background_process_started(&agent)?;
             started.push(agent);
         }
-        if let Some(housekeeper) = reconcile_housekeeper(&config)? {
+        if let Some(housekeeper) = reconcile_housekeeper(paths, &config)? {
             started.push(housekeeper);
         }
 
@@ -650,7 +649,7 @@ pub(super) fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
     let started = match result {
         Ok(started) => started,
         Err(err) => {
-            let _ = stop_stack();
+            let _ = stop_stack(paths);
             return Err(err);
         }
     };
@@ -660,10 +659,10 @@ pub(super) fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
         println!("  {} PID: {}", metadata.role, metadata.pid);
     }
     if use_suricata {
-        println!("  Suricata log: {}", get_suricata_log_dir()?.display());
+        println!("  Suricata log: {}", paths.suricata_log_dir().display());
     }
     if use_server {
-        println!("  EveBox data:  {}", get_evebox_data_dir()?.display());
+        println!("  EveBox data:  {}", paths.evebox_data_dir().display());
         println!("  EveBox URL:   {}", evebox_server_url(&config));
     }
 
@@ -672,31 +671,31 @@ pub(super) fn start_stack(debug: bool, guid: Option<String>) -> Result<()> {
 
 /// Restart the stack, preferring the interface the running Suricata
 /// was started with (e.g. a --guid override) over the saved config.
-pub(super) fn restart_stack() -> Result<()> {
-    let guid = capture_restart_plan()?.suricata_guid;
-    stop_stack()?;
-    start_stack(false, guid)?;
-    if let Err(err) = super::update::clear_restart_recommendation(&get_evectl_data_dir()?) {
+pub(super) fn restart_stack(paths: &Paths) -> Result<()> {
+    let guid = capture_restart_plan(paths)?.suricata_guid;
+    stop_stack(paths)?;
+    start_stack(paths, false, guid)?;
+    if let Err(err) = super::update::clear_restart_recommendation(paths.root()) {
         warn!("Services restarted, but failed to clear the restart recommendation: {err}");
     }
     Ok(())
 }
 
-pub(super) fn stop_stack() -> Result<()> {
+pub(super) fn stop_stack(paths: &Paths) -> Result<()> {
     let mut errors = vec![];
 
-    if let Err(err) = stop_managed_process(ROLE_HOUSEKEEPER) {
+    if let Err(err) = stop_managed_process(paths, Role::Housekeeper) {
         errors.push(format!("Failed to stop housekeeping: {err}"));
     }
-    if let Err(err) = stop_evebox_agent_managed() {
+    if let Err(err) = stop_evebox_agent_managed(paths) {
         errors.push(format!("Failed to stop EveBox agent: {err}"));
     }
 
-    if let Err(err) = stop_evebox_managed() {
+    if let Err(err) = stop_evebox_managed(paths) {
         errors.push(format!("Failed to stop EveBox: {err}"));
     }
 
-    if let Err(err) = stop_suricata_managed() {
+    if let Err(err) = stop_suricata_managed(paths) {
         errors.push(format!("Failed to stop Suricata: {err}"));
     }
 
@@ -822,11 +821,9 @@ mod tests {
         let mut config = Config::default();
         config.suricata.file_extraction.max_age_days = Some(19);
         config.evebox_agent.key = Some("secret-agent-key".into());
-        let command = build_housekeeper_command(&config).unwrap();
-        assert_eq!(
-            Path::new(command.get_program()),
-            get_suricata_run_dir().unwrap().join("housekeeper.exe")
-        );
+        let paths = Paths::new(PathBuf::from(r"C:\evectl"));
+        let command = build_housekeeper_command(&paths, &config).unwrap();
+        assert_eq!(Path::new(command.get_program()), paths.housekeeper_exe());
         assert_ne!(
             Path::new(command.get_program()),
             std::env::current_exe().unwrap()

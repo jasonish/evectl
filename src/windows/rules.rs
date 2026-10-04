@@ -3,7 +3,7 @@
 
 //! Suricata rule management through suricatax-rules.
 
-use super::paths::get_suricata_data_dir;
+use super::paths::Paths;
 use super::stack::capture_restart_plan;
 use super::suricata::{
     find_suricata_executable, get_suricata_installed_version, start_suricata_background,
@@ -19,12 +19,14 @@ use suricatax_rules::sources::SourceManager;
 
 const WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS: [&str; 1] = ["file.magic"];
 
-pub(super) struct WindowsRulesBackend;
+pub(super) struct WindowsRulesBackend<'a> {
+    pub(super) paths: &'a Paths,
+}
 
-impl crate::rules::Backend for WindowsRulesBackend {
+impl crate::rules::Backend for WindowsRulesBackend<'_> {
     fn available_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
-        let paths = get_suricatax_paths()?;
-        Ok(SourceManager::new(&paths)
+        let provider = get_suricatax_paths(self.paths);
+        Ok(SourceManager::new(&provider)
             .get_or_download_index()?
             .sources
             .into_iter()
@@ -37,12 +39,12 @@ impl crate::rules::Backend for WindowsRulesBackend {
     }
 
     fn enabled_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
-        let paths = get_suricatax_paths()?;
-        let enabled = suricatax_cli::enabled_rulesets(&paths)?;
+        let provider = get_suricatax_paths(self.paths);
+        let enabled = suricatax_cli::enabled_rulesets(&provider)?;
         if enabled.is_empty() {
             return Ok(vec![]);
         }
-        let index = SourceManager::new(&paths)
+        let index = SourceManager::new(&provider)
             .read_local_index()
             .unwrap_or(None);
         Ok(enabled
@@ -62,19 +64,19 @@ impl crate::rules::Backend for WindowsRulesBackend {
     }
 
     fn enable_ruleset(&self, id: &str) -> Result<()> {
-        enable_ruleset(Some(id))
+        enable_ruleset(self.paths, Some(id))
     }
 
     fn disable_ruleset(&self, id: &str) -> Result<()> {
-        disable_ruleset(id)
+        disable_ruleset(self.paths, id)
     }
 
     fn update_sources(&self) -> Result<()> {
-        update_sources()
+        update_sources(self.paths)
     }
 
     fn update_rules(&self) -> Result<()> {
-        update_rules(false, false)
+        update_rules(self.paths, false, false)
     }
 }
 
@@ -98,22 +100,24 @@ impl PathProvider for EvectlWindowsPaths {
     }
 }
 
-pub(super) fn get_suricatax_paths() -> Result<EvectlWindowsPaths> {
-    let lib_dir = get_suricata_data_dir()?.join("lib");
-    Ok(EvectlWindowsPaths {
-        sources_dir: lib_dir.join("update").join("sources"),
-        cache_dir: lib_dir.join("update").join("cache"),
-        rules_dir: lib_dir.join("rules"),
-    })
+pub(super) fn get_suricatax_paths(paths: &Paths) -> EvectlWindowsPaths {
+    EvectlWindowsPaths {
+        sources_dir: paths.suricata_update_dir().join("sources"),
+        cache_dir: paths.suricata_update_dir().join("cache"),
+        rules_dir: paths.suricata_rules_dir(),
+    }
 }
 
-fn with_path_provider<T>(f: impl FnOnce(&dyn PathProvider) -> Result<T>) -> Result<T> {
-    let paths = get_suricatax_paths()?;
-    f(&paths)
+fn with_path_provider<T>(
+    paths: &Paths,
+    f: impl FnOnce(&dyn PathProvider) -> Result<T>,
+) -> Result<T> {
+    let provider = get_suricatax_paths(paths);
+    f(&provider)
 }
 
-pub(super) fn update_rules(force: bool, quiet: bool) -> Result<()> {
-    let suricata_version = detect_suricata_version_for_rules_update();
+pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()> {
+    let suricata_version = detect_suricata_version_for_rules_update(paths);
     let disable_substrings = WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS
         .iter()
         .map(|value| value.to_string())
@@ -137,10 +141,10 @@ pub(super) fn update_rules(force: bool, quiet: bool) -> Result<()> {
     // The updater always rewrites its output, so compare a digest
     // of the rules directory before and after to tell whether the
     // rules actually changed.
-    let rules_dir = get_suricatax_paths()?.rules_dir;
+    let rules_dir = paths.suricata_rules_dir();
     let before = rules_digest(&rules_dir)?;
 
-    with_path_provider(|paths| {
+    with_path_provider(paths, |paths| {
         suricatax_cli::update_rules_with_options(
             paths,
             force,
@@ -156,7 +160,7 @@ pub(super) fn update_rules(force: bool, quiet: bool) -> Result<()> {
         return Ok(());
     }
 
-    restart_suricata_for_rules()
+    restart_suricata_for_rules(paths)
 }
 
 /// A digest of every file under the rules directory (the rules
@@ -203,8 +207,8 @@ fn rules_digest(rules_dir: &Path) -> Result<Option<String>> {
 
 /// Suricata on Windows can't reload rules in place, so restart it,
 /// if running, to load the updated rules.
-fn restart_suricata_for_rules() -> Result<()> {
-    let plan = capture_restart_plan()?;
+fn restart_suricata_for_rules(paths: &Paths) -> Result<()> {
+    let plan = capture_restart_plan(paths)?;
     if !plan.suricata_running {
         return Ok(());
     }
@@ -214,19 +218,19 @@ fn restart_suricata_for_rules() -> Result<()> {
 
     info!("Restarting Suricata to load the updated rules");
     let result = (|| {
-        stop_suricata_managed()?;
-        let suricata = start_suricata_background(guid)?;
-        wait_for_suricata_readiness(&suricata)
+        stop_suricata_managed(paths)?;
+        let suricata = start_suricata_background(paths, guid)?;
+        wait_for_suricata_readiness(paths, &suricata)
     })();
     result.map_err(|err| anyhow!("Rules updated, but restarting Suricata failed: {}", err))
 }
 
-fn detect_suricata_version_for_rules_update() -> Option<String> {
-    if let Some(version) = get_suricata_runtime_version() {
+fn detect_suricata_version_for_rules_update(paths: &Paths) -> Option<String> {
+    if let Some(version) = get_suricata_runtime_version(paths) {
         return Some(version);
     }
 
-    match get_suricata_installed_version() {
+    match get_suricata_installed_version(paths) {
         Ok(Some(version)) => normalize_suricata_version(&version)
             .or_else(|| normalize_suricata_version(suricata_version_for_comparison())),
         Ok(None) => normalize_suricata_version(suricata_version_for_comparison()),
@@ -240,8 +244,8 @@ fn detect_suricata_version_for_rules_update() -> Option<String> {
     }
 }
 
-fn get_suricata_runtime_version() -> Option<String> {
-    let suricata_path = find_suricata_executable()?;
+fn get_suricata_runtime_version(paths: &Paths) -> Option<String> {
+    let suricata_path = find_suricata_executable(paths)?;
     let output = Command::new(&suricata_path).arg("-V").output().ok()?;
 
     if !output.status.success() {
@@ -308,23 +312,23 @@ fn normalize_suricata_version(version: &str) -> Option<String> {
     }
 }
 
-pub(super) fn update_sources() -> Result<()> {
-    with_path_provider(suricatax_cli::update_sources)
+pub(super) fn update_sources(paths: &Paths) -> Result<()> {
+    with_path_provider(paths, suricatax_cli::update_sources)
 }
 
-pub(super) fn enable_ruleset(name: Option<&str>) -> Result<()> {
+pub(super) fn enable_ruleset(paths: &Paths, name: Option<&str>) -> Result<()> {
     match name {
-        Some(name) => with_path_provider(|paths| suricatax_cli::enable_ruleset(paths, name)),
-        None => crate::menu::rules::enable_ruleset(&WindowsRulesBackend),
+        Some(name) => with_path_provider(paths, |paths| suricatax_cli::enable_ruleset(paths, name)),
+        None => crate::menu::rules::enable_ruleset(&WindowsRulesBackend { paths }),
     }
 }
 
-pub(super) fn disable_ruleset(name: &str) -> Result<()> {
-    with_path_provider(|paths| suricatax_cli::disable_ruleset(paths, name))
+pub(super) fn disable_ruleset(paths: &Paths, name: &str) -> Result<()> {
+    with_path_provider(paths, |paths| suricatax_cli::disable_ruleset(paths, name))
 }
 
-pub(super) fn list_enabled_rulesets() -> Result<()> {
-    crate::menu::rules::list_enabled_rulesets(&WindowsRulesBackend)
+pub(super) fn list_enabled_rulesets(paths: &Paths) -> Result<()> {
+    crate::menu::rules::list_enabled_rulesets(&WindowsRulesBackend { paths })
 }
 
 #[cfg(test)]

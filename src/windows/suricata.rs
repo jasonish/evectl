@@ -4,17 +4,12 @@
 //! Suricata installation, configuration, and launch.
 
 use super::install::download_file;
-use super::paths::{
-    ensure_dir, get_evectl_data_dir, get_suricata_eve_json_path, get_suricata_exe_path,
-    get_suricata_filestore_dir, get_suricata_install_dir, get_suricata_log_dir,
-    get_suricata_pcap_dir, get_suricata_pid_path, get_suricata_run_dir, get_suricata_runtime_path,
-    get_suricata_threshold_config_path, load_evectl_config,
-};
-use super::rules::get_suricatax_paths;
+use super::paths::{Paths, ensure_dir, load_evectl_config};
+use super::runtime::Role;
 use super::runtime::{
-    ROLE_SURICATA, RuntimeMetadata, build_runtime_metadata, count_named_processes,
-    format_command_line, is_pid_running, managed_process_is_running, process_matches_exe,
-    spawn_detached, stop_managed_process, write_pid, write_runtime_metadata,
+    RuntimeMetadata, build_runtime_metadata, count_named_processes, format_command_line,
+    is_pid_running, managed_process_is_running, process_matches_exe, spawn_detached,
+    stop_managed_process, write_pid, write_runtime_metadata,
 };
 use super::version::compare_versions;
 use crate::prelude::*;
@@ -31,21 +26,21 @@ pub(super) const SURICATA_VERSION_MARKER: &str = ".evectl-suricata-version";
 
 const SURICATA_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn write_suricata_rules_include_stub() -> Result<PathBuf> {
-    let paths = get_suricatax_paths()?;
-    std::fs::create_dir_all(&paths.rules_dir).context(format!(
+fn write_suricata_rules_include_stub(paths: &Paths) -> Result<PathBuf> {
+    let rules_dir = paths.suricata_rules_dir();
+    std::fs::create_dir_all(&rules_dir).context(format!(
         "Failed to create Suricata rules directory {}",
-        paths.rules_dir.display()
+        rules_dir.display()
     ))?;
 
-    let run_dir = get_suricata_run_dir()?;
+    let run_dir = paths.suricata_run_dir();
     std::fs::create_dir_all(&run_dir).context(format!(
         "Failed to create Suricata runtime directory {}",
         run_dir.display()
     ))?;
 
     let include_path = run_dir.join("rules-include.yaml");
-    let rules_dir = paths.rules_dir.to_string_lossy().replace('\'', "''");
+    let rules_dir = rules_dir.to_string_lossy().replace('\'', "''");
 
     let stub = format!(
         "%YAML 1.1\n---\ndefault-rule-path: '{}'\nrule-files:\n  - suricata.rules\n",
@@ -60,8 +55,8 @@ fn write_suricata_rules_include_stub() -> Result<PathBuf> {
     Ok(include_path)
 }
 
-fn ensure_suricata_threshold_config() -> Result<PathBuf> {
-    let path = get_suricata_threshold_config_path()?;
+fn ensure_suricata_threshold_config(paths: &Paths) -> Result<PathBuf> {
+    let path = paths.suricata_threshold_config();
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
@@ -76,10 +71,9 @@ fn ensure_suricata_threshold_config() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub(super) fn find_suricata_executable() -> Option<PathBuf> {
-    if let Ok(path) = get_suricata_exe_path()
-        && path.exists()
-    {
+pub(super) fn find_suricata_executable(paths: &Paths) -> Option<PathBuf> {
+    let path = paths.suricata_exe();
+    if path.exists() {
         return Some(path);
     }
 
@@ -303,14 +297,12 @@ exit $process.ExitCode
     Ok(())
 }
 
-fn is_suricata_managed_installed() -> bool {
-    get_suricata_exe_path()
-        .map(|path| path.exists())
-        .unwrap_or(false)
+fn is_suricata_managed_installed(paths: &Paths) -> bool {
+    paths.suricata_exe().exists()
 }
 
-fn is_suricata_installed() -> bool {
-    if find_suricata_executable().is_some() {
+fn is_suricata_installed(paths: &Paths) -> bool {
+    if find_suricata_executable(paths).is_some() {
         return true;
     }
 
@@ -324,14 +316,14 @@ fn is_suricata_installed() -> bool {
     false
 }
 
-pub(super) fn suricata_upgrade_needed() -> Result<bool> {
+pub(super) fn suricata_upgrade_needed(paths: &Paths) -> Result<bool> {
     let target_version = suricata_version_for_comparison();
 
-    if !is_suricata_managed_installed() {
+    if !is_suricata_managed_installed(paths) {
         return Ok(true);
     }
 
-    let installed_version = match get_suricata_installed_version()? {
+    let installed_version = match get_suricata_installed_version(paths)? {
         Some(version) => version,
         None => return Ok(true),
     };
@@ -343,10 +335,10 @@ pub(super) fn suricata_upgrade_needed() -> Result<bool> {
     Ok(comparison == std::cmp::Ordering::Less)
 }
 
-pub(super) fn maybe_upgrade_suricata() -> Result<()> {
+pub(super) fn maybe_upgrade_suricata(paths: &Paths) -> Result<()> {
     let target_version = suricata_version_for_comparison();
-    let managed_installed = is_suricata_managed_installed();
-    let any_installed = is_suricata_installed();
+    let managed_installed = is_suricata_managed_installed(paths);
+    let any_installed = is_suricata_installed(paths);
 
     if !managed_installed {
         if any_installed {
@@ -360,17 +352,17 @@ pub(super) fn maybe_upgrade_suricata() -> Result<()> {
                 SURICATA_VERSION
             );
         }
-        return install_or_upgrade_suricata(true);
+        return install_or_upgrade_suricata(paths, true);
     }
 
-    let installed_version = match get_suricata_installed_version()? {
+    let installed_version = match get_suricata_installed_version(paths)? {
         Some(version) => version,
         None => {
             info!(
                 "Suricata is installed in the evectl-managed directory, but the version could not be determined. Reinstalling bundled version {}.",
                 SURICATA_VERSION
             );
-            return install_or_upgrade_suricata(true);
+            return install_or_upgrade_suricata(paths, true);
         }
     };
 
@@ -391,7 +383,7 @@ pub(super) fn maybe_upgrade_suricata() -> Result<()> {
                 "Suricata {} is older than bundled {} (package {}). Upgrading Suricata...",
                 installed_version, target_version, SURICATA_VERSION
             );
-            install_or_upgrade_suricata(true)
+            install_or_upgrade_suricata(paths, true)
         }
         std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
             info!(
@@ -410,14 +402,13 @@ pub(super) fn suricata_version_for_comparison() -> &'static str {
         .unwrap_or(SURICATA_VERSION)
 }
 
-fn get_suricata_version_marker_path() -> Result<PathBuf> {
-    Ok(get_suricata_install_dir()?.join(SURICATA_VERSION_MARKER))
+fn version_marker_path(paths: &Paths) -> PathBuf {
+    paths.suricata_install_dir().join(SURICATA_VERSION_MARKER)
 }
 
-pub(super) fn get_suricata_installed_version() -> Result<Option<String>> {
-    if let Ok(marker_path) = get_suricata_version_marker_path()
-        && marker_path.exists()
-    {
+pub(super) fn get_suricata_installed_version(paths: &Paths) -> Result<Option<String>> {
+    let marker_path = version_marker_path(paths);
+    if marker_path.exists() {
         let version = std::fs::read_to_string(&marker_path).context(format!(
             "Failed to read Suricata version marker {}",
             marker_path.display()
@@ -431,23 +422,19 @@ pub(super) fn get_suricata_installed_version() -> Result<Option<String>> {
     Ok(None)
 }
 
-pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
-    let managed_installed = is_suricata_managed_installed();
-    let any_installed = is_suricata_installed();
+pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Result<()> {
+    let managed_installed = is_suricata_managed_installed(paths);
+    let any_installed = is_suricata_installed(paths);
 
     if managed_installed && !upgrade {
         info!("Suricata is already installed in the evectl-managed directory.");
         return Ok(());
     }
 
-    if any_installed
-        && !managed_installed
-        && !upgrade
-        && let Ok(install_dir) = get_suricata_install_dir()
-    {
+    if any_installed && !managed_installed && !upgrade {
         info!(
             "A system Suricata installation was detected. Installing an evectl-managed copy into {}.",
-            install_dir.display()
+            paths.suricata_install_dir().display()
         );
     }
 
@@ -455,11 +442,11 @@ pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
         if managed_installed {
             info!("Upgrading Suricata to version {}...", SURICATA_VERSION);
 
-            if let Err(err) = stop_suricata_managed() {
+            if let Err(err) = stop_suricata_managed(paths) {
                 warn!("Failed to stop running Suricata processes: {}", err);
             }
 
-            uninstall_suricata()?;
+            uninstall_suricata(paths)?;
         } else if any_installed {
             info!(
                 "A non-evectl Suricata installation was detected. Installing evectl-managed version {} instead...",
@@ -479,7 +466,7 @@ pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
     );
     let filename = format!("Suricata-{}-64bit.msi", SURICATA_VERSION);
 
-    let cache_dir = get_evectl_data_dir()?.join("downloads");
+    let cache_dir = paths.downloads_dir();
     std::fs::create_dir_all(&cache_dir).context(format!(
         "Failed to create installer cache directory {}",
         cache_dir.display()
@@ -494,17 +481,17 @@ pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
         download_file(&url, &msi_path, "Suricata")?;
     }
 
-    let install_dir = get_suricata_install_dir()?;
+    let install_dir = paths.suricata_install_dir();
     extract_msi_package_to_dir(&msi_path, "Suricata", &install_dir)?;
     patch_suricata_config_for_local_install(&install_dir)?;
 
-    let marker_path = get_suricata_version_marker_path()?;
+    let marker_path = version_marker_path(paths);
     std::fs::write(&marker_path, suricata_version_for_comparison()).context(format!(
         "Failed to write Suricata version marker {}",
         marker_path.display()
     ))?;
 
-    let suricata_exe = get_suricata_exe_path()?;
+    let suricata_exe = paths.suricata_exe();
     if !suricata_exe.exists() {
         bail!(
             "Suricata extraction completed, but executable not found at {}",
@@ -521,9 +508,9 @@ pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
     Ok(())
 }
 
-fn cleanup_suricata_leftovers() -> Result<()> {
+fn cleanup_suricata_leftovers(paths: &Paths) -> Result<()> {
     let mut errors = vec![];
-    let install_dir = get_suricata_install_dir()?;
+    let install_dir = paths.suricata_install_dir();
 
     if install_dir.exists() {
         info!("Removing Suricata directory {}", install_dir.display());
@@ -567,7 +554,7 @@ fn cleanup_suricata_leftovers() -> Result<()> {
         );
     }
 
-    let suricata_exe_path = get_suricata_exe_path()?;
+    let suricata_exe_path = paths.suricata_exe();
     if suricata_exe_path.exists() {
         bail!(
             "Suricata uninstall completed, but this executable still exists:\n- {}",
@@ -578,29 +565,29 @@ fn cleanup_suricata_leftovers() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn uninstall_suricata() -> Result<()> {
+pub(super) fn uninstall_suricata(paths: &Paths) -> Result<()> {
     info!("Removing evectl-managed Suricata installation...");
-    cleanup_suricata_leftovers()
+    cleanup_suricata_leftovers(paths)
 }
 
-pub(super) fn build_suricata_command(guid: &str) -> Result<Command> {
-    if !is_suricata_installed() {
+pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Command> {
+    if !is_suricata_installed(paths) {
         bail!("Suricata is not installed. Please install it first using 'evectl install'");
     }
 
-    let suricata_path = find_suricata_executable()
+    let suricata_path = find_suricata_executable(paths)
         .ok_or_else(|| anyhow!("Suricata executable not found in expected locations"))?;
     let suricata_dir = suricata_path
         .parent()
         .ok_or_else(|| anyhow!("Failed to determine Suricata installation directory"))?
         .to_path_buf();
 
-    let suricata_log_dir = get_suricata_log_dir()?;
+    let suricata_log_dir = paths.suricata_log_dir();
     ensure_dir(&suricata_log_dir)?;
-    let threshold_config = ensure_suricata_threshold_config()?;
+    let threshold_config = ensure_suricata_threshold_config(paths)?;
 
     let npcap_device = format!("\\Device\\NPF_{{{}}}", guid.trim_matches(['{', '}']));
-    let rules_include_path = write_suricata_rules_include_stub()?;
+    let rules_include_path = write_suricata_rules_include_stub(paths)?;
 
     let mut command = Command::new(&suricata_path);
     let suricata_config = suricata_dir.join("suricata.yaml");
@@ -648,14 +635,14 @@ pub(super) fn build_suricata_command(guid: &str) -> Result<Command> {
         );
     }
 
-    let config = load_evectl_config()?;
+    let config = load_evectl_config(paths)?;
 
     if let Some(sensor_name) = &config.suricata.sensor_name {
         command.arg("--set");
         command.arg(format!("sensor-name={}", sensor_name));
     }
 
-    let spool = get_suricata_pcap_dir()?;
+    let spool = paths.suricata_pcap_dir();
     let mut dump_command = Command::new(command.get_program());
     dump_command.args(command.get_args());
     dump_command.arg("--dump-config");
@@ -691,7 +678,7 @@ pub(super) fn build_suricata_command(guid: &str) -> Result<Command> {
         &mut command,
         std::str::from_utf8(&output.stdout)?,
         &extraction,
-        &get_suricata_filestore_dir()?,
+        &paths.suricata_filestore_dir(),
     )?;
 
     // The BPF filter is a trailing positional argument.
@@ -702,8 +689,8 @@ pub(super) fn build_suricata_command(guid: &str) -> Result<Command> {
     Ok(command)
 }
 
-pub(super) fn ensure_suricata_start_allowed() -> Result<()> {
-    if managed_process_is_running(ROLE_SURICATA)? {
+pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
+    if managed_process_is_running(paths, Role::Suricata)? {
         bail!("A managed Suricata process is already running. Use 'evectl stop' first.");
     }
 
@@ -718,23 +705,27 @@ pub(super) fn ensure_suricata_start_allowed() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn start_suricata_background(guid: &str) -> Result<RuntimeMetadata> {
-    ensure_suricata_start_allowed()?;
+pub(super) fn start_suricata_background(paths: &Paths, guid: &str) -> Result<RuntimeMetadata> {
+    ensure_suricata_start_allowed(paths)?;
 
-    let mut command = build_suricata_command(guid)?;
+    let mut command = build_suricata_command(paths, guid)?;
     info!("Running command: {}", format_command_line(&command));
     let pid = spawn_detached(&mut command)?;
-    let metadata = build_runtime_metadata(ROLE_SURICATA, &command, pid, None, None)?;
+    let metadata = build_runtime_metadata(Role::Suricata, &command, pid, None, None)?;
 
-    ensure_dir(&get_suricata_run_dir()?)?;
-    write_pid(&get_suricata_pid_path()?, pid)?;
-    write_runtime_metadata(&get_suricata_runtime_path()?, &metadata)?;
+    ensure_dir(&paths.suricata_run_dir())?;
+    write_pid(&Role::Suricata.pid_path(paths), pid)?;
+    write_runtime_metadata(&Role::Suricata.runtime_path(paths), &metadata)?;
 
     Ok(metadata)
 }
 
-pub(super) fn wait_for_suricata_pid_readiness(pid: u32, exe_path: &Path) -> Result<()> {
-    let eve_json = get_suricata_eve_json_path()?;
+pub(super) fn wait_for_suricata_pid_readiness(
+    paths: &Paths,
+    pid: u32,
+    exe_path: &Path,
+) -> Result<()> {
+    let eve_json = paths.suricata_eve_json();
     let started = std::time::Instant::now();
 
     while started.elapsed() < SURICATA_READY_TIMEOUT {
@@ -756,10 +747,10 @@ pub(super) fn wait_for_suricata_pid_readiness(pid: u32, exe_path: &Path) -> Resu
     Ok(())
 }
 
-pub(super) fn wait_for_suricata_readiness(metadata: &RuntimeMetadata) -> Result<()> {
-    wait_for_suricata_pid_readiness(metadata.pid, Path::new(&metadata.exe_path))
+pub(super) fn wait_for_suricata_readiness(paths: &Paths, metadata: &RuntimeMetadata) -> Result<()> {
+    wait_for_suricata_pid_readiness(paths, metadata.pid, Path::new(&metadata.exe_path))
 }
 
-pub(super) fn stop_suricata_managed() -> Result<()> {
-    stop_managed_process(ROLE_SURICATA)
+pub(super) fn stop_suricata_managed(paths: &Paths) -> Result<()> {
+    stop_managed_process(paths, Role::Suricata)
 }
