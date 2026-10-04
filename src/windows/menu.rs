@@ -195,12 +195,7 @@ fn offer_install_if_missing(paths: &Paths, config: &mut crate::config::Config) {
     };
 
     if !status.any_enabled() {
-        if let Err(err) = wizard(paths, config)
-            && !prompt_was_cancelled(&err)
-        {
-            error!("{}", err);
-            crate::prompt::enter();
-        }
+        crate::prompt::report("Setup wizard failed", wizard(paths, config));
         return;
     }
 
@@ -215,13 +210,11 @@ fn offer_install_if_missing(paths: &Paths, config: &mut crate::config::Config) {
         info!("EveBox is not installed");
     }
 
-    if let Ok(true) = inquire::Confirm::new("Required components not installed, install now?")
-        .with_default(true)
-        .prompt()
-        && let Err(err) = install_configured_components(paths, config)
-    {
-        error!("Failed to install components: {}", err);
-        crate::prompt::enter();
+    if crate::prompt::confirm("Required components not installed, install now?") {
+        crate::prompt::report(
+            "Failed to install components",
+            install_configured_components(paths, config),
+        );
     }
 }
 
@@ -271,20 +264,19 @@ fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
         "Development: latest main-branch build",
     );
     selections.push(EveBoxChannel::Release, "Release: latest stable release");
-    inquire::Select::new(
-        "EveBox release channel (server and agent)",
-        selections.to_vec(),
-    )
-    .with_starting_cursor(match current {
-        EveBoxChannel::Development => 0,
-        EveBoxChannel::Release => 1,
-    })
-    .with_help_message(
-        "Apply with Update. Back up data before switching from development to release.",
-    )
-    .prompt()
-    .ok()
-    .map(|selection| selection.tag)
+    selections
+        .prompt_with("EveBox release channel (server and agent)", |select| {
+            select
+                .with_starting_cursor(match current {
+                    EveBoxChannel::Development => 0,
+                    EveBoxChannel::Release => 1,
+                })
+                .with_help_message(
+                    "Apply with Update. Back up data before switching from development to release.",
+                )
+        })
+        .ok()
+        .flatten()
 }
 
 pub(super) fn config_set_evebox_channel(
@@ -349,11 +341,10 @@ impl crate::menu::configure::Backend for WindowsConfigureBackend<'_> {
                     config.windows.evebox_channel = channel;
                 }
             }
-            CONFIGURE_SHORTCUTS => {
-                run_menu_action_with_pause("Failed to add desktop shortcuts", || {
-                    add_shortcuts(config)
-                })
-            }
+            CONFIGURE_SHORTCUTS => crate::prompt::report_and_pause(
+                "Failed to add desktop shortcuts",
+                add_shortcuts(config),
+            ),
             _ => bail!("Unknown configuration option: {id}"),
         }
         Ok(())
@@ -468,59 +459,33 @@ fn other_menu(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
         selections.push(OtherMenuOption::Info, "Show Paths and Installation Info");
         selections.push(OtherMenuOption::Return, "Return");
 
-        let selection =
-            match inquire::Select::new("Select menu option", selections.to_vec()).prompt() {
-                Ok(selection) => selection,
-                Err(_) => break,
-            };
-
-        match selection.tag {
-            OtherMenuOption::Install => {
-                run_menu_action_with_pause("Installation failed", || install_with(paths, config))
+        match selections.prompt("Select menu option")? {
+            None | Some(OtherMenuOption::Return) => break,
+            Some(OtherMenuOption::Install) => {
+                crate::prompt::report_and_pause("Installation failed", install_with(paths, config))
             }
-            OtherMenuOption::Uninstall => {
-                let uninstall =
-                    inquire::Confirm::new("Uninstall EveBox, Suricata, and evectl-managed Npcap?")
-                        .with_default(false)
-                        .prompt()
-                        .unwrap_or(false);
-                if uninstall {
-                    run_menu_action_with_pause("Uninstallation failed", || {
-                        uninstall_windows_components(paths)
-                    });
+            Some(OtherMenuOption::Uninstall) => {
+                if crate::prompt::confirm_destructive(
+                    "Uninstall EveBox, Suricata, and evectl-managed Npcap?",
+                ) {
+                    crate::prompt::report_and_pause(
+                        "Uninstallation failed",
+                        uninstall_windows_components(paths),
+                    );
                 }
             }
-            OtherMenuOption::Interfaces => {
-                run_menu_action_with_pause("Failed to list network interfaces", list_interfaces)
-            }
-            OtherMenuOption::Info => {
-                run_menu_action_with_pause("Failed to show project information", || {
-                    project_info(paths)
-                })
-            }
-            OtherMenuOption::Return => break,
+            Some(OtherMenuOption::Interfaces) => crate::prompt::report_and_pause(
+                "Failed to list network interfaces",
+                list_interfaces(),
+            ),
+            Some(OtherMenuOption::Info) => crate::prompt::report_and_pause(
+                "Failed to show project information",
+                project_info(paths),
+            ),
         }
     }
 
     Ok(())
-}
-
-fn run_menu_action_with_pause(message: &str, action: impl FnOnce() -> Result<()>) {
-    if let Err(err) = action() {
-        error!("{}: {}", message, err);
-    }
-    crate::prompt::enter();
-}
-
-/// True when a prompt error is the user backing out (ESC or Ctrl-C)
-/// rather than a real failure.
-fn prompt_was_cancelled(err: &anyhow::Error) -> bool {
-    matches!(
-        err.downcast_ref::<inquire::InquireError>(),
-        Some(
-            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted
-        )
-    )
 }
 
 pub(super) fn project_info(paths: &Paths) -> Result<()> {

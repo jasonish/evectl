@@ -134,7 +134,7 @@ fn main() -> Result<()> {
             "Would you like to initialize a new instance in directory\n    {}",
             root.display()
         );
-        if !inquire::Confirm::new(&prompt).with_default(true).prompt()? {
+        if !prompt::ask(&prompt, true)? {
             std::process::exit(0);
         }
         std::fs::create_dir_all(&root)?;

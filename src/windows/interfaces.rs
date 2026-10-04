@@ -287,18 +287,14 @@ fn prompt_for_interface(prompt: &str) -> Result<WindowsInterface> {
         selections.push(interface.clone(), format!("{} {}", interface.name, address));
     }
 
-    let selection = inquire::Select::new(prompt, selections.to_vec()).prompt()?;
-    Ok(selection.tag)
+    Ok(selections.select(prompt).prompt()?.tag)
 }
 
 fn prompt_for_interface_and_maybe_save(paths: &Paths) -> Result<WindowsInterface> {
     let interface =
         prompt_for_interface("Suricata: What network interface should Suricata listen on?")?;
 
-    if inquire::Confirm::new("Remember this interface for future runs?")
-        .with_default(true)
-        .prompt()?
-    {
+    if crate::prompt::ask("Remember this interface for future runs?", true)? {
         let config_path = set_configured_interface_name(paths, &interface.name)?;
         println!("Saved default interface: {}", interface.name);
         println!("Resolved interface GUID: {}", interface.guid);
