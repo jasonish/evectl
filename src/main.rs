@@ -1,5 +1,3 @@
-#![cfg_attr(windows, allow(dead_code))]
-
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
@@ -7,31 +5,54 @@ use prelude::*;
 
 use clap::Parser;
 
+// Modules only used by the Linux container runtime are not built on
+// Windows; modules shared with Windows but carrying container code are
+// allowed their unused parts there.
+#[cfg_attr(windows, allow(dead_code))]
 mod cli;
+#[cfg_attr(windows, allow(dead_code))]
 mod config;
+#[cfg_attr(windows, allow(dead_code))]
 mod configs;
+#[cfg_attr(windows, allow(dead_code))]
 mod container;
+#[cfg_attr(windows, allow(dead_code))]
 mod context;
+#[cfg_attr(windows, allow(dead_code))]
 mod elastic;
+#[cfg_attr(windows, allow(dead_code))]
 mod evebox;
+#[cfg_attr(windows, allow(dead_code))]
 mod fpc;
+#[cfg_attr(windows, allow(dead_code))]
 mod housekeeper;
 mod http;
+#[cfg(not(windows))]
 mod logs;
+#[cfg_attr(windows, allow(dead_code))]
 mod menu;
 mod prelude;
 mod process_output;
 mod prompt;
+#[cfg_attr(windows, allow(dead_code))]
 mod ruleindex;
+#[cfg_attr(windows, allow(dead_code))]
 mod rules;
 mod selfupdate;
+#[cfg_attr(windows, allow(dead_code))]
 mod services;
+#[cfg_attr(windows, allow(dead_code))]
 mod status;
+#[cfg_attr(windows, allow(dead_code))]
 mod suricata;
+#[cfg_attr(windows, allow(dead_code))]
 mod system;
+#[cfg_attr(windows, allow(dead_code))]
 mod systemd;
 mod term;
+#[cfg_attr(windows, allow(dead_code))]
 mod uninstall;
+#[cfg_attr(windows, allow(dead_code))]
 mod update;
 mod windows;
 

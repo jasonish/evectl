@@ -6,9 +6,13 @@
 #[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
+#[cfg(not(windows))]
+use clap::Subcommand;
 
+#[cfg(not(windows))]
 use crate::logs::LogArgs;
+#[cfg(not(windows))]
 use crate::prelude::*;
 use crate::windows;
 
@@ -53,6 +57,7 @@ pub(crate) struct Args {
     pub(crate) command: Option<windows::Commands>,
 }
 
+#[cfg(not(windows))]
 #[derive(Subcommand, Debug)]
 pub(crate) enum Commands {
     /// Start enabled services
@@ -120,6 +125,7 @@ pub(crate) enum Commands {
     Windows(windows::Args),
 }
 
+#[cfg(not(windows))]
 #[derive(Subcommand, Debug, Clone)]
 pub(crate) enum SystemdCommands {
     /// Install and enable systemd service.
@@ -213,6 +219,7 @@ pub(crate) fn init_logging(is_interactive: bool, verbose: u8) {
     }
 }
 
+#[cfg(not(windows))]
 fn print(context: &Context, what: String) -> Result<()> {
     match what.as_str() {
         "interfaces" => {
