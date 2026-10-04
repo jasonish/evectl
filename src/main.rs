@@ -8,7 +8,6 @@ use clap::Parser;
 // Modules only used by the Linux container runtime are not built on
 // Windows; modules shared with Windows but carrying container code are
 // allowed their unused parts there.
-#[cfg_attr(windows, allow(dead_code))]
 mod cli;
 #[cfg_attr(windows, allow(dead_code))]
 mod config;
@@ -20,18 +19,16 @@ mod container;
 mod container_platform;
 #[cfg_attr(windows, allow(dead_code))]
 mod context;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod elastic;
 #[cfg_attr(windows, allow(dead_code))]
 mod evebox;
-#[cfg_attr(windows, allow(dead_code))]
 mod fpc;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod housekeeper;
 mod http;
 #[cfg(not(windows))]
 mod logs;
-#[cfg_attr(windows, allow(dead_code))]
 mod menu;
 mod platform;
 mod prelude;
@@ -42,20 +39,20 @@ mod ruleindex;
 #[cfg_attr(windows, allow(dead_code))]
 mod rules;
 mod selfupdate;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod services;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod status;
 #[cfg_attr(windows, allow(dead_code))]
 mod suricata;
 #[cfg_attr(windows, allow(dead_code))]
 mod system;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod systemd;
 mod term;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod uninstall;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 mod update;
 mod windows;
 

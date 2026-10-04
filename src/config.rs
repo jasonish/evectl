@@ -324,6 +324,16 @@ pub(crate) struct ElasticsearchConfig {
     pub memory: Option<u32>,
 }
 
+impl ElasticsearchConfig {
+    /// Default container memory limit in gigabytes.
+    pub(crate) const DEFAULT_MEMORY_GB: u32 = 2;
+
+    /// The container memory limit in gigabytes.
+    pub(crate) fn memory_gb(&self) -> u32 {
+        self.memory.unwrap_or(Self::DEFAULT_MEMORY_GB)
+    }
+}
+
 #[derive(Default, Debug, Deserialize, Serialize, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SearchEngine {
     #[default]

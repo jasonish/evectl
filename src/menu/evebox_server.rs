@@ -7,7 +7,7 @@
 use crate::prelude::*;
 
 use crate::{
-    config::{EveBoxServerConfig, SearchEngine},
+    config::{ElasticsearchConfig, EveBoxServerConfig, SearchEngine},
     evebox::configuration::{Backend, BindAddress},
     prompt::Selections,
     term,
@@ -136,7 +136,7 @@ fn menu_options(config: &Config, backend: &dyn Backend) -> Selections<Options> {
                 format!(
                     "{} Memory Limit [{}GB]",
                     config.elasticsearch.engine.name(),
-                    memory_gb(config)
+                    config.elasticsearch.memory_gb()
                 ),
             );
         }
@@ -170,13 +170,6 @@ fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Re
         Options::Return => {}
     }
     Ok(())
-}
-
-fn memory_gb(config: &Config) -> u32 {
-    config
-        .elasticsearch
-        .memory
-        .unwrap_or(crate::elastic::DEFAULT_MEMORY_GB)
 }
 
 /// Prompt for a datastore, returning None if the prompt was
@@ -242,7 +235,7 @@ fn set_datastore(config: &mut Config) -> Result<()> {
 
 fn set_memory(config: &mut Config) -> Result<()> {
     let memory = inquire::CustomType::<u32>::new("Memory limit in gigabytes:")
-        .with_default(memory_gb(config))
+        .with_default(config.elasticsearch.memory_gb())
         .with_help_message("The search engine will use half of this for its heap. ESC to cancel.")
         .prompt_skippable()?;
     match memory {
@@ -252,7 +245,7 @@ fn set_memory(config: &mut Config) -> Result<()> {
             crate::prompt::enter();
         }
         Some(memory) => {
-            config.elasticsearch.memory = if memory == crate::elastic::DEFAULT_MEMORY_GB {
+            config.elasticsearch.memory = if memory == ElasticsearchConfig::DEFAULT_MEMORY_GB {
                 None
             } else {
                 Some(memory)

@@ -110,6 +110,7 @@ pub(crate) fn remove_engine_log(context: &Context) {
 /// Return the time of the last rule update, formatted for display, or
 /// None if the rules have never been updated. The time is taken from
 /// the rules file written by suricata-update.
+#[cfg(not(windows))]
 pub(crate) fn last_rule_update(context: &Context) -> Option<String> {
     let path = lib_dir(context).join("rules").join("suricata.rules");
     let modified = std::fs::metadata(&path).ok()?.modified().ok()?;

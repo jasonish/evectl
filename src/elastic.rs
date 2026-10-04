@@ -12,18 +12,6 @@ pub(crate) const ELASTICSEARCH_IMAGE: &str =
     "docker.elastic.co/elasticsearch/elasticsearch:8.19.19";
 pub(crate) const OPENSEARCH_IMAGE: &str = "docker.io/opensearchproject/opensearch:3.7.0";
 
-/// Default container memory limit in gigabytes.
-pub(crate) const DEFAULT_MEMORY_GB: u32 = 2;
-
-/// The configured container memory limit in gigabytes.
-pub(crate) fn memory_gb(context: &Context) -> u32 {
-    context
-        .config
-        .elasticsearch
-        .memory
-        .unwrap_or(DEFAULT_MEMORY_GB)
-}
-
 /// What differs between the supported search engines.
 pub(crate) struct EngineSpec {
     pub(crate) image: &'static str,
@@ -176,14 +164,17 @@ pub(crate) fn build_docker_command(context: &Context, detached: bool) -> Command
     // all host memory, which on a large host can be OOM killed while
     // pre-allocating the heap on startup. With a limit, the heap is
     // sized to half the limit.
-    command.arg(format!("--memory={}g", memory_gb(context)));
+    command.arg(format!(
+        "--memory={}g",
+        context.config.elasticsearch.memory_gb()
+    ));
     // Engines that don't size their heap to the container memory
     // limit get it explicitly sized to half the limit.
     if let Some(java_opts_env) = spec.java_opts_env {
         command.arg("--env");
         command.arg(format!(
             "{java_opts_env}=-Xms{0}m -Xmx{0}m",
-            memory_gb(context) * 1024 / 2
+            context.config.elasticsearch.memory_gb() * 1024 / 2
         ));
     }
     // The images run as UID 1000, which under Podman, particularly
