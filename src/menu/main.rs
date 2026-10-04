@@ -93,43 +93,37 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         }
 
         let selections = menu_options(config, status);
-        let selection = match inquire::Select::new("Select a menu option", selections.to_vec())
-            .with_page_size(12)
-            .prompt()
-        {
-            Ok(selection) => selection,
-            Err(_) => break,
-        };
-
-        match selection.tag {
-            Options::Refresh => {}
-            Options::Restart => {
+        match selections.prompt("Select a menu option")? {
+            None | Some(Options::Exit) => break,
+            Some(Options::Refresh) => {}
+            Some(Options::Restart) => {
                 crate::prompt::report("Failed to restart services", backend.restart(config));
                 original = config.clone();
             }
-            Options::Stop => crate::prompt::report("Failed to stop services", backend.stop(config)),
-            Options::Start => {
+            Some(Options::Stop) => {
+                crate::prompt::report("Failed to stop services", backend.stop(config))
+            }
+            Some(Options::Start) => {
                 crate::prompt::report("Failed to start services", backend.start(config))
             }
-            Options::Install => {
+            Some(Options::Install) => {
                 crate::prompt::report_and_pause("Installation failed", backend.install(config));
                 // The wizard saves its own configuration; don't treat it
                 // as a pending change needing a restart.
                 original = config.clone();
             }
-            Options::UpdateRules => crate::prompt::report_and_pause(
+            Some(Options::UpdateRules) => crate::prompt::report_and_pause(
                 "Failed to update rules",
                 backend.update_rules(config),
             ),
-            Options::ManageRules => crate::menu::rules::menu(backend.rules(config).as_ref())?,
-            Options::Update => match backend.update(config) {
+            Some(Options::ManageRules) => crate::menu::rules::menu(backend.rules(config).as_ref())?,
+            Some(Options::Update) => match backend.update(config) {
                 Ok(UpdateOutcome::ExitMenu) => break,
                 Ok(UpdateOutcome::Completed) => crate::prompt::enter(),
                 Err(err) => crate::prompt::report_and_pause("Update failed", Err(err)),
             },
-            Options::Configure => backend.configure(config)?,
-            Options::Other => backend.other(config)?,
-            Options::Exit => break,
+            Some(Options::Configure) => backend.configure(config)?,
+            Some(Options::Other) => backend.other(config)?,
         }
     }
 

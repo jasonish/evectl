@@ -14,7 +14,7 @@ use crate::{
     term,
 };
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Options {
     EnableToggle,
     ToggleTls,
@@ -48,47 +48,29 @@ impl Datastore {
     }
 }
 
-#[derive(Clone)]
-struct BindAddressOption {
-    label: String,
-    address: Option<String>,
-}
-
-impl std::fmt::Display for BindAddressOption {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.label)
-    }
-}
-
-/// Linux menu backed by the container runtime. Settings are edited
-/// directly in the caller's configuration.
+/// Hidden CLI entry point backed by the container runtime; the
+/// configuration is saved on exit as no caller persists it.
 pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
     let runtime = context.clone();
-    menu(&mut context.config, &ContainerBackend(&runtime))
+    menu(&mut context.config, &ContainerBackend(&runtime))?;
+    if context.config != runtime.config {
+        context.config.save()?;
+    }
+    Ok(())
 }
 
+/// Settings are edited directly in the caller's configuration, which
+/// the caller persists.
 pub(crate) fn menu(config: &mut Config, backend: &dyn Backend) -> Result<()> {
     loop {
         term::clear();
         let selections = menu_options(config, backend);
-        let selection =
-            match inquire::Select::new("EveCtl: Configure EveBox Server", selections.to_vec())
-                .with_page_size(16)
-                .prompt()
-            {
-                Ok(selection) => selection,
-                Err(
-                    inquire::InquireError::OperationCanceled
-                    | inquire::InquireError::OperationInterrupted,
-                ) => break,
-                Err(err) => return Err(err.into()),
-            };
-        if selection.tag == Options::Return {
-            break;
-        }
-        if let Err(err) = run_action(config, backend, &selection.tag) {
-            error!("EveBox server configuration failed: {err:#}");
-            crate::prompt::enter();
+        match selections.prompt("EveCtl: Configure EveBox Server")? {
+            None | Some(Options::Return) => break,
+            Some(action) => crate::prompt::report(
+                "EveBox server configuration failed",
+                run_action(config, backend, action),
+            ),
         }
     }
     Ok(())
@@ -177,17 +159,18 @@ fn menu_options(config: &Config, backend: &dyn Backend) -> Selections<Options> {
     selections
 }
 
-fn run_action(config: &mut Config, backend: &dyn Backend, action: &Options) -> Result<()> {
+fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Result<()> {
+    let server = &mut config.evebox_server;
     match action {
-        Options::EnableToggle => {
-            config.evebox_server.enabled = !config.evebox_server.enabled;
+        Options::EnableToggle => server.enabled = !server.enabled,
+        Options::ToggleTls => toggle_guarded(&mut server.no_tls, server.allow_remote, "TLS"),
+        Options::ToggleAuth => {
+            toggle_guarded(&mut server.no_auth, server.allow_remote, "authentication")
         }
-        Options::ToggleTls => toggle_tls(&mut config.evebox_server),
-        Options::ToggleAuth => toggle_auth(&mut config.evebox_server),
         Options::ResetPassword => backend.reset_password()?,
-        Options::EnableRemote => enable_remote_access(&mut config.evebox_server, backend)?,
-        Options::DisableRemote => config.evebox_server.allow_remote = false,
-        Options::SetBindAddress => set_bind_address(&mut config.evebox_server, backend)?,
+        Options::EnableRemote => enable_remote_access(server, backend)?,
+        Options::DisableRemote => server.allow_remote = false,
+        Options::SetBindAddress => set_bind_address(server, backend)?,
         Options::Datastore | Options::Memory | Options::ElasticsearchUrl
             if !backend.supports_search_engines() =>
         {
@@ -211,7 +194,7 @@ fn memory_gb(config: &Config) -> u32 {
 /// Prompt for a datastore, returning None if the prompt was
 /// cancelled.
 pub(crate) fn select_datastore(include_external: bool) -> Result<Option<Datastore>> {
-    let mut selections = crate::prompt::Selections::new();
+    let mut selections = Selections::new();
     selections.push(Datastore::Sqlite, "SQLite (recommended)");
     selections.push(Datastore::OpenSearch, "OpenSearch (managed by EveCtl)");
     selections.push(
@@ -224,12 +207,11 @@ pub(crate) fn select_datastore(include_external: bool) -> Result<Option<Datastor
             "External OpenSearch or Elasticsearch",
         );
     }
-    let selection = inquire::Select::new("Which datastore should EveBox use?", selections.to_vec())
-        .with_help_message(
+    selections.prompt_with("Which datastore should EveBox use?", |select| {
+        select.with_help_message(
             "SQLite is suitable for most systems, OpenSearch and Elasticsearch require more memory",
         )
-        .prompt_skippable()?;
-    Ok(selection.map(|selection| selection.tag))
+    })
 }
 
 fn set_datastore(config: &mut Config) -> Result<()> {
@@ -292,33 +274,17 @@ fn set_memory(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn toggle_tls(config: &mut EveBoxServerConfig) {
-    if config.no_tls {
-        config.no_tls = false;
-    } else {
-        if config.allow_remote
-            && !crate::prompt::confirm_destructive(
-                "Remote access is enabled, are you sure you want to disable TLS",
-            )
-        {
-            return;
-        }
-        config.no_tls = true;
-    }
-}
-
-fn toggle_auth(config: &mut EveBoxServerConfig) {
-    if config.no_auth {
-        config.no_auth = false;
-    } else {
-        if config.allow_remote
-            && !crate::prompt::confirm_destructive(
-                "Remote access is enabled, are you sure you want to disable authentication",
-            )
-        {
-            return;
-        }
-        config.no_auth = true;
+/// Toggle a "disabled" flag for a protection (TLS or authentication),
+/// confirming before disabling it while remote access is allowed.
+fn toggle_guarded(disabled: &mut bool, allow_remote: bool, what: &str) {
+    if *disabled {
+        *disabled = false;
+    } else if !allow_remote
+        || crate::prompt::confirm_destructive(&format!(
+            "Remote access is enabled, are you sure you want to disable {what}"
+        ))
+    {
+        *disabled = true;
     }
 }
 
@@ -341,17 +307,16 @@ fn enable_remote_access(config: &mut EveBoxServerConfig, backend: &dyn Backend) 
     Ok(())
 }
 
-/// Bind address choices: all interfaces first, then each IPv4 address.
-fn bind_address_options(addresses: &[BindAddress]) -> Vec<BindAddressOption> {
-    let mut options = vec![BindAddressOption {
-        label: "All interfaces".to_string(),
-        address: None,
-    }];
+/// Bind address choices: all interfaces (None) first, then each IPv4
+/// address.
+fn bind_address_options(addresses: &[BindAddress]) -> Selections<Option<String>> {
+    let mut options = Selections::new();
+    options.push(None, "All interfaces");
     for address in addresses {
-        options.push(BindAddressOption {
-            label: format!("{} ({})", address.address, address.interface),
-            address: Some(address.address.clone()),
-        });
+        options.push(
+            Some(address.address.clone()),
+            format!("{} ({})", address.address, address.interface),
+        );
     }
     options
 }
@@ -380,15 +345,16 @@ fn set_bind_address(config: &mut EveBoxServerConfig, backend: &dyn Backend) -> R
 
     let options = bind_address_options(&addresses);
     let cursor = bind_address_cursor(&addresses, config.bind_address.as_deref());
-    if let Ok(selection) = inquire::Select::new("Select address to bind to:", options)
-        .with_starting_cursor(cursor)
-        .prompt()
-    {
-        config.bind_address = selection.address;
+    if let Some(address) = options.prompt_with("Select address to bind to:", |select| {
+        select.with_starting_cursor(cursor)
+    })? {
+        config.bind_address = address;
     }
     Ok(())
 }
 
+/// Collect and test the external search engine connection; the caller
+/// persists the configuration.
 fn set_elasticsearch_url(config: &mut Config) -> Result<()> {
     let client = &config.evebox_server.elasticsearch_client;
     let mut url = client.url.clone().unwrap_or_default();
@@ -425,73 +391,35 @@ fn set_elasticsearch_url(config: &mut Config) -> Result<()> {
             false
         };
 
-        let client = crate::http::client_builder()
-            .danger_accept_invalid_certs(disable_certificate_validation)
-            .build()?;
-        let mut request = client.get(&url);
-        if !username.is_empty() {
-            let password = if password.is_empty() {
-                None
-            } else {
-                Some(password.clone())
-            };
-            request = request.basic_auth(&username, password);
-        }
-        let success = match request.send() {
-            Ok(response) => {
-                let status = response.status();
-                let success = status.is_success();
-                let body = response.text().ok();
-                if success {
-                    info!(
-                        "Connected successfully to Elasticsearch: body={}",
-                        body.unwrap_or_default()
-                    );
-                    true
-                } else {
-                    error!(
-                        "Failed to connect to Elasticsearch: {}: body={}",
-                        status,
-                        body.unwrap_or_default()
-                    );
-                    false
-                }
+        let basic_auth = (!username.is_empty()).then(|| {
+            (
+                username.as_str(),
+                (!password.is_empty()).then_some(password.as_str()),
+            )
+        });
+        match crate::menu::evebox_agent::test_url(&url, !disable_certificate_validation, basic_auth)
+        {
+            Ok(body) => {
+                info!("Connected successfully to Elasticsearch: body={body}");
             }
             Err(err) => {
-                error!("Failed to connect to Elasticsearch: {}", err);
-                false
-            }
-        };
-
-        if !success {
-            if crate::prompt::confirm("Retry?") {
-                continue;
-            } else {
+                error!("Failed to connect to Elasticsearch: {err:#}");
+                if crate::prompt::confirm("Retry?") {
+                    continue;
+                }
                 return Ok(());
             }
-        } else {
-            let client = &mut config.evebox_server.elasticsearch_client;
-            client.url = Some(url);
-            client.index = Some(index);
-            client.username = if username.is_empty() {
-                None
-            } else {
-                Some(username)
-            };
-            client.password = if password.is_empty() {
-                None
-            } else {
-                Some(password)
-            };
-            client.disable_certificate_validation = disable_certificate_validation;
-            crate::prompt::enter();
-            break;
         }
+
+        let client = &mut config.evebox_server.elasticsearch_client;
+        client.url = Some(url);
+        client.index = Some(index);
+        client.username = (!username.is_empty()).then_some(username);
+        client.password = (!password.is_empty()).then_some(password);
+        client.disable_certificate_validation = disable_certificate_validation;
+        crate::prompt::enter();
+        return Ok(());
     }
-
-    config.save()?;
-
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1,52 +1,55 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+use crate::prompt::Selections;
 use crate::{context::Context, term};
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum Options {
+    SuricataShell,
+    EveBoxShell,
+    Return,
+}
 
 pub(crate) fn menu(context: &Context) {
     loop {
         term::title("EveCtl: Other Menu Items");
 
-        let selections = crate::prompt::Selections::with_index()
-            .push("suricata-shell", "Suricata Shell")
-            .push("evebox-shell", "EveBox Shell")
-            .push("return", "Return")
-            .to_vec();
+        let mut selections = Selections::with_index();
+        selections.push(Options::SuricataShell, "Suricata Shell");
+        selections.push(Options::EveBoxShell, "EveBox Shell");
+        selections.push(Options::Return, "Return");
 
-        match inquire::Select::new("Select menu option", selections).prompt() {
-            Err(_) => return,
-            Ok(selection) => match selection.tag {
-                "return" => return,
-                "suricata-shell" => {
-                    let _ = context
-                        .manager
-                        .command()
-                        .args([
-                            "exec",
-                            "-it",
-                            "-e",
-                            "PS1=[\\u@suricata \\W]\\$ ",
-                            &crate::suricata::container_name(context),
-                            "bash",
-                        ])
-                        .status();
-                }
-                "evebox-shell" => {
-                    let _ = context
-                        .manager
-                        .command()
-                        .args([
-                            "exec",
-                            "-it",
-                            "-e",
-                            "PS1=[\\u@evebox \\W]\\$ ",
-                            &crate::evebox::server::container_name(context),
-                            "/bin/sh",
-                        ])
-                        .status();
-                }
-                _ => {}
-            },
+        match selections.prompt("Select menu option") {
+            Ok(Some(Options::SuricataShell)) => shell(
+                context,
+                &crate::suricata::container_name(context),
+                "suricata",
+                "bash",
+            ),
+            Ok(Some(Options::EveBoxShell)) => shell(
+                context,
+                &crate::evebox::server::container_name(context),
+                "evebox",
+                "/bin/sh",
+            ),
+            Ok(Some(Options::Return)) | Ok(None) | Err(_) => return,
         }
     }
+}
+
+/// Open an interactive shell in a running container.
+fn shell(context: &Context, container: &str, host: &str, shell: &str) {
+    let _ = context
+        .manager
+        .command()
+        .args([
+            "exec",
+            "-it",
+            "-e",
+            &format!("PS1=[\\u@{host} \\W]\\$ "),
+            container,
+            shell,
+        ])
+        .status();
 }

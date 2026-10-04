@@ -87,7 +87,7 @@ fn datastore_options_are_only_offered_with_search_engine_support() {
         Options::Memory,
         Options::ElasticsearchUrl,
     ] {
-        assert!(run_action(&mut config, &FakeBackend::new(false), &action).is_err());
+        assert!(run_action(&mut config, &FakeBackend::new(false), action).is_err());
     }
 }
 
@@ -128,24 +128,25 @@ fn labels_reflect_remote_access_tls_and_authentication_state() {
 
 #[test]
 fn toggles_without_remote_access_do_not_prompt() {
-    let mut server = EveBoxServerConfig::default();
-    toggle_tls(&mut server);
-    assert!(server.no_tls);
-    toggle_tls(&mut server);
-    assert!(!server.no_tls);
+    let backend = FakeBackend::new(false);
+    let mut config = Config::default();
+    run_action(&mut config, &backend, Options::ToggleTls).unwrap();
+    assert!(config.evebox_server.no_tls);
+    run_action(&mut config, &backend, Options::ToggleTls).unwrap();
+    assert!(!config.evebox_server.no_tls);
 
-    toggle_auth(&mut server);
-    assert!(server.no_auth);
-    toggle_auth(&mut server);
-    assert!(!server.no_auth);
-    assert!(!server.no_tls);
+    run_action(&mut config, &backend, Options::ToggleAuth).unwrap();
+    assert!(config.evebox_server.no_auth);
+    run_action(&mut config, &backend, Options::ToggleAuth).unwrap();
+    assert!(!config.evebox_server.no_auth);
+    assert!(!config.evebox_server.no_tls);
 
     // Re-enabling only touches its own setting.
-    server.no_tls = true;
-    server.no_auth = true;
-    toggle_auth(&mut server);
-    assert!(server.no_tls);
-    assert!(!server.no_auth);
+    config.evebox_server.no_tls = true;
+    config.evebox_server.no_auth = true;
+    run_action(&mut config, &backend, Options::ToggleAuth).unwrap();
+    assert!(config.evebox_server.no_tls);
+    assert!(!config.evebox_server.no_auth);
 }
 
 #[test]
@@ -166,7 +167,7 @@ fn bind_address_choices_start_with_all_interfaces_and_track_current_value() {
     ];
     let options = bind_address_options(&addresses);
     assert_eq!(
-        options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(),
+        options.labels(),
         [
             "All interfaces",
             "192.0.2.1 (eth0)",
@@ -174,8 +175,9 @@ fn bind_address_choices_start_with_all_interfaces_and_track_current_value() {
             "198.51.100.1 (eth1)",
         ]
     );
-    assert_eq!(options[0].address, None);
-    assert_eq!(options[3].address.as_deref(), Some("198.51.100.1"));
+    let tags = options.tags();
+    assert_eq!(tags[0], None);
+    assert_eq!(tags[3].as_deref(), Some("198.51.100.1"));
 
     assert_eq!(bind_address_cursor(&addresses, None), 0);
     assert_eq!(bind_address_cursor(&addresses, Some("192.0.2.2")), 2);
@@ -201,14 +203,14 @@ fn disabling_remote_access_and_password_reset_dispatch_to_backend() {
     let backend = FakeBackend::new(false);
     let mut config = Config::default();
     config.evebox_server.allow_remote = true;
-    run_action(&mut config, &backend, &Options::DisableRemote).unwrap();
+    run_action(&mut config, &backend, Options::DisableRemote).unwrap();
     assert!(!config.evebox_server.allow_remote);
 
-    run_action(&mut config, &backend, &Options::ResetPassword).unwrap();
+    run_action(&mut config, &backend, Options::ResetPassword).unwrap();
     assert_eq!(backend.resets.get(), 1);
 
-    run_action(&mut config, &backend, &Options::EnableToggle).unwrap();
+    run_action(&mut config, &backend, Options::EnableToggle).unwrap();
     assert!(config.evebox_server.enabled);
-    run_action(&mut config, &backend, &Options::Return).unwrap();
+    run_action(&mut config, &backend, Options::Return).unwrap();
     assert_eq!(backend.resets.get(), 1);
 }

@@ -57,20 +57,11 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
 
     let search_engines = backend.evebox_server().supports_search_engines();
     let install_type = loop {
-        let selection = match inquire::Select::new(
-            "What type of installation would you like to initialize?",
-            selections.to_vec(),
-        )
-        .prompt()
-        {
-            Ok(selection) => selection,
+        match selections.prompt("What type of installation would you like to initialize?")? {
             // Treat ESC like Custom: manual configuration.
-            Err(_) => return Ok(()),
-        };
-        match selection.tag {
-            InstallType::Custom => return Ok(()),
-            InstallType::Help => install_type_help(search_engines),
-            install_type => break install_type,
+            None | Some(InstallType::Custom) => return Ok(()),
+            Some(InstallType::Help) => install_type_help(search_engines),
+            Some(install_type) => break install_type,
         }
     };
 
@@ -90,14 +81,19 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
 
     if install_type == InstallType::Agent {
         loop {
-            if let Some((url, disable_certificate_validation)) =
+            // A server URL is required; ask again until one is given.
+            let Some((url, disable_certificate_validation)) =
                 crate::menu::evebox_agent::prompt_for_server_url(config)?
-            {
-                config.evebox_agent.enabled = true;
-                config.evebox_agent.server = url;
-                config.evebox_agent.disable_certificate_validation = disable_certificate_validation;
-                break;
+            else {
+                bail!("Aborting configuration wizard. Bye!");
+            };
+            if url.is_empty() {
+                continue;
             }
+            config.evebox_agent.enabled = true;
+            config.evebox_agent.server = url;
+            config.evebox_agent.disable_certificate_validation = disable_certificate_validation;
+            break;
         }
     }
 

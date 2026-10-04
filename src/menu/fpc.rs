@@ -13,6 +13,7 @@ use std::path::Path;
 
 use crate::config::FpcConfig;
 use crate::fpc::Backend;
+use crate::menu::cleanup;
 use crate::prelude::*;
 use crate::prompt::Selections;
 use crate::term;
@@ -58,18 +59,10 @@ fn menu_options(config: &Config, spool: &Path) -> Selections<Options> {
         selections.push(Options::Key, crate::menu::evebox_agent::key_label(config));
     }
     // Captures left behind after disabling are no longer managed.
-    if !config.fpc.enabled {
-        let size = spool_size(spool);
-        if size > 0 {
-            selections.push(
-                Options::RemoveSpool,
-                format!(
-                    "Remove existing packet captures (~{} in {})",
-                    format_size(size),
-                    spool.display(),
-                ),
-            );
-        }
+    if !config.fpc.enabled
+        && let Some(label) = cleanup::remove_label("packet captures", spool)
+    {
+        selections.push(Options::RemoveSpool, label);
     }
     selections.push(Options::Return, "Return");
     selections
@@ -83,26 +76,12 @@ pub(crate) fn menu(config: &mut Config, backend: &dyn Backend) -> Result<()> {
         println!("Captures are available through the EveBox server or agent.");
         println!("Changes take effect after restarting services.");
         let selections = menu_options(config, &spool);
-        let selection = match inquire::Select::new(
-            "EveCtl: Configure Full Packet Capture",
-            selections.to_vec(),
-        )
-        .with_page_size(selections.page_size())
-        .prompt()
-        {
-            Ok(selection) => selection,
-            Err(
-                inquire::InquireError::OperationCanceled
-                | inquire::InquireError::OperationInterrupted,
-            ) => break,
-            Err(err) => return Err(err.into()),
-        };
-        if selection.tag == Options::Return {
-            break;
-        }
-        if let Err(err) = run_action(config, backend, &spool, selection.tag) {
-            error!("Packet-capture configuration failed: {err:#}");
-            crate::prompt::enter();
+        match selections.prompt("EveCtl: Configure Full Packet Capture")? {
+            None | Some(Options::Return) => break,
+            Some(action) => crate::prompt::report(
+                "Packet-capture configuration failed",
+                run_action(config, backend, &spool, action),
+            ),
         }
     }
     Ok(())
@@ -127,47 +106,17 @@ fn run_action(
             if config.fpc.enabled {
                 bail!("Disable full packet capture before removing packet captures");
             }
-            remove_spool(backend, crate::prompt::confirm_destructive)?;
+            cleanup::remove_with_confirmation(backend, crate::prompt::confirm_destructive)?;
         }
         Options::Return => {}
     }
     Ok(())
 }
 
-/// Total size of the files in the spool directory, best effort.
-fn spool_size(dir: &Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .sum()
-}
-
-pub(crate) fn format_size(bytes: u64) -> String {
-    const MB: u64 = 1024 * 1024;
-    const GB: u64 = 1024 * MB;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else {
-        format!("{} MB", bytes.div_ceil(MB))
-    }
-}
-
 fn toggle_enabled(config: &mut Config, spool: &Path) -> Result<()> {
     if config.fpc.enabled {
         config.fpc.enabled = false;
-        if spool_size(spool) > 0 {
-            info!(
-                "Existing packet captures remain in {}; they can be removed from this menu after \
-                 restarting services",
-                spool.display()
-            );
-            crate::prompt::enter();
-        }
+        cleanup::note_remaining("packet captures", spool);
         return Ok(());
     }
 
@@ -241,20 +190,6 @@ fn set_max_files(config: &mut Config) {
             Some(n)
         };
     }
-}
-
-fn remove_spool(backend: &dyn Backend, confirm: impl FnOnce(&str) -> bool) -> Result<()> {
-    backend.check_remove_spool()?;
-    let spool = backend.spool_dir()?;
-    let question = format!(
-        "Remove all packet captures in {} (~{})?",
-        spool.display(),
-        format_size(spool_size(&spool)),
-    );
-    if confirm(&question) {
-        backend.remove_spool()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -46,23 +46,11 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
     loop {
         term::clear();
         let selections = menu_options(config, backend);
-        let selection = match inquire::Select::new("EveCtl: Configure", selections.to_vec())
-            .with_page_size(selections.page_size())
-            .prompt()
-        {
-            Ok(selection) => selection,
-            Err(
-                inquire::InquireError::OperationCanceled
-                | inquire::InquireError::OperationInterrupted,
-            ) => break,
-            Err(err) => return Err(err.into()),
-        };
-        if selection.tag == Options::Return {
-            break;
-        }
-        if let Err(err) = run_action(config, backend, &selection.tag) {
-            error!("Configuration failed: {err:#}");
-            crate::prompt::enter();
+        match selections.prompt("EveCtl: Configure")? {
+            None | Some(Options::Return) => break,
+            Some(action) => {
+                crate::prompt::report("Configuration failed", run_action(config, backend, &action))
+            }
         }
     }
     Ok(())
@@ -188,7 +176,7 @@ impl Backend for ContainerBackend {
     fn run_platform_option(&mut self, config: &mut Config, id: &str) -> Result<()> {
         match id {
             CONTAINER_IMAGES => self.with_context(config, |context| {
-                crate::menu::containers::menu(context);
+                crate::menu::containers::edit(context);
                 Ok(())
             }),
             START_ON_BOOT => start_on_boot(&self.runtime),

@@ -41,22 +41,13 @@ pub(crate) fn menu(backend: &dyn Backend) -> Result<()> {
     loop {
         term::title("EveCtl: Manage Rules");
         let selections = menu_options(backend);
-        let Some(selection) = inquire::Select::new("Select menu option", selections.to_vec())
-            .with_page_size(selections.page_size())
-            .prompt_skippable()?
-        else {
-            break;
+        let action = match selections.prompt("Select menu option")? {
+            None | Some(Options::Return) => break,
+            Some(action) => action,
         };
-        if selection.tag == Options::Return {
-            break;
-        }
-        match run_action(backend, selection.tag) {
+        match run_action(backend, action) {
             Ok(true) => prompt::enter(),
-            Ok(false) => {}
-            Err(err) => {
-                error!("Rules operation failed: {err:#}");
-                prompt::enter();
-            }
+            result => prompt::report("Rules operation failed", result.map(|_| ())),
         }
     }
     Ok(())
@@ -122,13 +113,10 @@ fn select_ruleset(backend: &dyn Backend, enable: bool) -> Result<bool> {
     } else {
         "Choose a ruleset to DISABLE or ESC to exit"
     };
-    let Some(selection) = inquire::Select::new(question, selections.to_vec())
-        .with_page_size(16)
-        .prompt_skippable()?
-    else {
+    let Some(id) = selections.prompt(question)? else {
         return Ok(false);
     };
-    change_ruleset(backend, &selection.tag, enable, || {
+    change_ruleset(backend, &id, enable, || {
         prompt::confirm_with_help(
             "Would you like to update your rules now?",
             if enable {

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use crate::prelude::*;
-
+use crate::prompt::Selections;
 use crate::term;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Options {
     Toggle,
     Server,
@@ -14,55 +14,55 @@ enum Options {
     Exit,
 }
 
+fn menu_options(config: &Config) -> Selections<Options> {
+    let mut selections = Selections::new();
+    if config.evebox_agent.enabled {
+        selections.push(Options::Toggle, "Disable Agent [enabled]");
+    } else {
+        selections.push(Options::Toggle, "Enable Agent [disabled]");
+    }
+    selections.push(
+        Options::Server,
+        format!("EveBox Server URL [{}]", config.evebox_agent.server),
+    );
+    selections.push(Options::AgentId, agent_id_label(config));
+    selections.push(Options::Key, key_label(config));
+    selections.push(Options::Exit, "Return");
+    selections
+}
+
 pub(crate) fn menu(config: &mut Config) -> Result<()> {
     loop {
         term::clear();
-
-        let mut selections = crate::prompt::Selections::new();
-
-        if config.evebox_agent.enabled {
-            selections.push(Options::Toggle, "Disable Agent [enabled]");
-        } else {
-            selections.push(Options::Toggle, "Enable Agent [disabled]");
-        }
-
-        selections.push(
-            Options::Server,
-            format!("EveBox Server URL [{}]", config.evebox_agent.server),
-        );
-
-        selections.push(Options::AgentId, agent_id_label(config));
-        selections.push(Options::Key, key_label(config));
-
-        selections.push(Options::Exit, "Return");
-
-        match inquire::Select::new("EveCtl: Configure EveBox Agent", selections.to_vec())
-            .prompt_skippable()?
-        {
-            Some(selection) => match selection.tag {
-                Options::Toggle => {
-                    config.evebox_agent.enabled = !config.evebox_agent.enabled;
-                    if config.evebox_agent.enabled && config.evebox_agent.server.is_empty() {
-                        set_server(config)?;
-                    }
-                }
-                Options::Server => {
-                    set_server(config)?;
-                }
-                Options::AgentId => {
-                    set_agent_id(config);
-                }
-                Options::Key => {
-                    set_key(config);
-                }
-                Options::Exit => break,
-            },
-            None => {
-                break;
-            }
+        let selections = menu_options(config);
+        match selections.prompt("EveCtl: Configure EveBox Agent")? {
+            None | Some(Options::Exit) => break,
+            Some(action) => crate::prompt::report(
+                "EveBox agent configuration failed",
+                run_action(config, action),
+            ),
         }
     }
+    Ok(())
+}
 
+fn run_action(config: &mut Config, action: Options) -> Result<()> {
+    match action {
+        Options::Toggle => {
+            config.evebox_agent.enabled = !config.evebox_agent.enabled;
+            if config.evebox_agent.enabled && config.evebox_agent.server.is_empty() {
+                set_server(config)?;
+            }
+        }
+        Options::Server => set_server(config)?,
+        Options::AgentId => {
+            set_agent_id(config);
+        }
+        Options::Key => {
+            set_key(config);
+        }
+        Options::Exit => {}
+    }
     Ok(())
 }
 
@@ -87,22 +87,24 @@ pub(crate) fn key_label(config: &Config) -> String {
 /// Prompt for the agent ID. Returns true if an agent ID is set on
 /// return, whether or not it was changed.
 pub(crate) fn set_agent_id(config: &mut Config) -> bool {
-    let current = config
+    let default = config
         .evebox_agent
         .agent_id
         .clone()
         .or_else(crate::system::hostname)
         .unwrap_or_default();
-    let prompt = inquire::Text::new("EveBox Agent ID:")
-        .with_default(&current)
-        .with_help_message("Must match the agent key name on the EveBox server");
-    if let Ok(agent_id) = prompt.prompt() {
-        let agent_id = agent_id.trim();
-        if agent_id.is_empty() {
-            config.evebox_agent.agent_id = None;
-        } else {
-            config.evebox_agent.agent_id = Some(agent_id.to_string());
-        }
+    if let Some(agent_id) = crate::prompt::edit_optional_with(
+        config.evebox_agent.agent_id.as_deref(),
+        "Clear Agent ID?",
+        || {
+            inquire::Text::new("EveBox Agent ID:")
+                .with_default(&default)
+                .with_help_message("Must match the agent key name on the EveBox server")
+                .prompt()
+                .ok()
+        },
+    ) {
+        config.evebox_agent.agent_id = agent_id;
     }
     config.evebox_agent.agent_id.is_some()
 }
@@ -120,20 +122,20 @@ pub(crate) fn set_key(config: &mut Config) -> bool {
     if config.evebox_agent.server.starts_with("http://") {
         warn!("The EveBox server URL is plain HTTP; the agent key will be sent unencrypted");
     }
-    let prompt = inquire::Password::new("EveBox Agent Key:")
-        .without_confirmation()
-        .with_display_mode(inquire::PasswordDisplayMode::Masked)
-        .with_display_toggle_enabled()
-        .with_help_message(&help);
-    if let Ok(key) = prompt.prompt() {
-        let key = key.trim();
-        if key.is_empty() {
-            if config.evebox_agent.key.is_some() && crate::prompt::confirm("Clear Agent Key?") {
-                config.evebox_agent.key = None;
-            }
-        } else {
-            config.evebox_agent.key = Some(key.to_string());
-        }
+    if let Some(key) = crate::prompt::edit_optional_with(
+        config.evebox_agent.key.as_deref(),
+        "Clear Agent Key?",
+        || {
+            inquire::Password::new("EveBox Agent Key:")
+                .without_confirmation()
+                .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                .with_display_toggle_enabled()
+                .with_help_message(&help)
+                .prompt()
+                .ok()
+        },
+    ) {
+        config.evebox_agent.key = key;
     }
     config.evebox_agent.key.is_some()
 }
@@ -189,36 +191,41 @@ pub(crate) fn set_server(config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+/// Prompt for the server URL, testing the connection to a new one.
+/// Returns the URL and whether certificate validation is disabled,
+/// unchanged if the current URL was kept, or None if the prompt was
+/// cancelled.
 pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, bool)>> {
+    let current = config.evebox_agent.server.clone();
     'start: loop {
-        let current = config.evebox_agent.server.clone();
-        let server = match inquire::Text::new("EveBox Server URL:")
-            .with_default(&current)
-            .with_help_message("Example: https://example.com:5636")
-            .prompt()
-        {
-            Ok(url) => url,
-            Err(_) => return Ok(None),
+        let Some(server) = crate::prompt::skippable(
+            inquire::Text::new("EveBox Server URL:")
+                .with_default(&current)
+                .with_help_message("Example: https://example.com:5636")
+                .prompt(),
+        )?
+        else {
+            return Ok(None);
         };
 
         if server == current {
-            return Ok(None);
+            return Ok(Some((
+                server,
+                config.evebox_agent.disable_certificate_validation,
+            )));
         }
 
         // First, validate the URL.
-        let url = match reqwest::Url::parse(&server) {
-            Ok(url) => url,
-            Err(_) => {
-                error!("Invalid URL: {}", &server);
-                continue;
-            }
-        };
+        if reqwest::Url::parse(&server).is_err() {
+            error!("Invalid URL: {}", &server);
+            continue;
+        }
 
         let mut with_certificate_validation = true;
 
         loop {
             info!("Testing connection to server: {}", &server);
-            if let Err(err) = test_url(url.clone(), with_certificate_validation) {
+            if let Err(err) = test_url(&server, with_certificate_validation, None) {
                 error!("Failed to connect to server: {}", err);
 
                 if with_certificate_validation && server.starts_with("https") {
@@ -242,14 +249,26 @@ pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, b
     }
 }
 
-fn test_url(url: reqwest::Url, with_certificate_validation: bool) -> Result<()> {
+/// GET a URL, with optional basic authentication, returning the
+/// response body on success.
+pub(crate) fn test_url(
+    url: &str,
+    with_certificate_validation: bool,
+    basic_auth: Option<(&str, Option<&str>)>,
+) -> Result<String> {
     let client = crate::http::client_builder()
         .danger_accept_invalid_certs(!with_certificate_validation)
         .build()?;
-    let response = client.get(url).send()?;
-    if response.status().is_success() {
-        Ok(())
+    let mut request = client.get(url);
+    if let Some((username, password)) = basic_auth {
+        request = request.basic_auth(username, password);
+    }
+    let response = request.send()?;
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if status.is_success() {
+        Ok(body)
     } else {
-        bail!("Failed to connect to server: {}", response.status())
+        bail!("{status}: body={body}")
     }
 }

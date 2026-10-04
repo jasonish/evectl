@@ -146,7 +146,10 @@ fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Re
             if config.suricata.file_extraction.enabled {
                 bail!("Disable file extraction before removing extracted files");
             }
-            file_extraction::remove_files(backend)?;
+            crate::menu::cleanup::remove_with_confirmation(
+                backend,
+                crate::prompt::confirm_destructive,
+            )?;
         }
         Options::Exit => {}
     }

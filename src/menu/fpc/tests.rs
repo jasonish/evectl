@@ -164,9 +164,9 @@ fn retention_validation_preserves_total_file_count_and_rejects_invalid_values() 
 }
 
 #[test]
-fn cleanup_requires_stopped_suricata_and_explicit_confirmation() {
+fn cleanup_requires_disabled_capture_and_stopped_suricata() {
     let dir = tempfile::tempdir().unwrap();
-    let mut backend = FakeBackend {
+    let backend = FakeBackend {
         spool: dir.path().to_path_buf(),
         blocked: Cell::new(false),
         removed: Cell::new(false),
@@ -176,50 +176,15 @@ fn cleanup_requires_stopped_suricata_and_explicit_confirmation() {
     config.fpc.enabled = true;
     assert!(run_action(&mut config, &backend, dir.path(), Options::RemoveSpool).is_err());
     assert!(!backend.removed.get());
-    remove_spool(&backend, |_| false).unwrap();
-    assert!(!backend.removed.get());
+    let dyn_backend: &dyn Backend = &backend;
     backend.blocked.set(true);
-    assert!(remove_spool(&backend, |_| panic!("Must not prompt")).is_err());
+    assert!(cleanup::remove_with_confirmation(dyn_backend, |_| panic!("Must not prompt")).is_err());
     backend.blocked.set(false);
-    assert!(
-        remove_spool(&backend, |_| {
-            backend.blocked.set(true);
-            true
-        })
-        .is_err()
-    );
-    assert!(!backend.removed.get());
-    backend.blocked.set(false);
-    backend.fail_remove = true;
-    assert!(remove_spool(&backend, |_| true).is_err());
-    assert!(!backend.removed.get());
-    backend.fail_remove = false;
-    remove_spool(&backend, |message| {
+    cleanup::remove_with_confirmation(dyn_backend, |message| {
+        assert!(message.contains("packet captures"));
         assert!(message.contains(&dir.path().display().to_string()));
         true
     })
     .unwrap();
     assert!(backend.removed.get());
-}
-
-#[test]
-fn spool_size_sums_files_only() {
-    let dir = tempfile::tempdir().unwrap();
-    assert_eq!(spool_size(dir.path()), 0);
-    std::fs::write(dir.path().join("log.0.1.pcap"), [0u8; 1000]).unwrap();
-    std::fs::write(dir.path().join("log.1.1.pcap"), [0u8; 24]).unwrap();
-    std::fs::create_dir(dir.path().join("subdir")).unwrap();
-    assert_eq!(spool_size(dir.path()), 1024);
-    assert_eq!(spool_size(&dir.path().join("missing")), 0);
-}
-
-#[test]
-fn format_size_rounds_sensibly() {
-    assert_eq!(format_size(1), "1 MB");
-    assert_eq!(format_size(256 * 1024 * 1024), "256 MB");
-    assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
-    assert_eq!(
-        format_size(25 * 1024 * 1024 * 1024 + 512 * 1024 * 1024),
-        "25.5 GB"
-    );
 }
