@@ -44,7 +44,7 @@ pub(crate) fn format_template(root: &Path, manager: ContainerManager) -> Result<
         .replace("{current_exe}", &exec_quote(&current_exe.to_string_lossy()))
         .replace(
             "{runtime_args}",
-            runtime_args(manager, evectl::system::getuid()),
+            runtime_args(manager, crate::system::getuid()),
         )
         .replace("{exec_root}", &exec_quote(&root.to_string_lossy()))
         .replace("{root}", &specifier_escape(&root.to_string_lossy()))
@@ -84,7 +84,7 @@ pub(crate) fn install(root: &Path, manager: ContainerManager) -> Result<()> {
     info!("Using sudo to install and active {}", PATH);
     info!("You may be asked for your password to continue...");
 
-    let uid = evectl::system::getuid();
+    let uid = crate::system::getuid();
 
     // Using sudo, install systemd unit file.
     let template = format_template(root, manager)?;
@@ -111,7 +111,7 @@ pub(crate) fn remove() -> Result<()> {
     info!("Using sudo to removed and de-activate {}", PATH);
     info!("You may be asked for your password to continue...");
 
-    let uid = evectl::system::getuid();
+    let uid = crate::system::getuid();
     let mut errors = vec![];
 
     if let Err(err) = sudo_command(uid, "systemctl")

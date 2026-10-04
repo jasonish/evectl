@@ -7,9 +7,14 @@ use crossterm::{
 };
 use std::io::Write;
 
+/// True if clearing the terminal is disabled by the NO_CLEAR
+/// environment variable, mainly for development.
+fn no_clear() -> bool {
+    std::env::var("NO_CLEAR").is_ok()
+}
+
 pub(crate) fn clear() {
-    let no_clear = std::env::var("NO_CLEAR").map(|_| true).unwrap_or(false);
-    if !no_clear {
+    if !no_clear() {
         let mut stdout = std::io::stdout().lock();
         let _ = execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0));
         let _ = stdout.flush();
@@ -17,8 +22,7 @@ pub(crate) fn clear() {
 }
 
 pub(crate) fn title(title: &str) {
-    let no_clear = std::env::var("NO_CLEAR").map(|_| true).unwrap_or(false);
-    if no_clear {
+    if no_clear() {
         println!("{}\n", title);
     } else {
         let mut stdout = std::io::stdout().lock();

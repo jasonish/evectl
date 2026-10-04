@@ -26,7 +26,7 @@ pub(crate) trait Backend {
 }
 
 fn container_interfaces() -> Result<Vec<Interface>> {
-    Ok(evectl::system::get_interfaces()?
+    Ok(crate::system::get_interfaces()?
         .into_iter()
         .map(|interface| Interface {
             name: interface.name,

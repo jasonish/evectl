@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: (C) 2025 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+use crate::prelude::*;
+
 use std::path::Path;
 
-// No prelude as this is exported in the library and the prelude isn't
-// for now.
-use anyhow::Result;
-use tracing::info;
-
-pub const SURICATA_STUB: &str = "
+const SURICATA_STUB: &str = "
 %YAML 1.1
 ---
 
@@ -58,25 +55,25 @@ input:
   delete-spool-files: true
 ";
 
-pub fn write_suricata_stub(path: &Path) -> Result<()> {
+pub(crate) fn write_suricata_stub(path: &Path) -> Result<()> {
     info!("Writing Suricata include to {}", path.display());
     std::fs::write(path, SURICATA_STUB)?;
     Ok(())
 }
 
-pub fn write_evebox_server_socket_config(path: &Path) -> Result<()> {
+pub(crate) fn write_evebox_server_socket_config(path: &Path) -> Result<()> {
     write_evebox_config(path, EVEBOX_SERVER_SOCKET_CONFIG)
 }
 
-pub fn write_evebox_agent_socket_config(path: &Path) -> Result<()> {
+pub(crate) fn write_evebox_agent_socket_config(path: &Path) -> Result<()> {
     write_evebox_config(path, EVEBOX_AGENT_SOCKET_CONFIG)
 }
 
-pub fn write_evebox_server_file_config(path: &Path) -> Result<()> {
+pub(crate) fn write_evebox_server_file_config(path: &Path) -> Result<()> {
     write_evebox_config(path, EVEBOX_SERVER_FILE_CONFIG)
 }
 
-pub fn write_evebox_agent_file_config(path: &Path) -> Result<()> {
+pub(crate) fn write_evebox_agent_file_config(path: &Path) -> Result<()> {
     write_evebox_config(path, EVEBOX_AGENT_FILE_CONFIG)
 }
 

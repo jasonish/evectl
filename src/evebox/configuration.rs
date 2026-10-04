@@ -30,7 +30,7 @@ impl Backend for ContainerBackend<'_> {
     }
 
     fn bind_addresses(&self) -> Result<Vec<BindAddress>> {
-        Ok(evectl::system::get_interfaces()?
+        Ok(crate::system::get_interfaces()?
             .into_iter()
             .flat_map(|interface| {
                 interface.addr4.into_iter().map(move |address| BindAddress {

@@ -207,7 +207,7 @@ impl FpcConfig {
     /// (`threads: auto` on Linux, `detect-thread-ratio: 1.0` on Windows).
     /// On Linux, this ignores any affinity or quota applied to EveCtl itself.
     pub(crate) fn capture_threads() -> usize {
-        evectl::system::online_cpus()
+        crate::system::online_cpus()
     }
 
     /// Approximate maximum disk usage of the pcap spool with

@@ -1,4 +1,4 @@
-#![cfg_attr(target_os = "windows", allow(dead_code))]
+#![cfg_attr(windows, allow(dead_code))]
 
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
@@ -17,7 +17,7 @@ use prelude::*;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use config::{EveOutput, FileExtractionConfig, FpcConfig};
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 use container::ContainerManager;
 use container::{CommandExt, Container, RESTART_POLICY_ARG, SuricataContainer};
 use logs::LogArgs;
@@ -44,6 +44,7 @@ mod ruleindex;
 mod rules;
 mod selfupdate;
 mod suricata;
+mod system;
 mod systemd;
 mod term;
 mod uninstall;
@@ -57,7 +58,7 @@ fn get_clap_style() -> clap::builder::Styles {
         .placeholder(clap::builder::styling::AnsiColor::Green.on_default())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 #[derive(Parser, Debug)]
 #[command(styles=get_clap_style())]
 struct Args {
@@ -79,7 +80,7 @@ struct Args {
     command: Option<Commands>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 #[derive(Parser, Debug)]
 #[command(styles=get_clap_style())]
 struct Args {
@@ -153,7 +154,7 @@ enum Commands {
     #[command(hide = true)]
     Menu { menu: String },
 
-    #[command(hide = !cfg!(target_os = "windows"))]
+    #[command(hide = !cfg!(windows))]
     Windows(windows::Args),
 }
 
@@ -166,7 +167,7 @@ enum SystemdCommands {
     Remove,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn is_interactive(command: &Option<Commands>) -> bool {
     match command {
         Some(command) => match command {
@@ -191,7 +192,7 @@ fn is_interactive(command: &Option<Commands>) -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
     !matches!(
         command,
@@ -205,7 +206,7 @@ fn should_prompt_for_missing_images(command: &Option<Commands>) -> bool {
 /// `evectl.toml` in the current directory is respected for
 /// compatibility with existing instances, falling back to the
 /// platform configuration directory (e.g., ~/.config/evectl).
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn resolve_root(data_directory: Option<&Path>) -> Result<PathBuf> {
     let root = if let Some(directory) = data_directory {
         std::path::absolute(directory)?
@@ -231,7 +232,7 @@ struct UpdateContinuationArgs {
 }
 
 impl UpdateContinuationArgs {
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(windows))]
     fn new(manager: ContainerManager, args: &Args) -> Self {
         Self {
             podman: manager.is_podman(),
@@ -265,7 +266,7 @@ impl UpdateContinuationArgs {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn main() -> Result<()> {
     // Reqwest's rustls-no-provider feature requires installing a crypto
     // provider before any client is built (see Cargo.toml for why ring).
@@ -300,7 +301,7 @@ fn main() -> Result<()> {
     windows::main(windows_args)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn main() -> Result<()> {
     // Reqwest's rustls-no-provider feature requires installing a crypto
     // provider before any client is built (see Cargo.toml for why ring).
@@ -340,7 +341,7 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    if manager.is_podman() && evectl::system::getuid() != 0 && !args.no_root {
+    if manager.is_podman() && crate::system::getuid() != 0 && !args.no_root {
         error!("The Podman container manager requires running as root");
         std::process::exit(1);
     }
@@ -884,7 +885,7 @@ fn guess_evebox_url(context: &Context) -> String {
     }
 
     if let Some(bind_value) = &context.config.evebox_server.bind_address {
-        match evectl::system::resolve_interface_or_ip(bind_value) {
+        match crate::system::resolve_interface_or_ip(bind_value) {
             Ok(address) => return format!("{}://{}:5636", scheme, address),
             Err(err) => {
                 error!("Failed to resolve bind value {bind_value}: {err}");
@@ -892,7 +893,7 @@ fn guess_evebox_url(context: &Context) -> String {
         }
     }
 
-    let interfaces = match evectl::system::get_interfaces() {
+    let interfaces = match crate::system::get_interfaces() {
         Ok(interfaces) => interfaces,
         Err(err) => {
             error!("Failed to get system interfaces: {err}");
@@ -1787,7 +1788,7 @@ fn build_evebox_server_command(context: &Context, daemon: bool) -> Result<proces
 
     let publish_arg = if context.config.evebox_server.allow_remote {
         if let Some(bind_value) = &config.bind_address {
-            let ip = evectl::system::resolve_interface_or_ip(bind_value)?;
+            let ip = crate::system::resolve_interface_or_ip(bind_value)?;
             format!("--publish={}:5636:5636", ip)
         } else {
             "--publish=5636:5636".to_string()
@@ -2230,7 +2231,7 @@ fn init_logging(is_interactive: bool, verbose: u8) {
 fn print(context: &Context, what: String) -> Result<()> {
     match what.as_str() {
         "interfaces" => {
-            let interfaces = evectl::system::get_interfaces()?;
+            let interfaces = crate::system::get_interfaces()?;
             for interface in &interfaces {
                 let mut addrs = interface.addr4.clone();
                 addrs.extend(interface.addr6.clone());
@@ -2251,7 +2252,7 @@ fn print(context: &Context, what: String) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
     use clap::CommandFactory;

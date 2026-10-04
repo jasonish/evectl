@@ -69,7 +69,7 @@ pub(crate) fn menu(config: &mut Config) -> Result<()> {
 pub(crate) fn agent_id_label(config: &Config) -> String {
     match &config.evebox_agent.agent_id {
         Some(agent_id) => format!("Agent ID [{agent_id}]"),
-        None => match evectl::system::hostname() {
+        None => match crate::system::hostname() {
             Some(hostname) => format!("Agent ID [not set, defaults to {hostname}]"),
             None => "Agent ID [not set, defaults to the hostname]".to_string(),
         },
@@ -91,7 +91,7 @@ pub(crate) fn set_agent_id(config: &mut Config) -> bool {
         .evebox_agent
         .agent_id
         .clone()
-        .or_else(evectl::system::hostname)
+        .or_else(crate::system::hostname)
         .unwrap_or_default();
     let prompt = inquire::Text::new("EveBox Agent ID:")
         .with_default(&current)
@@ -114,7 +114,7 @@ pub(crate) fn set_key(config: &mut Config) -> bool {
         .evebox_agent
         .agent_id
         .clone()
-        .or_else(evectl::system::hostname)
+        .or_else(crate::system::hostname)
         .unwrap_or_else(|| "<agent-id>".to_string());
     let help = format!("Blank to clear. Issue with: evebox config agents add {agent_id}");
     if config.evebox_agent.server.starts_with("http://") {

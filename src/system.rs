@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-use anyhow::Result;
+use crate::prelude::*;
 
-pub fn getuid() -> u32 {
+pub(crate) fn getuid() -> u32 {
     #[cfg(target_os = "linux")]
     unsafe {
         libc::getuid() as u32
@@ -17,7 +17,7 @@ pub fn getuid() -> u32 {
 /// `available_parallelism`, this ignores any CPU affinity or cgroup
 /// quota applied to this process, which Suricata in its own container
 /// does not share.
-pub fn online_cpus() -> usize {
+pub(crate) fn online_cpus() -> usize {
     #[cfg(unix)]
     {
         let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
@@ -33,7 +33,7 @@ pub fn online_cpus() -> usize {
 /// The system hostname, which is what the EveBox agent identifies
 /// itself as when no agent ID is configured.
 #[cfg(unix)]
-pub fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
     if rc != 0 {
@@ -45,7 +45,7 @@ pub fn hostname() -> Option<String> {
 }
 
 #[cfg(windows)]
-pub fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     std::env::var("COMPUTERNAME")
         .ok()
         .map(|name| name.trim().to_string())
@@ -53,12 +53,12 @@ pub fn hostname() -> Option<String> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     None
 }
 
 #[derive(Debug, Default)]
-pub struct Interface {
+pub(crate) struct Interface {
     pub name: String,
     pub status: String,
     pub addr4: Vec<String>,
@@ -70,22 +70,22 @@ pub struct Interface {
 /// Returns the first IPv4 address assigned to the interface, or an error
 /// if the interface doesn't exist or has no IPv4 address.
 #[cfg(target_os = "linux")]
-pub fn get_interface_ip(interface: &str) -> Result<String> {
+pub(crate) fn get_interface_ip(interface: &str) -> Result<String> {
     let interfaces = get_interfaces()?;
     for iface in interfaces {
         if iface.name == interface {
             if let Some(addr) = iface.addr4.first() {
                 return Ok(addr.clone());
             }
-            anyhow::bail!("Interface {} has no IPv4 address", interface);
+            bail!("Interface {} has no IPv4 address", interface);
         }
     }
-    anyhow::bail!("Interface {} not found", interface)
+    bail!("Interface {} not found", interface)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn get_interface_ip(_interface: &str) -> Result<String> {
-    anyhow::bail!("get_interface_ip is only supported on Linux")
+pub(crate) fn get_interface_ip(_interface: &str) -> Result<String> {
+    bail!("get_interface_ip is only supported on Linux")
 }
 
 /// Resolve a bind value to an IP address.
@@ -93,7 +93,7 @@ pub fn get_interface_ip(_interface: &str) -> Result<String> {
 /// If `value` is an IP address, it is returned as-is.
 /// Otherwise, it is treated as an interface name and resolved to the first
 /// IPv4 address on that interface.
-pub fn resolve_interface_or_ip(value: &str) -> Result<String> {
+pub(crate) fn resolve_interface_or_ip(value: &str) -> Result<String> {
     if value.parse::<std::net::IpAddr>().is_ok() {
         return Ok(value.to_string());
     }
@@ -107,14 +107,14 @@ pub fn resolve_interface_or_ip(value: &str) -> Result<String> {
 ///
 /// Note: Newer versions of "ip" support JSON output.
 #[cfg(target_os = "linux")]
-pub fn get_interfaces() -> Result<Vec<Interface>> {
+pub(crate) fn get_interfaces() -> Result<Vec<Interface>> {
     use std::process::Command;
 
     let output = Command::new("ip")
         .args(["--brief", "address", "show"])
         .output()?;
     if !output.status.success() {
-        anyhow::bail!(
+        bail!(
             "'ip address show' failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -150,6 +150,6 @@ pub fn get_interfaces() -> Result<Vec<Interface>> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn get_interfaces() -> Result<Vec<Interface>> {
+pub(crate) fn get_interfaces() -> Result<Vec<Interface>> {
     Ok(vec![])
 }

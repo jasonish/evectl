@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 use anyhow::{Context as _, anyhow};
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
@@ -139,16 +139,16 @@ pub(crate) fn self_update() -> Result<SelfUpdate> {
     download_exe.seek(SeekFrom::Start(0))?;
     replace_current_executable(&current_exe, &mut download_exe)?;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     info!("An EveCtl update has been downloaded and staged.");
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(windows))]
     warn!("The EveCtl program has been updated.");
 
     Ok(SelfUpdate::Updated(current_exe))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 const WINDOWS_UPDATE_SCRIPT: &str = r#"
 $target = $env:EVECTL_SELF_UPDATE_TARGET
 $staged = $env:EVECTL_SELF_UPDATE_STAGED
@@ -166,7 +166,7 @@ for ($i = 0; $i -lt 120; $i++) {
 exit 1
 "#;
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn windows_update_command(script: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -184,7 +184,7 @@ fn windows_update_command(script: &str) -> std::process::Command {
     command
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
     let current_exe = match env::current_exe() {
         Ok(path) => path,
@@ -202,7 +202,7 @@ pub(crate) fn apply_staged_update_on_startup() -> Result<bool> {
 
 /// Schedule replacement as soon as the running executable exits. Startup also
 /// uses this as a fallback for downloads left by older builds or failed helpers.
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 pub(crate) fn schedule_staged_update(current_exe: &Path) -> Result<bool> {
     let file_name = current_exe
         .file_name()
@@ -223,13 +223,13 @@ pub(crate) fn schedule_staged_update(current_exe: &Path) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn release_url() -> String {
     // Windows builds are published as evectl.exe under the GNU target path.
     "https://evebox.org/files/evectl/x86_64-pc-windows-gnu/evectl.exe".to_string()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn release_url() -> String {
     let target = env!("TARGET");
     format!("https://evebox.org/files/evectl/{}/evectl", target)
@@ -269,7 +269,7 @@ fn current_checksum(path: &Path) -> Result<String> {
     file_checksum(&mut file)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(windows)]
 fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Result<()> {
     let file_name = current_exe
         .file_name()
@@ -284,7 +284,7 @@ fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Re
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(windows))]
 fn replace_current_executable(current_exe: &Path, download_exe: &mut File) -> Result<()> {
     if let Err(err) = fs::remove_file(current_exe) {
         warn!(
@@ -307,7 +307,7 @@ fn make_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
