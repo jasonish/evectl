@@ -32,9 +32,6 @@ pub(crate) enum UpdateOutcome {
 pub(crate) trait Backend {
     /// Log the service status lines and report the state.
     fn status(&mut self, config: &Config) -> Status;
-    fn save_config(&mut self, config: &Config) -> Result<()> {
-        config.save()
-    }
     /// Called after a changed configuration was saved. Changes that do
     /// not need a service restart can be copied into `original` so no
     /// restart is offered for them.
@@ -136,7 +133,7 @@ fn save_changes(config: &Config, original: &mut Config, backend: &mut dyn Backen
     if *config == *original {
         return Ok(false);
     }
-    backend.save_config(config)?;
+    config.save()?;
     backend.acknowledge_saved_changes(original, config);
     Ok(*config != *original)
 }

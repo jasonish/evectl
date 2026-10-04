@@ -32,7 +32,6 @@ pub(crate) struct FakePlatform {
     pub(crate) overrides: bool,
     pub(crate) options: Vec<PlatformOption>,
     pub(crate) acknowledge_channel: bool,
-    pub(crate) saves: Cell<usize>,
     /// The recorded operation that fails, e.g. "update" or "remove".
     pub(crate) fail: Option<&'static str>,
     /// Recorded operations as "operation:id".
@@ -54,7 +53,6 @@ impl Default for FakePlatform {
             overrides: false,
             options: vec![],
             acknowledge_channel: false,
-            saves: Cell::new(0),
             fail: None,
             calls: RefCell::new(vec![]),
         }
@@ -215,10 +213,6 @@ impl crate::menu::configure::Backend for FakePlatform {
 impl crate::menu::main::Backend for FakePlatform {
     fn status(&mut self, _config: &Config) -> Status {
         Status::default()
-    }
-    fn save_config(&mut self, _config: &Config) -> Result<()> {
-        self.saves.set(self.saves.get() + 1);
-        Ok(())
     }
     fn acknowledge_saved_changes(&mut self, original: &mut Config, current: &Config) {
         if self.acknowledge_channel {

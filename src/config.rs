@@ -475,7 +475,12 @@ impl Config {
         Ok(config)
     }
 
+    /// Write the configuration, creating its directory if needed.
     pub(crate) fn save(&self) -> Result<()> {
+        if let Some(parent) = self.filename.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -591,6 +596,15 @@ mod tests {
             assert_eq!(Config::parse_toml(&serialized).unwrap(), config);
         }
         assert!(Config::parse_toml("[windows]\nevebox-channel = \"unknown\"\n").is_err());
+    }
+
+    #[test]
+    fn save_creates_the_configuration_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new").join("instance").join("evectl.toml");
+        let config = Config::default_with_filename(&path);
+        config.save().unwrap();
+        assert_eq!(Config::from_file(&path).unwrap(), config);
     }
 
     #[test]

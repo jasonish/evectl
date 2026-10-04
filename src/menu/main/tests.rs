@@ -67,45 +67,57 @@ fn service_actions_follow_status() {
     assert_eq!(&items[4..], tail);
 }
 
+fn config_in(dir: &tempfile::TempDir) -> Config {
+    Config::default_with_filename(&dir.path().join("evectl.toml"))
+}
+
+/// The configuration saved in `dir`, if any.
+fn saved(dir: &tempfile::TempDir) -> Option<Config> {
+    Config::from_file(&dir.path().join("evectl.toml")).ok()
+}
+
 #[test]
 fn unchanged_configuration_is_not_saved() {
+    let dir = tempfile::tempdir().unwrap();
     let mut backend = FakePlatform::default();
-    let config = Config::default();
+    let config = config_in(&dir);
     let mut original = config.clone();
     assert!(!save_changes(&config, &mut original, &mut backend).unwrap());
-    assert_eq!(backend.saves.get(), 0);
+    assert!(saved(&dir).is_none());
 }
 
 #[test]
 fn changed_configuration_is_saved_and_needs_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
     let mut backend = FakePlatform::default();
-    let mut config = Config::default();
+    let mut config = config_in(&dir);
     let original_config = config.clone();
     let mut original = config.clone();
     config.suricata.enabled = true;
     assert!(save_changes(&config, &mut original, &mut backend).unwrap());
-    assert_eq!(backend.saves.get(), 1);
+    assert_eq!(saved(&dir), Some(config.clone()));
     // Still pending until a restart happens.
     assert_eq!(original, original_config);
 }
 
 #[test]
 fn acknowledged_changes_are_saved_without_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
     let mut backend = FakePlatform {
         acknowledge_channel: true,
         ..Default::default()
     };
-    let mut config = Config::default();
+    let mut config = config_in(&dir);
     let mut original = config.clone();
     config.windows.evebox_channel = crate::config::EveBoxChannel::Release;
     assert!(!save_changes(&config, &mut original, &mut backend).unwrap());
-    assert_eq!(backend.saves.get(), 1);
+    assert_eq!(saved(&dir), Some(config.clone()));
     assert_eq!(original, config);
 
     // Other changes alongside still need a restart.
     config.suricata.enabled = true;
     assert!(save_changes(&config, &mut original, &mut backend).unwrap());
-    assert_eq!(backend.saves.get(), 2);
+    assert_eq!(saved(&dir), Some(config.clone()));
     assert!(!original.suricata.enabled);
     assert_eq!(
         original.windows.evebox_channel,

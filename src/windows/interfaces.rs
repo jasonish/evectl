@@ -3,7 +3,7 @@
 
 //! Network interface enumeration and selection.
 
-use super::paths::{Paths, ensure_dir, load_evectl_config};
+use super::paths::{Paths, load_evectl_config};
 use crate::prelude::*;
 use colored::Colorize;
 use std::collections::BTreeMap;
@@ -262,8 +262,6 @@ pub(super) fn configured_interface_guid(paths: &Paths) -> Result<Option<String>>
 
 fn set_configured_interface_name(paths: &Paths, name: &str) -> Result<PathBuf> {
     let config_path = paths.config_file();
-    ensure_dir(paths.root())?;
-
     let mut config = load_evectl_config(paths)?;
     config.suricata.interfaces = vec![name.to_string()];
     config.save()?;

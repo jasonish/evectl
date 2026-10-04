@@ -19,9 +19,6 @@ pub(crate) trait Backend {
     /// Download or install the components for the enabled services.
     fn install(&mut self, config: &Config) -> Result<()>;
     fn update_rules(&mut self, config: &Config) -> Result<()>;
-    fn save_config(&mut self, config: &Config) -> Result<()> {
-        config.save()
-    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -164,7 +161,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         }
     }
 
-    backend.save_config(config)?;
+    config.save()?;
 
     Ok(())
 }

@@ -13,7 +13,7 @@ use super::install::{
 use super::interfaces::{
     configured_interface_guid, configured_interface_value, list_interfaces, windows_interfaces,
 };
-use super::paths::{Paths, ensure_dir, load_evectl_config};
+use super::paths::{Paths, load_evectl_config};
 use super::rules::{WindowsRulesBackend, update_rules};
 use super::runtime::{Role, list_named_processes, managed_process_is_running};
 use super::stack::{
@@ -121,11 +121,6 @@ impl crate::menu::main::Backend for WindowsMainMenuBackend<'_> {
             ready_to_start: status.ready_to_start(),
             restart_recommended,
         }
-    }
-
-    fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
-        ensure_dir(self.paths.root())?;
-        config.save()
     }
 
     /// The release channel is applied by Update, not by a restart.
@@ -250,11 +245,6 @@ impl crate::menu::wizard::Backend for WindowsWizardBackend<'_> {
     fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
         update_rules(self.paths, false, false)
     }
-
-    fn save_config(&mut self, config: &crate::config::Config) -> Result<()> {
-        ensure_dir(self.paths.root())?;
-        config.save()
-    }
 }
 
 fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
@@ -290,7 +280,6 @@ pub(super) fn config_set_evebox_channel(
         return Ok(());
     };
     config.windows.evebox_channel = channel;
-    ensure_dir(paths.root())?;
     config.save()?;
     println!(
         "EveBox channel saved as {channel}. Run 'evectl update' to apply it to an existing installation."
