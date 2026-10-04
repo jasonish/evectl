@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use crate::container::CommandExt;
 use crate::prelude::*;
 
 pub(crate) trait Backend {
@@ -26,15 +25,9 @@ impl Backend for ContainerBackend<'_> {
     fn check_remove_spool(&self) -> Result<()> {
         // Confirm absence by listing; an inspect failure may mean the daemon
         // is unavailable, not that Suricata has stopped.
-        let output = self
-            .0
-            .manager
-            .command()
-            .args(["ps", "--all", "--format", "{{.Names}}"])
-            .status_output()?;
-        let existing = String::from_utf8(output)?;
+        let existing = self.0.manager.container_names()?;
         let name = crate::suricata::container_name(self.0);
-        if existing.lines().any(|existing| existing == name) {
+        if existing.contains(&name) {
             let state = self.0.manager.state(&name)?;
             if state.running || state.restarting {
                 bail!("Suricata is running; stop services before removing packet captures");

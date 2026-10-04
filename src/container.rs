@@ -17,15 +17,15 @@ pub(crate) const RESTART_POLICY_ARG: &str = "--restart=on-failure";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ContainerManager {
-    Docker(DockerManager),
-    Podman(PodmanManager),
+    Docker,
+    Podman,
 }
 
 impl std::fmt::Display for ContainerManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
-            ContainerManager::Docker(_) => "Docker",
-            ContainerManager::Podman(_) => "Podman",
+            ContainerManager::Docker => "Docker",
+            ContainerManager::Podman => "Podman",
         };
         write!(f, "{name}")
     }
@@ -36,10 +36,10 @@ impl ContainerManager {
         Command::new(self.bin())
     }
 
-    pub(crate) fn bin(&self) -> &str {
+    pub(crate) fn bin(&self) -> &'static str {
         match self {
-            Self::Docker(docker) => docker.bin(),
-            Self::Podman(podman) => podman.bin(),
+            Self::Docker => "docker",
+            Self::Podman => "podman",
         }
     }
 
@@ -54,12 +54,12 @@ impl ContainerManager {
 
     /// Return true if the container manager is Podman.
     pub(crate) fn is_podman(&self) -> bool {
-        matches!(self, ContainerManager::Podman(_))
+        matches!(self, ContainerManager::Podman)
     }
 
     /// Return true if the container manager is Docker.
     pub(crate) fn is_docker(&self) -> bool {
-        matches!(self, ContainerManager::Docker(_))
+        matches!(self, ContainerManager::Docker)
     }
 
     /// Format a bind mount, adding a shared SELinux label when SELinux is
@@ -79,13 +79,11 @@ impl ContainerManager {
     }
 
     pub(crate) fn version(&self) -> Result<String> {
-        let output = self
+        let stdout = self
             .command()
             .args(["version", "--format", "{{json . }}"])
-            .output()?;
-        if !output.status.success() {
-            bail!(String::from_utf8_lossy(&output.stderr).to_string());
-        } else if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            .status_output()?;
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&stdout) {
             if let Some(version) = json["Client"]["Version"].as_str() {
                 return Ok(version.to_string());
             }
@@ -96,8 +94,30 @@ impl ContainerManager {
         bail!(
             "Failed to find {} version in output: {}",
             self,
-            String::from_utf8_lossy(&output.stdout)
+            String::from_utf8_lossy(&stdout)
         );
+    }
+
+    /// The names of all containers, running or not.
+    ///
+    /// Unlike inspecting a single container, a successful listing
+    /// confirms absence: an inspect failure may just as well mean the
+    /// runtime is unavailable.
+    pub(crate) fn container_names(&self) -> Result<Vec<String>> {
+        let output = self
+            .command()
+            .args(["ps", "--all", "--format", "{{.Names}}"])
+            .status_output()?;
+        Ok(String::from_utf8_lossy(&output)
+            .lines()
+            .map(|line| line.to_string())
+            .collect())
+    }
+
+    /// Remove a stopped container.
+    pub(crate) fn rm(&self, name: &str) -> Result<()> {
+        self.command().args(["rm", name]).status_output()?;
+        Ok(())
     }
 
     /// Quietly remove container.
@@ -114,19 +134,13 @@ impl ContainerManager {
             cmd.args(["--signal", signal.unwrap_or("SIGTERM")]);
         }
         cmd.arg(name);
-        let output = cmd.output()?;
-        if !output.status.success() {
-            bail!(String::from_utf8_lossy(&output.stderr).to_string());
-        }
+        cmd.status_output()?;
         Ok(())
     }
 
     /// Remove an image.
     pub(crate) fn remove_image(&self, name: &str) -> Result<()> {
-        let output = self.command().args(["rmi", name]).output()?;
-        if !output.status.success() {
-            bail!(String::from_utf8_lossy(&output.stderr).to_string());
-        }
+        self.command().args(["rmi", name]).status_output()?;
         Ok(())
     }
 
@@ -190,32 +204,6 @@ impl ContainerManager {
             return output.status.success();
         }
         false
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct PodmanManager {}
-
-impl PodmanManager {
-    pub(crate) fn new() -> Self {
-        Self {}
-    }
-
-    pub(crate) fn bin(&self) -> &str {
-        "podman"
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct DockerManager {}
-
-impl DockerManager {
-    pub(crate) fn new() -> Self {
-        Self {}
-    }
-
-    pub(crate) fn bin(&self) -> &str {
-        "docker"
     }
 }
 
@@ -330,12 +318,10 @@ where
 /// runtime. Do not fall back to another runtime after a daemon/version error:
 /// the inaccessible runtime may still own running services.
 pub(crate) fn find_uninstall_manager(podman: bool) -> Result<Option<ContainerManager>> {
-    let docker = ContainerManager::Docker(DockerManager::new());
-    let podman_manager = ContainerManager::Podman(PodmanManager::new());
     let candidates = if podman {
-        [podman_manager, docker]
+        [ContainerManager::Podman, ContainerManager::Docker]
     } else {
-        [docker, podman_manager]
+        [ContainerManager::Docker, ContainerManager::Podman]
     };
     for manager in candidates {
         match manager.command().arg("--version").output() {
@@ -384,7 +370,7 @@ pub(crate) fn find_manager(podman: bool) -> Option<ContainerManager> {
     if !podman {
         debug!("Looking for Docker container engine");
 
-        let manager = ContainerManager::Docker(DockerManager::new());
+        let manager = ContainerManager::Docker;
         if manager.exists() {
             info!("Found Docker container engine");
             if let Ok(version) = manager.version() {
@@ -397,7 +383,7 @@ pub(crate) fn find_manager(podman: bool) -> Option<ContainerManager> {
     };
 
     debug!("Looking for Podman container engine");
-    let manager = ContainerManager::Podman(PodmanManager::new());
+    let manager = ContainerManager::Podman;
     if manager.exists() {
         info!("Found Podman container engine");
         if let Ok(version) = manager.version() {
@@ -472,9 +458,7 @@ pub(crate) struct RunCommandBuilder {
     rm: bool,
     it: bool,
     volumes: Vec<String>,
-    name: Option<String>,
     args: Vec<String>,
-    user: Option<String>,
 }
 
 impl RunCommandBuilder {
@@ -485,9 +469,7 @@ impl RunCommandBuilder {
             rm: false,
             it: false,
             volumes: vec![],
-            name: None,
             args: vec![],
-            user: None,
         }
     }
 
@@ -524,14 +506,8 @@ impl RunCommandBuilder {
         if self.rm {
             command.arg("--rm");
         }
-        if let Some(name) = &self.name {
-            command.arg(format!("--name={}", name));
-        }
         for volume in &self.volumes {
             command.arg(format!("--volume={}", volume));
-        }
-        if let Some(user) = &self.user {
-            command.arg(format!("--user={}", user));
         }
         command.arg(&self.image);
         command.args(&self.args);

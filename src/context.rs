@@ -141,14 +141,9 @@ pub(crate) fn image_name(config: &Config, container: Container) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::DockerManager;
 
     fn context_with_root(root: PathBuf) -> Context {
-        Context::new(
-            Config::default(),
-            root,
-            ContainerManager::Docker(DockerManager::new()),
-        )
+        Context::new(Config::default(), root, ContainerManager::Docker)
     }
 
     #[test]

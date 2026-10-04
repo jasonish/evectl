@@ -116,9 +116,7 @@ pub(crate) fn uninstall(
         }
         context
             .manager
-            .command()
-            .args(["rm", name])
-            .status_output()
+            .rm(name)
             .with_context(|| format!("Cannot remove {name}, filesystem retained"))?;
     }
 
@@ -323,7 +321,7 @@ fn remove_contents_with_container(context: &Context, directory: &Path) -> Result
             )
         })?;
 
-    let output = context
+    context
         .manager
         .command()
         .args(["run", "--rm", "--user=0", "--entrypoint", "/bin/sh"])
@@ -333,10 +331,7 @@ fn remove_contents_with_container(context: &Context, directory: &Path) -> Result
         ))
         .arg(image)
         .args(["-c", "rm -rf /target/* /target/.[!.]* /target/..?*"])
-        .output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
+        .status_output()?;
     Ok(())
 }
 
@@ -345,12 +340,7 @@ fn existing_containers(context: &Context) -> Result<Vec<String>> {
     // Listing succeeds with empty output only when absence is confirmed.
     // Per-container inspect failures cannot distinguish absence from daemon,
     // socket, or permission errors.
-    let output = context
-        .manager
-        .command()
-        .args(["ps", "--all", "--format", "{{.Names}}"])
-        .status_output()?;
-    let existing = String::from_utf8(output)?;
+    let existing = context.manager.container_names()?;
     let mut names = vec![
         crate::housekeeper::legacy_container_name(context),
         crate::housekeeper::container_name(context),
@@ -361,7 +351,7 @@ fn existing_containers(context: &Context) -> Result<Vec<String>> {
     for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
         names.push(elastic::container_name_for(context, engine));
     }
-    names.retain(|name| existing.lines().any(|existing| existing == name));
+    names.retain(|name| existing.contains(name));
     Ok(names)
 }
 

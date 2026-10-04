@@ -172,14 +172,11 @@ fn assets_match(context: &Context) -> bool {
 /// Inspect through a container listing first so daemon/permission failures
 /// are not mistaken for an absent container, even when cleanup is disabled.
 fn inspect(context: &Context, name: &str) -> Result<Option<serde_json::Value>> {
-    let names = context
+    if !context
         .manager
-        .command()
-        .args(["ps", "--all", "--format", "{{.Names}}"])
-        .status_output()?;
-    if !String::from_utf8_lossy(&names)
-        .lines()
-        .any(|line| line == name)
+        .container_names()?
+        .iter()
+        .any(|existing| existing == name)
     {
         return Ok(None);
     }
@@ -206,11 +203,7 @@ fn remove_named(context: &Context, name: &str) -> Result<()> {
         {
             context.manager.stop(name, None)?;
         }
-        context
-            .manager
-            .command()
-            .args(["rm", name])
-            .status_output()?;
+        context.manager.rm(name)?;
     }
     Ok(())
 }
@@ -288,7 +281,7 @@ impl Drop for ForegroundGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::{ContainerManager, DockerManager, PodmanManager};
+    use crate::container::ContainerManager;
 
     fn context(manager: ContainerManager) -> Context {
         Context::new(Config::default(), "/tmp/sensor".into(), manager)
@@ -296,7 +289,7 @@ mod tests {
 
     #[test]
     fn enabled_only_with_suricata_extraction_and_positive_retention() {
-        let mut ctx = context(ContainerManager::Docker(DockerManager::new()));
+        let mut ctx = context(ContainerManager::Docker);
         for suricata in [false, true] {
             for extraction in [false, true] {
                 for age in [None, Some(0), Some(19)] {
@@ -311,10 +304,7 @@ mod tests {
 
     #[test]
     fn restricted_startup_command_for_both_runtimes() {
-        for manager in [
-            ContainerManager::Docker(DockerManager::new()),
-            ContainerManager::Podman(PodmanManager::new()),
-        ] {
+        for manager in [ContainerManager::Docker, ContainerManager::Podman] {
             let mut ctx = context(manager);
             ctx.config.suricata.image = Some("custom-suricata:testing".to_string());
             let cmd = command(&ctx, Some("fingerprint"));
@@ -373,7 +363,7 @@ mod tests {
     #[test]
     fn settings_assets_and_image_changes_invalidate_specification() {
         let root = tempfile::tempdir().unwrap();
-        let mut ctx = context(ContainerManager::Docker(DockerManager::new()));
+        let mut ctx = context(ContainerManager::Docker);
         ctx.root = root.path().to_path_buf();
         let original = specification(&ctx, "image1");
         assert_ne!(original, specification(&ctx, "image2"));

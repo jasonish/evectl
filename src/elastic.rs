@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::SearchEngine;
-use crate::container::RESTART_POLICY_ARG;
+use crate::container::{CommandExt, RESTART_POLICY_ARG};
 use crate::prelude::*;
 
 pub(crate) const ELASTICSEARCH_IMAGE: &str =
@@ -202,16 +202,6 @@ pub(crate) fn start_elasticsearch(context: &Context) -> Result<()> {
     stop_elasticsearch(context);
     create_data_dir(context)?;
 
-    let mut command = build_docker_command(context, true);
-
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "Failed to start {}: {}",
-            engine(context).name(),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
+    build_docker_command(context, true).status_output()?;
     Ok(())
 }

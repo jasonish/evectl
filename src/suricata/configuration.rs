@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 
 use crate::config::EveOutput;
-use crate::container::CommandExt;
 use crate::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -54,19 +53,13 @@ impl Backend for ContainerBackend<'_> {
     fn check_remove_extracted_files(&self) -> Result<()> {
         // Listing distinguishes missing containers from runtime failures.
         // Never treat a failed inspection as permission to delete files.
-        let output = self
-            .0
-            .manager
-            .command()
-            .args(["ps", "--all", "--format", "{{.Names}}"])
-            .status_output()?;
-        let existing = String::from_utf8(output)?;
+        let existing = self.0.manager.container_names()?;
         for name in [
             super::container_name(self.0),
             crate::housekeeper::container_name(self.0),
             crate::housekeeper::legacy_container_name(self.0),
         ] {
-            if existing.lines().any(|existing| existing == name) {
+            if existing.contains(&name) {
                 let state = self.0.manager.state(&name)?;
                 if state.running || state.restarting {
                     bail!(

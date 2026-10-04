@@ -19,7 +19,7 @@ use colored::Colorize;
 use config::{EveOutput, FileExtractionConfig, FpcConfig};
 #[cfg(not(target_os = "windows"))]
 use container::ContainerManager;
-use container::{Container, RESTART_POLICY_ARG, SuricataContainer};
+use container::{CommandExt, Container, RESTART_POLICY_ARG, SuricataContainer};
 use logs::LogArgs;
 use semver::Version;
 
@@ -332,7 +332,7 @@ fn main() -> Result<()> {
             // Keep Context's manager placeholder, but explicitly skip runtime
             // discovery/removal in the filesystem-only uninstall path.
             warn!("No container runtime installed; performing filesystem-only uninstall");
-            ContainerManager::Docker(container::DockerManager::new())
+            ContainerManager::Docker
         }
         None => {
             error!("No container manager found. Docker or Podman must be available.");
@@ -1715,14 +1715,11 @@ fn suricata_dump_config(context: &Context) -> Result<Vec<String>> {
     command.arg("--rm");
     command.arg(context.image_name(Container::Suricata));
     command.arg("--dump-config");
-    let output = command.output()?;
-    if output.status.success() {
-        let stdout = std::str::from_utf8(&output.stdout)?;
-        let lines: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
-        Ok(lines)
-    } else {
-        bail!("Failed to run --dump-config for Suricata")
-    }
+    let stdout = command
+        .status_output()
+        .context("Failed to run --dump-config for Suricata")?;
+    let stdout = std::str::from_utf8(&stdout)?;
+    Ok(stdout.lines().map(|s| s.to_string()).collect())
 }
 
 fn start_suricata_detached(context: &Context) -> Result<()> {
@@ -1734,11 +1731,7 @@ fn start_suricata_detached(context: &Context) -> Result<()> {
     context.manager.quiet_rm(&container_name);
     suricata::mkdirs(context)?;
     suricata::remove_engine_log(context);
-    let mut command = build_suricata_command(context, true)?;
-    let output = command.output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
+    build_suricata_command(context, true)?.status_output()?;
 
     if let Some(script) = eve_prune_script_for(context)
         && let Err(err) = start_eve_prune(context, &script)
@@ -1765,7 +1758,7 @@ fn eve_prune_script_for(context: &Context) -> Option<String> {
 /// started again when EveCtl (re)starts Suricata.
 fn start_eve_prune(context: &Context, script: &str) -> Result<()> {
     info!("Starting EVE spool pruning");
-    match context
+    context
         .manager
         .command()
         .args([
@@ -1776,15 +1769,7 @@ fn start_eve_prune(context: &Context, script: &str) -> Result<()> {
             "-c",
             script,
         ])
-        .output()
-    {
-        Ok(output) => {
-            if !output.status.success() {
-                bail!(String::from_utf8_lossy(&output.stderr).to_string());
-            }
-        }
-        Err(err) => bail!("Failed to initialize EVE spool pruning: {err}"),
-    }
+        .status_output()?;
     Ok(())
 }
 
@@ -2273,11 +2258,7 @@ mod tests {
 
     fn docker_context(config: Config) -> (tempfile::TempDir, Context) {
         let root = tempfile::tempdir().unwrap();
-        let context = Context::new(
-            config,
-            root.path().to_path_buf(),
-            ContainerManager::Docker(container::DockerManager::new()),
-        );
+        let context = Context::new(config, root.path().to_path_buf(), ContainerManager::Docker);
         (root, context)
     }
 
@@ -2926,7 +2907,7 @@ mod tests {
             "update",
         ])
         .expect("parse args");
-        let manager = ContainerManager::Podman(container::PodmanManager::new());
+        let manager = ContainerManager::Podman;
 
         assert_eq!(
             UpdateContinuationArgs::new(manager, &args),

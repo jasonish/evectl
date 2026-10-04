@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn format_template_quotes_instance_directory() {
-        let manager = ContainerManager::Docker(crate::container::DockerManager::new());
+        let manager = ContainerManager::Docker;
         let template = format_template(Path::new("/srv/my sensor"), manager).unwrap();
         assert!(template.contains(" -D \"/srv/my sensor\" start"));
         assert!(template.contains(" -D \"/srv/my sensor\" stop"));
@@ -186,20 +186,20 @@ mod tests {
 
     #[test]
     fn template_preserves_container_runtime() {
-        let docker = ContainerManager::Docker(crate::container::DockerManager::new());
+        let docker = ContainerManager::Docker;
         let template = format_template(Path::new("/srv/sensor"), docker).unwrap();
         assert!(!template.contains("--podman"));
         assert!(!template.contains("--no-root"));
 
-        let podman = ContainerManager::Podman(crate::container::PodmanManager::new());
+        let podman = ContainerManager::Podman;
         let template = format_template(Path::new("/srv/sensor"), podman).unwrap();
         assert_eq!(template.matches("--podman").count(), 2);
     }
 
     #[test]
     fn non_root_podman_units_allow_rootless_operation() {
-        let docker = ContainerManager::Docker(crate::container::DockerManager::new());
-        let podman = ContainerManager::Podman(crate::container::PodmanManager::new());
+        let docker = ContainerManager::Docker;
+        let podman = ContainerManager::Podman;
         assert_eq!(runtime_args(docker, 1000), "");
         assert_eq!(runtime_args(podman, 0), " --podman");
         assert_eq!(runtime_args(podman, 1000), " --podman --no-root");
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn template_retries_failed_starts() {
-        let manager = ContainerManager::Docker(crate::container::DockerManager::new());
+        let manager = ContainerManager::Docker;
         let template = format_template(Path::new("/srv/sensor"), manager).unwrap();
         assert!(template.contains("\nExecStop="));
         assert!(!template.contains("ExecStopPost="));

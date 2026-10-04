@@ -129,11 +129,7 @@ pub(crate) fn start_evebox_server(context: &Context) -> Result<()> {
         return Ok(());
     }
     context.manager.quiet_rm(&container_name);
-    let mut command = build_evebox_server_command(context, true)?;
-    let output = command.output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
+    build_evebox_server_command(context, true)?.status_output()?;
     Ok(())
 }
 
@@ -144,19 +140,8 @@ pub(crate) fn start_evebox_agent(context: &Context) -> Result<()> {
         return Ok(());
     }
     context.manager.quiet_rm(&container_name);
-    let mut command = build_evebox_agent_command(context, true)?;
-    let output = command.output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
+    build_evebox_agent_command(context, true)?.status_output()?;
     Ok(())
-}
-
-pub(crate) fn _stop_evebox_agent(context: &Context) -> Result<()> {
-    context.manager.stop(
-        &crate::evebox::agent::container_name(context),
-        Some("SIGINT"),
-    )
 }
 
 #[cfg(test)]
