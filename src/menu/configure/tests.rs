@@ -105,12 +105,12 @@ fn shared_options_reflect_config_and_platform_options_precede_return() {
     assert_eq!(
         items,
         [
-            " 1. Configure Suricata [enabled=false, interface=None]",
-            " 2. Configure EveBox Agent [enabled=false]",
-            " 3. Configure EveBox Server [enabled=false]",
-            " 4. Configure Full Packet Capture [enabled=false]",
-            " 5. Platform Only",
-            " 6. Return",
+            "Configure Suricata [enabled=false, interface=None]",
+            "Configure EveBox Agent [enabled=false]",
+            "Configure EveBox Server [enabled=false]",
+            "Configure Full Packet Capture [enabled=false]",
+            "Platform Only",
+            "Return",
         ]
     );
 
@@ -124,13 +124,13 @@ fn shared_options_reflect_config_and_platform_options_precede_return() {
     assert_eq!(
         items,
         [
-            " 1. Configure Suricata [enabled=true, interface=eth0]",
-            " 2. Configure EveBox Agent [enabled=true]",
-            " 3. Configure EveBox Server [enabled=true]",
-            " 4. Configure Full Packet Capture [enabled=true]",
-            " 5. Platform Only",
-            " 6. Conditional",
-            " 7. Return",
+            "Configure Suricata [enabled=true, interface=eth0]",
+            "Configure EveBox Agent [enabled=true]",
+            "Configure EveBox Server [enabled=true]",
+            "Configure Full Packet Capture [enabled=true]",
+            "Platform Only",
+            "Conditional",
+            "Return",
         ]
     );
     let tags: Vec<Options> = selections

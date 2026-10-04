@@ -200,16 +200,11 @@ impl Backend for ContainerBackend {
 pub(crate) fn start_on_boot(context: &Context) -> Result<()> {
     if !crate::systemd::is_enabled() {
         info!("Start on boot is enabled by using sudo to install a systemd service file.");
-        if !inquire::Confirm::new("Do you wish to continue?")
-            .with_default(true)
-            .prompt()?
-        {
+        if !crate::prompt::confirm("Do you wish to continue?") {
             return Ok(());
         }
         crate::systemd::install(&context.root, context.manager)?;
-    } else if inquire::Confirm::new("Do you wish to disable start on boot?")
-        .with_default(true)
-        .prompt()?
+    } else if crate::prompt::confirm("Do you wish to disable start on boot?")
         && let Err(err) = crate::systemd::remove()
     {
         tracing::error!("Failed to remove systemd unit: {}", err);

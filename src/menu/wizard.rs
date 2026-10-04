@@ -111,20 +111,21 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
             None
         };
 
-        let allow_remote = inquire::Confirm::new("EveBox Server: Allow remote access?")
-            .with_default(false)
-            .with_help_message("Enable to allow access from hosts other than localhost")
-            .prompt()?;
-        let disable_https = inquire::Confirm::new("EveBox Server: Disable HTTPS?")
-            .with_default(false)
-            .with_help_message("Disable HTTPS, not recommended if remote-access is allowed")
-            .prompt()?;
-        let disable_auth = inquire::Confirm::new("EveBox Server: Disable authentication?")
-            .with_default(false)
-            .with_help_message(
-                "Disable authentication, not recommended if remote-access is allowed",
-            )
-            .prompt()?;
+        let allow_remote = crate::prompt::ask_with_help(
+            "EveBox Server: Allow remote access?",
+            false,
+            "Enable to allow access from hosts other than localhost",
+        )?;
+        let disable_https = crate::prompt::ask_with_help(
+            "EveBox Server: Disable HTTPS?",
+            false,
+            "Disable HTTPS, not recommended if remote-access is allowed",
+        )?;
+        let disable_auth = crate::prompt::ask_with_help(
+            "EveBox Server: Disable authentication?",
+            false,
+            "Disable authentication, not recommended if remote-access is allowed",
+        )?;
 
         config.evebox_server.enabled = true;
         config.evebox_server.allow_remote = allow_remote;
@@ -141,10 +142,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         return Ok(());
     }
 
-    if !inquire::Confirm::new("Would you like to proceed with this configuration?")
-        .with_default(true)
-        .prompt()?
-    {
+    if !crate::prompt::ask("Would you like to proceed with this configuration?", true)? {
         bail!("Aborting configuration wizard. Bye!");
     }
 

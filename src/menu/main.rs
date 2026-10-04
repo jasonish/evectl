@@ -72,9 +72,9 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         // Save a changed configuration and offer a restart, and keep
         // offering until a restart happens.
         if save_changes(config, &mut original, backend)?
-            && crate::prompt::confirm("Configuration has changed, restart?", None)
+            && crate::prompt::confirm("Configuration has changed, restart?")
         {
-            run("Failed to restart services", backend.restart(config));
+            crate::prompt::report("Failed to restart services", backend.restart(config));
             original = config.clone();
         }
 
@@ -104,25 +104,28 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         match selection.tag {
             Options::Refresh => {}
             Options::Restart => {
-                run("Failed to restart services", backend.restart(config));
+                crate::prompt::report("Failed to restart services", backend.restart(config));
                 original = config.clone();
             }
-            Options::Stop => run("Failed to stop services", backend.stop(config)),
-            Options::Start => run("Failed to start services", backend.start(config)),
+            Options::Stop => crate::prompt::report("Failed to stop services", backend.stop(config)),
+            Options::Start => {
+                crate::prompt::report("Failed to start services", backend.start(config))
+            }
             Options::Install => {
-                run_with_pause("Installation failed", backend.install(config));
+                crate::prompt::report_and_pause("Installation failed", backend.install(config));
                 // The wizard saves its own configuration; don't treat it
                 // as a pending change needing a restart.
                 original = config.clone();
             }
-            Options::UpdateRules => {
-                run_with_pause("Failed to update rules", backend.update_rules(config))
-            }
+            Options::UpdateRules => crate::prompt::report_and_pause(
+                "Failed to update rules",
+                backend.update_rules(config),
+            ),
             Options::ManageRules => crate::menu::rules::menu(backend.rules(config).as_ref())?,
             Options::Update => match backend.update(config) {
                 Ok(UpdateOutcome::ExitMenu) => break,
                 Ok(UpdateOutcome::Completed) => crate::prompt::enter(),
-                Err(err) => run_with_pause("Update failed", Err(err)),
+                Err(err) => crate::prompt::report_and_pause("Update failed", Err(err)),
             },
             Options::Configure => backend.configure(config)?,
             Options::Other => backend.other(config)?,
@@ -166,23 +169,6 @@ fn menu_options(config: &Config, status: Status) -> Selections<Options> {
     selections.push(Options::Other, "Other");
     selections.push(Options::Exit, "Exit");
     selections
-}
-
-/// Report a failed action and wait so the error is seen before the
-/// screen is cleared.
-fn run(message: &str, result: Result<()>) {
-    if let Err(err) = result {
-        error!("{message}: {err:#}");
-        crate::prompt::enter();
-    }
-}
-
-/// Like `run`, but also waits after success so output can be read.
-fn run_with_pause(message: &str, result: Result<()>) {
-    if let Err(err) = result {
-        error!("{message}: {err:#}");
-    }
-    crate::prompt::enter();
 }
 
 #[cfg(test)]

@@ -128,12 +128,7 @@ pub(crate) fn set_key(config: &mut Config) -> bool {
     if let Ok(key) = prompt.prompt() {
         let key = key.trim();
         if key.is_empty() {
-            if config.evebox_agent.key.is_some()
-                && inquire::Confirm::new("Clear Agent Key?")
-                    .with_default(true)
-                    .prompt()
-                    .unwrap_or(false)
-            {
+            if config.evebox_agent.key.is_some() && crate::prompt::confirm("Clear Agent Key?") {
                 config.evebox_agent.key = None;
             }
         } else {
@@ -178,11 +173,7 @@ or use the Agents page in the EveBox web UI, then enter the key here.
             "No agent key set; the server will reject the retrieval channel unless it allows \
              unauthenticated agents"
         );
-        if !inquire::Confirm::new("Continue without an agent key?")
-            .with_default(false)
-            .prompt()
-            .unwrap_or(false)
-        {
+        if !crate::prompt::confirm_destructive("Continue without an agent key?") {
             return false;
         }
     }
@@ -232,16 +223,13 @@ pub(crate) fn prompt_for_server_url(config: &Config) -> Result<Option<(String, b
 
                 if with_certificate_validation && server.starts_with("https") {
                     let msg = "Would you like to try again with certification validation disabled?";
-                    if inquire::Confirm::new(msg).with_default(true).prompt()? {
+                    if crate::prompt::ask(msg, true)? {
                         with_certificate_validation = false;
                         continue;
                     }
                 }
 
-                if inquire::Confirm::new(&format!("Do you wish to use {} anyway?", server))
-                    .with_default(false)
-                    .prompt()?
-                {
+                if crate::prompt::ask(&format!("Do you wish to use {} anyway?", server), false)? {
                     break;
                 } else {
                     continue 'start;

@@ -85,15 +85,13 @@ pub(crate) fn max_size_label(config: &Config) -> String {
 }
 
 pub(crate) fn set_max_size(config: &mut Config) {
-    let validator = |input: &str| {
-        Ok(if FileExtractionConfig::is_valid_size(input) {
-            inquire::validator::Validation::Valid
+    let validator = crate::prompt::validator(|input| {
+        if FileExtractionConfig::is_valid_size(input) {
+            Ok(())
         } else {
-            inquire::validator::Validation::Invalid(
-                "Must be a size greater than 0 and less than 4gb, e.g. 4mb".into(),
-            )
-        })
-    };
+            Err("Must be a size greater than 0 and less than 4gb, e.g. 4mb".to_string())
+        }
+    });
     if let Ok(value) = inquire::Text::new("Max extract size:")
         .with_default(config.suricata.file_extraction.max_size())
         .with_help_message(
@@ -119,14 +117,13 @@ pub(crate) fn retention_label(config: &Config) -> String {
 }
 
 pub(crate) fn set_retention(config: &mut Config) {
-    let validator = |input: &str| {
-        Ok(match input.trim().parse::<u32>() {
-            Ok(_) => inquire::validator::Validation::Valid,
-            Err(_) => inquire::validator::Validation::Invalid(
-                "Must be a number of days, 0 to keep files forever".into(),
-            ),
-        })
-    };
+    let validator = crate::prompt::validator(|input| {
+        input
+            .trim()
+            .parse::<u32>()
+            .map(|_| ())
+            .map_err(|_| "Must be a number of days, 0 to keep files forever".to_string())
+    });
     if let Ok(value) = inquire::Text::new("Days to keep extracted files:")
         .with_default(&config.suricata.file_extraction.max_age_days().to_string())
         .with_help_message("0 keeps files until removed manually")

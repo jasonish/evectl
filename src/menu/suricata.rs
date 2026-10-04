@@ -105,26 +105,12 @@ pub(crate) fn menu(config: &mut Config, backend: &dyn Backend) -> Result<()> {
     loop {
         term::clear();
         let selections = menu_options(config, backend)?;
-        let selection =
-            match inquire::Select::new("EveCtl: Configure Suricata", selections.to_vec())
-                .with_page_size(selections.page_size())
-                .prompt()
-            {
-                Ok(selection) => selection,
-                Err(
-                    inquire::InquireError::OperationCanceled
-                    | inquire::InquireError::OperationInterrupted,
-                ) => break,
-                Err(err) => return Err(err.into()),
-            };
-        if selection.tag == Options::Exit {
-            break;
-        }
-        if let Err(err) = run_action(config, backend, selection.tag)
-            && !prompt_was_cancelled(&err)
-        {
-            error!("Suricata configuration failed: {err:#}");
-            crate::prompt::enter();
+        match selections.prompt("EveCtl: Configure Suricata")? {
+            None | Some(Options::Exit) => break,
+            Some(action) => crate::prompt::report(
+                "Suricata configuration failed",
+                run_action(config, backend, action),
+            ),
         }
     }
     Ok(())
@@ -139,8 +125,16 @@ fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Re
             let interface = select_interface_from("Select Interface", backend.interfaces()?)?;
             config.suricata.interfaces = vec![interface];
         }
-        Options::SensorName => set_sensor_name(config),
-        Options::Bpf => set_bpf_filter(config),
+        Options::SensorName => edit_setting(
+            &mut config.suricata.sensor_name,
+            "Enter Sensor Name:",
+            "Clear Sensor Name?",
+        ),
+        Options::Bpf => edit_setting(
+            &mut config.suricata.bpf,
+            "Enter BPF filter:",
+            "Clear BPF filter?",
+        ),
         Options::EveOutput => set_eve_output(config, backend.eve_outputs())?,
         Options::FileExtraction => {
             file_extraction::toggle_config(config, &backend.filestore_dir()?);
@@ -159,15 +153,6 @@ fn run_action(config: &mut Config, backend: &dyn Backend, action: Options) -> Re
     Ok(())
 }
 
-fn prompt_was_cancelled(err: &anyhow::Error) -> bool {
-    matches!(
-        err.downcast_ref::<inquire::InquireError>(),
-        Some(
-            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted
-        )
-    )
-}
-
 fn set_eve_output(config: &mut Config, outputs: &[EveOutput]) -> Result<()> {
     if outputs.len() < 2 {
         return Ok(());
@@ -180,32 +165,18 @@ fn set_eve_output(config: &mut Config, outputs: &[EveOutput]) -> Result<()> {
         .iter()
         .position(|output| *output == config.suricata.eve_output)
         .unwrap_or(0);
-    if let Some(selection) = inquire::Select::new("Select EVE output", selections.to_vec())
-        .with_starting_cursor(current)
-        .prompt_skippable()?
-    {
-        config.suricata.eve_output = selection.tag;
+    if let Some(output) = selections.prompt_with("Select EVE output", |select| {
+        select.with_starting_cursor(current)
+    })? {
+        config.suricata.eve_output = output;
     }
     Ok(())
 }
 
-pub(crate) fn set_sensor_name(config: &mut Config) {
-    let current = config.suricata.sensor_name.clone();
-    if let Ok(sensor_name) = inquire::Text::new("Enter Sensor Name:").prompt() {
-        if sensor_name.trim().is_empty() {
-            if current.is_none() {
-                return;
-            }
-            if inquire::Confirm::new("Clear Sensor Name?")
-                .with_default(true)
-                .prompt()
-                .unwrap_or(false)
-            {
-                config.suricata.sensor_name = None;
-            }
-        } else {
-            config.suricata.sensor_name = Some(sensor_name);
-        }
+/// Edit an optional setting, keeping it if the prompt is cancelled.
+fn edit_setting(setting: &mut Option<String>, prompt: &str, clear_prompt: &str) {
+    if let Some(value) = crate::prompt::edit_optional(prompt, setting.as_deref(), clear_prompt) {
+        *setting = value;
     }
 }
 
@@ -236,26 +207,5 @@ fn interface_choices(interfaces: Vec<Interface>) -> Result<Selections<String>> {
 /// Interface prompt shared with the setup wizard.
 pub(crate) fn select_interface_from(prompt: &str, interfaces: Vec<Interface>) -> Result<String> {
     let choices = interface_choices(interfaces)?;
-    let selection = inquire::Select::new(prompt, choices.to_vec()).prompt()?;
-    Ok(selection.tag)
-}
-
-pub(crate) fn set_bpf_filter(config: &mut Config) {
-    let current = config.suricata.bpf.clone();
-    if let Ok(filter) = inquire::Text::new("Enter BPF filter:").prompt() {
-        if filter.is_empty() {
-            if current.is_none() {
-                return;
-            }
-            if inquire::Confirm::new("Clear BPF filter?")
-                .with_default(true)
-                .prompt()
-                .unwrap_or(false)
-            {
-                config.suricata.bpf = None;
-            }
-        } else {
-            config.suricata.bpf = Some(filter);
-        }
-    }
+    Ok(choices.select(prompt).prompt()?.tag)
 }

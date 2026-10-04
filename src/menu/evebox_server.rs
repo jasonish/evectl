@@ -335,7 +335,7 @@ fn enable_remote_access(config: &mut EveBoxServerConfig, backend: &dyn Backend) 
     }
     config.allow_remote = true;
 
-    if crate::prompt::confirm("Do you wish to reset the admin password", None) {
+    if crate::prompt::confirm("Do you wish to reset the admin password") {
         backend.reset_password()?;
     }
     Ok(())
@@ -420,9 +420,7 @@ fn set_elasticsearch_url(config: &mut Config) -> Result<()> {
             .prompt_skippable()?
             .unwrap_or_default();
         let disable_certificate_validation = if url.starts_with("https://") {
-            inquire::Confirm::new("Disable certificate validation?")
-                .with_default(false)
-                .prompt()?
+            crate::prompt::ask("Disable certificate validation?", false)?
         } else {
             false
         };
@@ -466,11 +464,7 @@ fn set_elasticsearch_url(config: &mut Config) -> Result<()> {
         };
 
         if !success {
-            if inquire::Confirm::new("Retry?")
-                .with_default(true)
-                .prompt_skippable()?
-                .unwrap_or_default()
-            {
+            if crate::prompt::confirm("Retry?") {
                 continue;
             } else {
                 return Ok(());

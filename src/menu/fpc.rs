@@ -226,12 +226,8 @@ fn set_max_files(config: &mut Config) {
     );
     let help =
         format!("Rounded down to a multiple of {threads} capture threads (minimum {threads})");
-    let validator = move |input: &str| {
-        Ok(match parse_max_files(input, threads) {
-            Ok(_) => inquire::validator::Validation::Valid,
-            Err(message) => inquire::validator::Validation::Invalid(message.into()),
-        })
-    };
+    let validator =
+        crate::prompt::validator(move |input| parse_max_files(input, threads).map(|_| ()));
     if let Ok(value) = inquire::Text::new(&prompt)
         .with_default(&config.fpc.max_files().to_string())
         .with_help_message(&help)

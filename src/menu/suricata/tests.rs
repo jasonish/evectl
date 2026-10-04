@@ -131,12 +131,12 @@ fn cancelled_interface_prompt_preserves_existing_toggle_behavior() {
     ] {
         let mut config = Config::default();
         let error = toggle_enabled(&mut config, || Err(error.into())).unwrap_err();
-        assert!(prompt_was_cancelled(&error));
+        assert!(crate::prompt::cancelled(&error));
         // Both old menus left Suricata enabled after canceling this prompt.
         assert!(config.suricata.enabled);
         assert!(config.suricata.interfaces.is_empty());
     }
-    assert!(!prompt_was_cancelled(&anyhow!("Discovery failed")));
+    assert!(!crate::prompt::cancelled(&anyhow!("Discovery failed")));
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn interface_discovery_failures_and_empty_lists_keep_existing_configuration() {
             fail_interfaces,
         };
         let err = run_action(&mut config, &backend, Options::Interface).unwrap_err();
-        assert!(!prompt_was_cancelled(&err));
+        assert!(!crate::prompt::cancelled(&err));
         assert_eq!(config.suricata.interfaces, ["existing"]);
     }
 }

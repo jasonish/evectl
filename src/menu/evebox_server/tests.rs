@@ -187,8 +187,10 @@ fn bind_address_choices_start_with_all_interfaces_and_track_current_value() {
 
 #[test]
 fn bind_address_requires_an_available_ipv4_address() {
-    let mut server = EveBoxServerConfig::default();
-    server.bind_address = Some("eth0".to_string());
+    let mut server = EveBoxServerConfig {
+        bind_address: Some("eth0".to_string()),
+        ..Default::default()
+    };
     let err = set_bind_address(&mut server, &FakeBackend::new(false)).unwrap_err();
     assert!(err.to_string().contains("No network interfaces"));
     assert_eq!(server.bind_address.as_deref(), Some("eth0"));

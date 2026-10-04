@@ -129,13 +129,13 @@ fn select_ruleset(backend: &dyn Backend, enable: bool) -> Result<bool> {
         return Ok(false);
     };
     change_ruleset(backend, &selection.tag, enable, || {
-        prompt::confirm(
+        prompt::confirm_with_help(
             "Would you like to update your rules now?",
-            Some(if enable {
+            if enable {
                 "A rule update is required to make the new ruleset active"
             } else {
                 "A rule update is required to complete disabling this ruleset"
-            }),
+            },
         )
     })?;
     Ok(true)
@@ -184,13 +184,10 @@ fn edit_override(backend: &dyn Backend, file: OverrideFile) -> Result<()> {
         .override_path(file)
         .ok_or_else(|| anyhow!("Rule override files are not supported by this backend"))?;
     if !path.exists()
-        && prompt::confirm(
-            &format!(
-                "Would you like to start with a {} template",
-                file.filename()
-            ),
-            None,
-        )
+        && prompt::confirm(&format!(
+            "Would you like to start with a {} template",
+            file.filename()
+        ))
     {
         backend.write_override_template(file)?;
     }
