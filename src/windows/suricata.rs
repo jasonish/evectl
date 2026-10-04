@@ -1,0 +1,765 @@
+// SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
+// SPDX-License-Identifier: MIT
+
+//! Suricata installation, configuration, and launch.
+
+use super::install::download_file;
+use super::paths::{
+    ensure_dir, get_evectl_data_dir, get_suricata_eve_json_path, get_suricata_exe_path,
+    get_suricata_filestore_dir, get_suricata_install_dir, get_suricata_log_dir,
+    get_suricata_pcap_dir, get_suricata_pid_path, get_suricata_run_dir, get_suricata_runtime_path,
+    get_suricata_threshold_config_path, load_evectl_config,
+};
+use super::rules::get_suricatax_paths;
+use super::runtime::{
+    ROLE_SURICATA, RuntimeMetadata, build_runtime_metadata, count_named_processes,
+    format_command_line, is_pid_running, managed_process_is_running, process_matches_exe,
+    spawn_detached, stop_managed_process, write_pid, write_runtime_metadata,
+};
+use super::version::compare_versions;
+use crate::prelude::*;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+const SURICATA_VERSION: &str = "8.0.6-1";
+const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
+    r"C:\Program Files\Suricata\suricata.exe",
+    r"C:\Program Files (x86)\Suricata\suricata.exe",
+];
+pub(super) const SURICATA_VERSION_MARKER: &str = ".evectl-suricata-version";
+
+const SURICATA_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn write_suricata_rules_include_stub() -> Result<PathBuf> {
+    let paths = get_suricatax_paths()?;
+    std::fs::create_dir_all(&paths.rules_dir).context(format!(
+        "Failed to create Suricata rules directory {}",
+        paths.rules_dir.display()
+    ))?;
+
+    let run_dir = get_suricata_run_dir()?;
+    std::fs::create_dir_all(&run_dir).context(format!(
+        "Failed to create Suricata runtime directory {}",
+        run_dir.display()
+    ))?;
+
+    let include_path = run_dir.join("rules-include.yaml");
+    let rules_dir = paths.rules_dir.to_string_lossy().replace('\'', "''");
+
+    let stub = format!(
+        "%YAML 1.1\n---\ndefault-rule-path: '{}'\nrule-files:\n  - suricata.rules\n",
+        rules_dir
+    );
+
+    std::fs::write(&include_path, stub).context(format!(
+        "Failed to write Suricata rules include file {}",
+        include_path.display()
+    ))?;
+
+    Ok(include_path)
+}
+
+fn ensure_suricata_threshold_config() -> Result<PathBuf> {
+    let path = get_suricata_threshold_config_path()?;
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+
+    if !path.exists() {
+        std::fs::write(&path, b"").context(format!(
+            "Failed to create Suricata threshold config {}",
+            path.display()
+        ))?;
+    }
+
+    Ok(path)
+}
+
+pub(super) fn find_suricata_executable() -> Option<PathBuf> {
+    if let Ok(path) = get_suricata_exe_path()
+        && path.exists()
+    {
+        return Some(path);
+    }
+
+    for path in &SURICATA_SYSTEM_EXE_PATHS {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(output) = Command::new("where").arg("suricata.exe").output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(path) = stdout.lines().map(str::trim).find(|line| !line.is_empty()) {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_file_recursive(root: &Path, target_filename: &str) -> Result<Option<PathBuf>> {
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .context(format!("Failed to read directory {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if file_type.is_file()
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(target_filename)
+            {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn find_suricata_install_file(install_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let candidates = [
+        install_dir.join(filename),
+        install_dir.join("etc").join(filename),
+    ];
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    match find_file_recursive(install_dir, filename) {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(
+                "Failed to search for {} under {}: {}",
+                filename,
+                install_dir.display(),
+                err
+            );
+            None
+        }
+    }
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir_all(destination).context(format!(
+        "Failed to create destination directory {}",
+        destination.display()
+    ))?;
+
+    for entry in std::fs::read_dir(source).context(format!(
+        "Failed to read source directory {}",
+        source.display()
+    ))? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&source_path, &destination_path).context(format!(
+                "Failed to copy {} to {}",
+                source_path.display(),
+                destination_path.display()
+            ))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn patch_suricata_config_for_local_install(install_dir: &Path) -> Result<()> {
+    let config_path = install_dir.join("suricata.yaml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let original = std::fs::read_to_string(&config_path)
+        .context(format!("Failed to read {}", config_path.display()))?;
+
+    let install_dir_str = install_dir.display().to_string().replace('/', "\\");
+    let patched = original
+        .replace(r"C:\Program Files\Suricata", &install_dir_str)
+        .replace(r"C:\Program Files (x86)\Suricata", &install_dir_str);
+
+    if patched != original {
+        std::fs::write(&config_path, patched)
+            .context(format!("Failed to write {}", config_path.display()))?;
+        info!(
+            "Patched Suricata config paths for local install at {}",
+            config_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_msi_package_to_dir(path: &Path, name: &str, destination: &Path) -> Result<()> {
+    info!(
+        "Extracting {} from {:?} into {}",
+        name,
+        path,
+        destination.display()
+    );
+
+    let staging_dir = tempfile::tempdir().context("Failed to create MSI extraction directory")?;
+    let log_path =
+        std::env::temp_dir().join(format!("evectl-{}-extract.log", name.to_ascii_lowercase()));
+
+    let msi_path = path.to_string_lossy().replace('\'', "''");
+    let target_dir = staging_dir.path().to_string_lossy().replace('\'', "''");
+    let log_path_str = log_path.to_string_lossy().replace('\'', "''");
+
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$msiPath = '{}'
+$targetDir = '{}'
+$logPath = '{}'
+New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+$argumentList = @('/a', $msiPath, '/qn', '/norestart', ('TARGETDIR=' + $targetDir), '/L*v', $logPath)
+$process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentList -Wait -PassThru
+exit $process.ExitCode
+"#,
+        msi_path, target_dir, log_path_str
+    );
+
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(&script)
+        .output()
+        .context(format!("Failed to extract {} MSI", name))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    match output.status.code() {
+        Some(0) => {
+            info!("{} extraction completed successfully", name);
+        }
+        Some(3010) | Some(1641) => {
+            warn!(
+                "{} extraction completed, but a system reboot was requested by Windows Installer",
+                name
+            );
+        }
+        Some(1223) => bail!("{} extraction was cancelled at the UAC prompt", name),
+        Some(code) => bail!(
+            "{} extraction failed with code {}. MSI log: {:?}. {}",
+            name,
+            code,
+            log_path,
+            stderr.trim()
+        ),
+        None => bail!("{} extraction terminated unexpectedly", name),
+    }
+
+    let extracted_exe = find_file_recursive(staging_dir.path(), "suricata.exe")?
+        .ok_or_else(|| anyhow!("Failed to locate suricata.exe in extracted MSI contents"))?;
+
+    let extracted_root = extracted_exe.parent().ok_or_else(|| {
+        anyhow!(
+            "Failed to determine extracted Suricata root from {}",
+            extracted_exe.display()
+        )
+    })?;
+
+    if destination.exists() {
+        std::fs::remove_dir_all(destination).context(format!(
+            "Failed to remove existing Suricata directory {}",
+            destination.display()
+        ))?;
+    }
+
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .context(format!("Failed to create {}", parent.display()))?;
+    }
+
+    copy_dir_recursive(extracted_root, destination)?;
+
+    Ok(())
+}
+
+fn is_suricata_managed_installed() -> bool {
+    get_suricata_exe_path()
+        .map(|path| path.exists())
+        .unwrap_or(false)
+}
+
+fn is_suricata_installed() -> bool {
+    if find_suricata_executable().is_some() {
+        return true;
+    }
+
+    // Check if Suricata service exists
+    if let Ok(output) = Command::new("sc").args(["query", "Suricata"]).output()
+        && output.status.success()
+    {
+        return true;
+    }
+
+    false
+}
+
+pub(super) fn suricata_upgrade_needed() -> Result<bool> {
+    let target_version = suricata_version_for_comparison();
+
+    if !is_suricata_managed_installed() {
+        return Ok(true);
+    }
+
+    let installed_version = match get_suricata_installed_version()? {
+        Some(version) => version,
+        None => return Ok(true),
+    };
+
+    let Some(comparison) = compare_versions(&installed_version, target_version) else {
+        return Ok(false);
+    };
+
+    Ok(comparison == std::cmp::Ordering::Less)
+}
+
+pub(super) fn maybe_upgrade_suricata() -> Result<()> {
+    let target_version = suricata_version_for_comparison();
+    let managed_installed = is_suricata_managed_installed();
+    let any_installed = is_suricata_installed();
+
+    if !managed_installed {
+        if any_installed {
+            info!(
+                "A non-evectl Suricata installation was detected. Installing evectl-managed version {}...",
+                SURICATA_VERSION
+            );
+        } else {
+            info!(
+                "Suricata was not detected. Installing version {}...",
+                SURICATA_VERSION
+            );
+        }
+        return install_or_upgrade_suricata(true);
+    }
+
+    let installed_version = match get_suricata_installed_version()? {
+        Some(version) => version,
+        None => {
+            info!(
+                "Suricata is installed in the evectl-managed directory, but the version could not be determined. Reinstalling bundled version {}.",
+                SURICATA_VERSION
+            );
+            return install_or_upgrade_suricata(true);
+        }
+    };
+
+    let comparison = match compare_versions(&installed_version, target_version) {
+        Some(comparison) => comparison,
+        None => {
+            info!(
+                "Suricata version comparison failed (installed: {}, bundled: {}, comparison target: {}). Skipping automatic Suricata upgrade.",
+                installed_version, SURICATA_VERSION, target_version
+            );
+            return Ok(());
+        }
+    };
+
+    match comparison {
+        std::cmp::Ordering::Less => {
+            info!(
+                "Suricata {} is older than bundled {} (package {}). Upgrading Suricata...",
+                installed_version, target_version, SURICATA_VERSION
+            );
+            install_or_upgrade_suricata(true)
+        }
+        std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
+            info!(
+                "Suricata {} meets or exceeds bundled {} (package {}). Skipping Suricata upgrade.",
+                installed_version, target_version, SURICATA_VERSION
+            );
+            Ok(())
+        }
+    }
+}
+
+pub(super) fn suricata_version_for_comparison() -> &'static str {
+    SURICATA_VERSION
+        .split('-')
+        .next()
+        .unwrap_or(SURICATA_VERSION)
+}
+
+fn get_suricata_version_marker_path() -> Result<PathBuf> {
+    Ok(get_suricata_install_dir()?.join(SURICATA_VERSION_MARKER))
+}
+
+pub(super) fn get_suricata_installed_version() -> Result<Option<String>> {
+    if let Ok(marker_path) = get_suricata_version_marker_path()
+        && marker_path.exists()
+    {
+        let version = std::fs::read_to_string(&marker_path).context(format!(
+            "Failed to read Suricata version marker {}",
+            marker_path.display()
+        ))?;
+        let version = version.trim();
+        if !version.is_empty() {
+            return Ok(Some(version.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(super) fn install_or_upgrade_suricata(upgrade: bool) -> Result<()> {
+    let managed_installed = is_suricata_managed_installed();
+    let any_installed = is_suricata_installed();
+
+    if managed_installed && !upgrade {
+        info!("Suricata is already installed in the evectl-managed directory.");
+        return Ok(());
+    }
+
+    if any_installed
+        && !managed_installed
+        && !upgrade
+        && let Ok(install_dir) = get_suricata_install_dir()
+    {
+        info!(
+            "A system Suricata installation was detected. Installing an evectl-managed copy into {}.",
+            install_dir.display()
+        );
+    }
+
+    if upgrade {
+        if managed_installed {
+            info!("Upgrading Suricata to version {}...", SURICATA_VERSION);
+
+            if let Err(err) = stop_suricata_managed() {
+                warn!("Failed to stop running Suricata processes: {}", err);
+            }
+
+            uninstall_suricata()?;
+        } else if any_installed {
+            info!(
+                "A non-evectl Suricata installation was detected. Installing evectl-managed version {} instead...",
+                SURICATA_VERSION
+            );
+        } else {
+            info!(
+                "Suricata was not detected. Installing version {} instead...",
+                SURICATA_VERSION
+            );
+        }
+    }
+
+    let url = format!(
+        "https://www.openinfosecfoundation.org/download/windows/Suricata-{}-64bit.msi",
+        SURICATA_VERSION
+    );
+    let filename = format!("Suricata-{}-64bit.msi", SURICATA_VERSION);
+
+    let cache_dir = get_evectl_data_dir()?.join("downloads");
+    std::fs::create_dir_all(&cache_dir).context(format!(
+        "Failed to create installer cache directory {}",
+        cache_dir.display()
+    ))?;
+
+    let msi_path = cache_dir.join(&filename);
+
+    if msi_path.exists() {
+        info!("Suricata installer already exists at {:?}", msi_path);
+        info!("Skipping download, using existing file");
+    } else {
+        download_file(&url, &msi_path, "Suricata")?;
+    }
+
+    let install_dir = get_suricata_install_dir()?;
+    extract_msi_package_to_dir(&msi_path, "Suricata", &install_dir)?;
+    patch_suricata_config_for_local_install(&install_dir)?;
+
+    let marker_path = get_suricata_version_marker_path()?;
+    std::fs::write(&marker_path, suricata_version_for_comparison()).context(format!(
+        "Failed to write Suricata version marker {}",
+        marker_path.display()
+    ))?;
+
+    let suricata_exe = get_suricata_exe_path()?;
+    if !suricata_exe.exists() {
+        bail!(
+            "Suricata extraction completed, but executable not found at {}",
+            suricata_exe.display()
+        );
+    }
+
+    info!(
+        "Suricata {} extracted to {}",
+        SURICATA_VERSION,
+        install_dir.display()
+    );
+
+    Ok(())
+}
+
+fn cleanup_suricata_leftovers() -> Result<()> {
+    let mut errors = vec![];
+    let install_dir = get_suricata_install_dir()?;
+
+    if install_dir.exists() {
+        info!("Removing Suricata directory {}", install_dir.display());
+
+        if let Err(err) = std::fs::remove_dir_all(&install_dir) {
+            warn!(
+                "Failed to remove {} directly: {}. Trying PowerShell cleanup...",
+                install_dir.display(),
+                err
+            );
+
+            let escaped = install_dir.to_string_lossy().replace('\'', "''");
+            let script = format!(
+                "$ErrorActionPreference = 'Stop'; if (Test-Path -LiteralPath '{0}') {{ Remove-Item -LiteralPath '{0}' -Recurse -Force }}",
+                escaped
+            );
+
+            match Command::new("powershell")
+                .args(["-NoProfile", "-Command", &script])
+                .output()
+            {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    errors.push(format!("{}: {}", install_dir.display(), stderr.trim()));
+                }
+                Err(ps_err) => {
+                    errors.push(format!("{}: {}", install_dir.display(), ps_err));
+                }
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        warn!(
+            "Suricata uninstall cleanup hit file-lock or removal errors. This often means a non-Suricata process still has a handle open under the install directory (for example Explorer, antivirus, an editor, or another tool)."
+        );
+        bail!(
+            "Failed to remove Suricata leftover files:\n- {}",
+            errors.join("\n- ")
+        );
+    }
+
+    let suricata_exe_path = get_suricata_exe_path()?;
+    if suricata_exe_path.exists() {
+        bail!(
+            "Suricata uninstall completed, but this executable still exists:\n- {}",
+            suricata_exe_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub(super) fn uninstall_suricata() -> Result<()> {
+    info!("Removing evectl-managed Suricata installation...");
+    cleanup_suricata_leftovers()
+}
+
+pub(super) fn build_suricata_command(guid: &str) -> Result<Command> {
+    if !is_suricata_installed() {
+        bail!("Suricata is not installed. Please install it first using 'evectl install'");
+    }
+
+    let suricata_path = find_suricata_executable()
+        .ok_or_else(|| anyhow!("Suricata executable not found in expected locations"))?;
+    let suricata_dir = suricata_path
+        .parent()
+        .ok_or_else(|| anyhow!("Failed to determine Suricata installation directory"))?
+        .to_path_buf();
+
+    let suricata_log_dir = get_suricata_log_dir()?;
+    ensure_dir(&suricata_log_dir)?;
+    let threshold_config = ensure_suricata_threshold_config()?;
+
+    let npcap_device = format!("\\Device\\NPF_{{{}}}", guid.trim_matches(['{', '}']));
+    let rules_include_path = write_suricata_rules_include_stub()?;
+
+    let mut command = Command::new(&suricata_path);
+    let suricata_config = suricata_dir.join("suricata.yaml");
+    if suricata_config.exists() {
+        command.arg("-c");
+        command.arg(&suricata_config);
+    }
+    command.arg("--include");
+    command.arg(&rules_include_path);
+    command.current_dir(&suricata_dir);
+    command.arg("-i");
+    command.arg(&npcap_device);
+    command.arg("-l");
+    command.arg(&suricata_log_dir);
+    command.arg("--set");
+    command.arg(format!("threshold-file={}", threshold_config.display()));
+
+    if let Some(classification_file) =
+        find_suricata_install_file(&suricata_dir, "classification.config")
+    {
+        command.arg("--set");
+        command.arg(format!(
+            "classification-file={}",
+            classification_file.display()
+        ));
+    } else {
+        warn!(
+            "Could not find classification.config under {}; relying on Suricata defaults",
+            suricata_dir.display()
+        );
+    }
+
+    if let Some(reference_config_file) =
+        find_suricata_install_file(&suricata_dir, "reference.config")
+    {
+        command.arg("--set");
+        command.arg(format!(
+            "reference-config-file={}",
+            reference_config_file.display()
+        ));
+    } else {
+        warn!(
+            "Could not find reference.config under {}; relying on Suricata defaults",
+            suricata_dir.display()
+        );
+    }
+
+    let config = load_evectl_config()?;
+
+    if let Some(sensor_name) = &config.suricata.sensor_name {
+        command.arg("--set");
+        command.arg(format!("sensor-name={}", sensor_name));
+    }
+
+    let spool = get_suricata_pcap_dir()?;
+    let mut dump_command = Command::new(command.get_program());
+    dump_command.args(command.get_args());
+    dump_command.arg("--dump-config");
+    dump_command.current_dir(&suricata_dir);
+    let output = dump_command
+        .output()
+        .context("Failed to dump Suricata configuration for packet capture and file extraction")?;
+    if !output.status.success() {
+        bail!(
+            "Failed to dump Suricata configuration for packet capture and file extraction ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let fpc = super::fpc::effective_config(&config);
+    if config.fpc.enabled && !fpc.enabled {
+        warn!("Full packet capture requires Suricata and either the EveBox server or agent");
+    }
+    super::fpc::configure_command(
+        &mut command,
+        std::str::from_utf8(&output.stdout)?,
+        &fpc,
+        &spool,
+    )?;
+    if fpc.enabled {
+        ensure_dir(&spool)?;
+    }
+    let extraction = crate::config::FileExtractionConfig {
+        enabled: super::file_extraction::enabled(&config),
+        ..config.suricata.file_extraction.clone()
+    };
+    super::file_extraction::configure_command(
+        &mut command,
+        std::str::from_utf8(&output.stdout)?,
+        &extraction,
+        &get_suricata_filestore_dir()?,
+    )?;
+
+    // The BPF filter is a trailing positional argument.
+    if let Some(bpf) = &config.suricata.bpf {
+        command.arg(bpf);
+    }
+
+    Ok(command)
+}
+
+pub(super) fn ensure_suricata_start_allowed() -> Result<()> {
+    if managed_process_is_running(ROLE_SURICATA)? {
+        bail!("A managed Suricata process is already running. Use 'evectl stop' first.");
+    }
+
+    let process_count = count_named_processes("suricata")?;
+    if process_count > 0 {
+        bail!(
+            "Suricata is already running ({} process(es) found). Stop the external Suricata process or service first.",
+            process_count
+        );
+    }
+
+    Ok(())
+}
+
+pub(super) fn start_suricata_background(guid: &str) -> Result<RuntimeMetadata> {
+    ensure_suricata_start_allowed()?;
+
+    let mut command = build_suricata_command(guid)?;
+    info!("Running command: {}", format_command_line(&command));
+    let pid = spawn_detached(&mut command)?;
+    let metadata = build_runtime_metadata(ROLE_SURICATA, &command, pid, None, None)?;
+
+    ensure_dir(&get_suricata_run_dir()?)?;
+    write_pid(&get_suricata_pid_path()?, pid)?;
+    write_runtime_metadata(&get_suricata_runtime_path()?, &metadata)?;
+
+    Ok(metadata)
+}
+
+pub(super) fn wait_for_suricata_pid_readiness(pid: u32, exe_path: &Path) -> Result<()> {
+    let eve_json = get_suricata_eve_json_path()?;
+    let started = std::time::Instant::now();
+
+    while started.elapsed() < SURICATA_READY_TIMEOUT {
+        if !is_pid_running(pid) {
+            bail!("Suricata exited before EveBox could be started");
+        }
+
+        if process_matches_exe(pid, exe_path)? && eve_json.exists() {
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    if !is_pid_running(pid) {
+        bail!("Suricata exited before it became ready");
+    }
+
+    Ok(())
+}
+
+pub(super) fn wait_for_suricata_readiness(metadata: &RuntimeMetadata) -> Result<()> {
+    wait_for_suricata_pid_readiness(metadata.pid, Path::new(&metadata.exe_path))
+}
+
+pub(super) fn stop_suricata_managed() -> Result<()> {
+    stop_managed_process(ROLE_SURICATA)
+}
