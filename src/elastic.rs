@@ -101,7 +101,7 @@ pub(crate) fn container_name_for(context: &Context, engine: SearchEngine) -> Str
 }
 
 pub(crate) fn existing_engines(context: &Context) -> Vec<SearchEngine> {
-    [SearchEngine::Elasticsearch, SearchEngine::OpenSearch]
+    SearchEngine::ALL
         .into_iter()
         .filter(|engine| {
             context
@@ -151,7 +151,7 @@ pub(crate) fn create_data_dir(context: &Context) -> Result<PathBuf> {
 pub(crate) fn stop_elasticsearch(context: &Context) {
     // Stop and remove the container names of both engines so switching
     // engines doesn't leave the previous one behind.
-    for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
+    for engine in SearchEngine::ALL {
         let name = container_name_for(context, engine);
         if context.manager.is_active(&name) {
             let _ = context.manager.stop(&name, None);
