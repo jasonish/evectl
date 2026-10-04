@@ -148,13 +148,12 @@ impl Args {
 pub(crate) fn main(args: Args) -> anyhow::Result<()> {
     use super::install::{add_shortcuts, install, upgrade_windows_components};
     use super::interfaces::{config_set_interface, list_interfaces};
-    use super::menu::{
-        config_set_evebox_channel, log_status, menu_main, project_info, windows_status,
-    };
+    use super::menu::{config_set_evebox_channel, log_status, menu_main, project_info};
     use super::paths::{Paths, load_evectl_config};
     use super::rules::{
         disable_ruleset, enable_ruleset, list_enabled_rulesets, update_rules, update_sources,
     };
+    use super::stack::windows_status;
     use super::stack::{restart_stack, run_housekeeper, start_stack, stop_stack};
     use super::uninstall::uninstall;
 

@@ -7,9 +7,8 @@ use super::evebox::{find_evebox_exe, uninstall_evebox};
 use super::install::{EVEBOX_SHORTCUT_NAME, START_SHORTCUT_NAME, desktop_dir};
 use super::npcap::uninstall_npcap;
 use super::paths::Paths;
-use super::runtime::Role;
 use super::runtime::{
-    log_processes_in_dir, managed_process_is_running, stop_named_processes_in_dir,
+    Role, any_managed_process_running, log_processes_in_dir, stop_named_processes_in_dir,
 };
 use super::stack::stop_stack;
 use super::suricata::uninstall_suricata;
@@ -30,23 +29,14 @@ fn log_uninstall_process_diagnostics(paths: &Paths) -> Result<()> {
 }
 
 fn ensure_managed_services_stopped_for_uninstall(paths: &Paths) -> Result<()> {
-    let any_running = managed_process_is_running(paths, Role::Suricata)?
-        || managed_process_is_running(paths, Role::EveBoxServer)?
-        || managed_process_is_running(paths, Role::EveBoxAgent)?
-        || managed_process_is_running(paths, Role::Housekeeper)?;
-
-    if !any_running {
+    if !any_managed_process_running(paths)? {
         return Ok(());
     }
 
     info!("Stopping managed Windows services before uninstall");
     stop_stack(paths).context("Failed to stop managed Windows stack before uninstall")?;
 
-    if managed_process_is_running(paths, Role::Suricata)?
-        || managed_process_is_running(paths, Role::EveBoxServer)?
-        || managed_process_is_running(paths, Role::EveBoxAgent)?
-        || managed_process_is_running(paths, Role::Housekeeper)?
-    {
+    if any_managed_process_running(paths)? {
         bail!("Managed Windows services are still running after stop was requested");
     }
 

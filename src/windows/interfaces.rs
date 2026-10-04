@@ -16,7 +16,7 @@ pub(super) struct WindowsInterface {
     pub(super) guid: String,
 }
 
-pub(super) fn get_windows_interfaces() -> Result<Vec<WindowsInterface>> {
+pub(super) fn windows_interfaces() -> Result<Vec<WindowsInterface>> {
     use std::io;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR, WIN32_ERROR};
@@ -227,7 +227,7 @@ pub(super) fn normalize_interface_guid(value: &str) -> Option<String> {
     }
 }
 
-pub(super) fn get_configured_interface_value(paths: &Paths) -> Result<Option<String>> {
+pub(super) fn configured_interface_value(paths: &Paths) -> Result<Option<String>> {
     let config = load_evectl_config(paths)?;
     Ok(config
         .suricata
@@ -242,7 +242,7 @@ fn find_windows_interface_by_name(name: &str) -> Result<Option<WindowsInterface>
         None => return Ok(None),
     };
 
-    Ok(get_windows_interfaces()?
+    Ok(windows_interfaces()?
         .into_iter()
         .find(|interface| interface.name.eq_ignore_ascii_case(&name)))
 }
@@ -253,13 +253,13 @@ fn find_windows_interface_by_guid(guid: &str) -> Result<Option<WindowsInterface>
         None => return Ok(None),
     };
 
-    Ok(get_windows_interfaces()?.into_iter().find(|interface| {
+    Ok(windows_interfaces()?.into_iter().find(|interface| {
         normalize_interface_guid(&interface.guid).as_deref() == Some(guid.as_str())
     }))
 }
 
-pub(super) fn get_configured_interface_guid(paths: &Paths) -> Result<Option<String>> {
-    let value = match get_configured_interface_value(paths)? {
+pub(super) fn configured_interface_guid(paths: &Paths) -> Result<Option<String>> {
+    let value = match configured_interface_value(paths)? {
         Some(value) => value,
         None => return Ok(None),
     };
@@ -283,7 +283,7 @@ fn set_configured_interface_name(paths: &Paths, name: &str) -> Result<PathBuf> {
 }
 
 fn prompt_for_interface(prompt: &str) -> Result<WindowsInterface> {
-    let interfaces = get_windows_interfaces()?;
+    let interfaces = windows_interfaces()?;
     if interfaces.is_empty() {
         bail!("No network interfaces found");
     }
@@ -336,7 +336,7 @@ pub(super) fn resolve_interface_guid(
         bail!("Network interface '{}' was not found", value);
     }
 
-    if let Some(guid) = get_configured_interface_guid(paths)? {
+    if let Some(guid) = configured_interface_guid(paths)? {
         return Ok(guid);
     }
 
@@ -362,7 +362,7 @@ pub(super) fn config_set_interface(paths: &Paths) -> Result<()> {
 
 pub(super) fn list_interfaces() -> Result<()> {
     println!("{:<32} {:<39} GUID", "Name", "IP Address");
-    for interface in get_windows_interfaces()? {
+    for interface in windows_interfaces()? {
         let ip_address = if interface.ip_address.is_empty() {
             "<no IP>"
         } else {

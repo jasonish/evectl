@@ -29,6 +29,13 @@ pub(super) enum Role {
 }
 
 impl Role {
+    pub(super) const ALL: [Role; 4] = [
+        Role::Suricata,
+        Role::EveBoxServer,
+        Role::EveBoxAgent,
+        Role::Housekeeper,
+    ];
+
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Role::Suricata => "suricata",
@@ -75,7 +82,7 @@ pub(super) struct RuntimeMetadata {
 }
 
 #[derive(Debug, Deserialize)]
-struct NamedProcessInfo {
+pub(super) struct NamedProcessInfo {
     #[serde(rename = "Id")]
     id: u32,
     #[serde(rename = "ProcessName")]
@@ -173,11 +180,7 @@ pub(super) fn build_runtime_metadata(
     })
 }
 
-pub(super) fn spawn_detached(command: &mut Command) -> Result<u32> {
-    spawn_detached_with_logs(command, None, None)
-}
-
-pub(super) fn spawn_detached_with_logs(
+fn spawn_detached(
     command: &mut Command,
     stdout: Option<&Path>,
     stderr: Option<&Path>,
@@ -193,92 +196,82 @@ pub(super) fn spawn_detached_with_logs(
         })
 }
 
-pub(super) fn count_named_processes(process_name: &str) -> Result<usize> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "$p = @(Get-Process -Name '{}' -ErrorAction SilentlyContinue); Write-Output $p.Count",
-                process_name.replace('\'', "''")
-            ),
-        ])
-        .output()
-        .context("Failed to query process list")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to query process list: {}", stderr.trim());
+/// Start a detached managed process and record its PID and runtime
+/// metadata, optionally sending its output to log files. A process
+/// whose records cannot be written is stopped again, as it could not
+/// be managed otherwise.
+pub(super) fn launch_managed(
+    paths: &Paths,
+    role: Role,
+    command: &mut Command,
+    logs: Option<(&Path, &Path)>,
+) -> Result<RuntimeMetadata> {
+    let (stdout, stderr) = match logs {
+        Some((stdout, stderr)) => (Some(stdout), Some(stderr)),
+        None => (None, None),
+    };
+    info!("Running command: {}", format_command_line(command));
+    let pid = spawn_detached(command, stdout, stderr)?;
+    let result = (|| {
+        let metadata = build_runtime_metadata(role, command, pid, stdout, stderr)?;
+        super::paths::ensure_dir(&role.run_dir(paths))?;
+        write_pid(&role.pid_path(paths), pid)?;
+        write_runtime_metadata(&role.runtime_path(paths), &metadata)?;
+        Ok(metadata)
+    })();
+    if result.is_err() {
+        let _ = stop_pid(pid);
+        let _ = cleanup_runtime_files(paths, role);
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .trim()
-        .parse::<usize>()
-        .context("Failed to parse process count")
+    result
 }
 
-fn list_named_processes(process_name: &str) -> Result<Vec<NamedProcessInfo>> {
+/// Run a PowerShell script, capturing its output.
+pub(super) fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output()
+}
+
+/// Run a PowerShell script, returning its standard output. `failure`
+/// describes the script for the error when it cannot run or exits
+/// unsuccessfully.
+pub(super) fn powershell(script: &str, failure: &str) -> Result<String> {
+    let output = powershell_output(script).with_context(|| failure.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("{}: {}", failure, stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub(super) fn list_named_processes(process_name: &str) -> Result<Vec<NamedProcessInfo>> {
     let script = format!(
         "$procs = @(Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, Path); ConvertTo-Json -InputObject @($procs) -Compress",
         process_name.replace('\'', "''")
     );
-
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .output()
-        .context("Failed to query process details")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to query process details: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = powershell(&script, "Failed to query process details")?;
     let stdout = stdout.trim();
     if stdout.is_empty() {
         return Ok(vec![]);
     }
-
     serde_json::from_str(stdout).context("Failed to parse process details")
 }
 
 pub(super) fn is_pid_running(pid: u32) -> bool {
-    Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -ne $p) {{ exit 0 }} else {{ exit 1 }}",
-                pid
-            ),
-        ])
-        .status()
-        .is_ok_and(|status| status.success())
+    let script = format!(
+        "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -ne $p) {{ exit 0 }} else {{ exit 1 }}",
+        pid
+    );
+    powershell(&script, "Failed to query process").is_ok()
 }
 
-fn get_process_exe_path(pid: u32) -> Result<Option<PathBuf>> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -ne $p -and $p.Path) {{ Write-Output $p.Path }}",
-                pid
-            ),
-        ])
-        .output()
-        .context("Failed to inspect process executable path")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "Failed to inspect process executable path: {}",
-            stderr.trim()
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+fn process_exe_path(pid: u32) -> Result<Option<PathBuf>> {
+    let script = format!(
+        "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -ne $p -and $p.Path) {{ Write-Output $p.Path }}",
+        pid
+    );
+    let stdout = powershell(&script, "Failed to inspect process executable path")?;
     let path = stdout.trim();
     if path.is_empty() {
         Ok(None)
@@ -288,7 +281,7 @@ fn get_process_exe_path(pid: u32) -> Result<Option<PathBuf>> {
 }
 
 pub(super) fn process_matches_exe(pid: u32, exe_path: &Path) -> Result<bool> {
-    let running_path = match get_process_exe_path(pid)? {
+    let running_path = match process_exe_path(pid)? {
         Some(path) => path,
         None => return Ok(false),
     };
@@ -501,6 +494,15 @@ pub(super) fn managed_process_is_running(paths: &Paths, role: Role) -> Result<bo
     Ok(true)
 }
 
+pub(super) fn any_managed_process_running(paths: &Paths) -> Result<bool> {
+    for role in Role::ALL {
+        if managed_process_is_running(paths, role)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn stop_managed_process(paths: &Paths, role: Role) -> Result<()> {
     let pid_path = role.pid_path(paths);
     let runtime_path = role.runtime_path(paths);
@@ -537,7 +539,7 @@ pub(super) fn stop_managed_process(paths: &Paths, role: Role) -> Result<()> {
     cleanup_runtime_files(paths, role)
 }
 
-pub(super) fn get_managed_runtime_metadata(
+pub(super) fn managed_runtime_metadata(
     paths: &Paths,
     role: Role,
 ) -> Result<Option<RuntimeMetadata>> {

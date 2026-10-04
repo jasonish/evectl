@@ -5,6 +5,7 @@
 
 use super::install::{download_file, launch_windows_installer, wait_for_installer_completion};
 use super::paths::{Paths, ensure_dir};
+use super::runtime::powershell;
 use super::version::compare_versions;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
@@ -13,11 +14,7 @@ use std::process::Command;
 const NPCAP_VERSION: &str = "1.88";
 const NPCAP_INSTALLED_MARKER: &str = ".evectl-npcap-installed";
 
-pub(super) fn download_npcap(paths: &Paths) -> Result<()> {
-    install_or_upgrade_npcap(paths, false)
-}
-
-fn install_or_upgrade_npcap(paths: &Paths, upgrade: bool) -> Result<()> {
+pub(super) fn install_or_upgrade_npcap(paths: &Paths, upgrade: bool) -> Result<()> {
     let installed = is_npcap_installed();
     let should_mark_as_managed = !installed;
 
@@ -66,8 +63,8 @@ fn installed_marker_path(paths: &Paths) -> PathBuf {
     paths.root().join(NPCAP_INSTALLED_MARKER)
 }
 
-fn is_npcap_managed_installed(paths: &Paths) -> Result<bool> {
-    Ok(installed_marker_path(paths).exists())
+fn is_npcap_managed_installed(paths: &Paths) -> bool {
+    installed_marker_path(paths).exists()
 }
 
 fn mark_npcap_managed_installed(paths: &Paths) -> Result<()> {
@@ -117,7 +114,7 @@ pub(super) fn npcap_upgrade_needed() -> Result<bool> {
         return Ok(true);
     }
 
-    let Some(installed_version) = get_npcap_installed_version()? else {
+    let Some(installed_version) = npcap_installed_version()? else {
         return Ok(false);
     };
 
@@ -137,7 +134,7 @@ pub(super) fn maybe_upgrade_npcap(paths: &Paths) -> Result<()> {
         return install_or_upgrade_npcap(paths, true);
     }
 
-    let installed_version = match get_npcap_installed_version()? {
+    let installed_version = match npcap_installed_version()? {
         Some(version) => version,
         None => {
             info!(
@@ -176,7 +173,7 @@ pub(super) fn maybe_upgrade_npcap(paths: &Paths) -> Result<()> {
     }
 }
 
-fn get_npcap_installed_version() -> Result<Option<String>> {
+fn npcap_installed_version() -> Result<Option<String>> {
     let script = r#"
 $entry = @(
 Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue
@@ -188,21 +185,13 @@ Write-Output $entry.DisplayVersion
 }
 "#;
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .context("Failed to query installed Npcap version")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "Failed to determine installed Npcap version: {}",
-            stderr.trim()
-        );
-        return Ok(None);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = match powershell(script, "Failed to determine installed Npcap version") {
+        Ok(stdout) => stdout,
+        Err(err) => {
+            warn!("{}", err);
+            return Ok(None);
+        }
+    };
     let version = stdout.trim();
     if version.is_empty() {
         Ok(None)
@@ -212,7 +201,7 @@ Write-Output $entry.DisplayVersion
 }
 
 pub(super) fn uninstall_npcap(paths: &Paths) -> Result<()> {
-    if !is_npcap_managed_installed(paths)? {
+    if !is_npcap_managed_installed(paths) {
         if is_npcap_installed() {
             info!(
                 "Npcap is installed, but it was not installed by evectl. Skipping Npcap uninstall."
@@ -273,17 +262,7 @@ $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/C', $command -Verb 
 exit $process.ExitCode
 "#;
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .context("Failed to execute Npcap uninstall command")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Npcap uninstall failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = powershell(script, "Npcap uninstall failed")?;
     if stdout.contains("NOT_FOUND") {
         info!("Npcap uninstall entry not found. Clearing evectl ownership marker.");
         clear_npcap_managed_installed_marker(paths)?;

@@ -8,7 +8,7 @@ use super::evebox::{
     EVEBOX_CHANNEL_MARKER, EVEBOX_VERSION_MARKER, find_evebox_exe, replace_evebox_installation,
 };
 use super::menu::wizard;
-use super::npcap::{download_npcap, maybe_upgrade_npcap, npcap_upgrade_needed};
+use super::npcap::{install_or_upgrade_npcap, maybe_upgrade_npcap, npcap_upgrade_needed};
 use super::paths::{Paths, load_evectl_config};
 use super::stack::{
     capture_restart_plan, evebox_server_url, restart_managed_components, stop_stack,
@@ -201,12 +201,12 @@ pub(super) fn install_configured_components(
     config: &crate::config::Config,
 ) -> Result<()> {
     if config.suricata.enabled {
-        download_npcap(paths)?;
+        install_or_upgrade_npcap(paths, false)?;
         install_or_upgrade_suricata(paths, false)?;
     }
 
     if config.evebox_server.enabled || config.evebox_agent.enabled {
-        install_evebox(paths, config.windows.evebox_channel)?;
+        install_or_upgrade_evebox(paths, false, config.windows.evebox_channel)?;
     }
 
     Ok(())
@@ -280,10 +280,6 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn install_evebox(paths: &Paths, channel: EveBoxChannel) -> Result<()> {
-    install_or_upgrade_evebox(paths, false, channel)
 }
 
 fn install_or_upgrade_evebox(paths: &Paths, upgrade: bool, channel: EveBoxChannel) -> Result<()> {

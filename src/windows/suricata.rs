@@ -5,11 +5,10 @@
 
 use super::install::download_file;
 use super::paths::{Paths, ensure_dir, load_evectl_config};
-use super::runtime::Role;
 use super::runtime::{
-    RuntimeMetadata, build_runtime_metadata, count_named_processes, format_command_line,
-    is_pid_running, managed_process_is_running, process_matches_exe, spawn_detached,
-    stop_managed_process, write_pid, write_runtime_metadata,
+    Role, RuntimeMetadata, is_pid_running, launch_managed, list_named_processes,
+    managed_process_is_running, powershell, powershell_output, process_matches_exe,
+    stop_managed_process,
 };
 use super::version::compare_versions;
 use crate::prelude::*;
@@ -240,12 +239,7 @@ exit $process.ExitCode
         msi_path, target_dir, log_path_str
     );
 
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(&script)
-        .output()
-        .context(format!("Failed to extract {} MSI", name))?;
+    let output = powershell_output(&script).context(format!("Failed to extract {} MSI", name))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -323,7 +317,7 @@ pub(super) fn suricata_upgrade_needed(paths: &Paths) -> Result<bool> {
         return Ok(true);
     }
 
-    let installed_version = match get_suricata_installed_version(paths)? {
+    let installed_version = match suricata_installed_version(paths)? {
         Some(version) => version,
         None => return Ok(true),
     };
@@ -355,7 +349,7 @@ pub(super) fn maybe_upgrade_suricata(paths: &Paths) -> Result<()> {
         return install_or_upgrade_suricata(paths, true);
     }
 
-    let installed_version = match get_suricata_installed_version(paths)? {
+    let installed_version = match suricata_installed_version(paths)? {
         Some(version) => version,
         None => {
             info!(
@@ -406,7 +400,7 @@ fn version_marker_path(paths: &Paths) -> PathBuf {
     paths.suricata_install_dir().join(SURICATA_VERSION_MARKER)
 }
 
-pub(super) fn get_suricata_installed_version(paths: &Paths) -> Result<Option<String>> {
+pub(super) fn suricata_installed_version(paths: &Paths) -> Result<Option<String>> {
     let marker_path = version_marker_path(paths);
     if marker_path.exists() {
         let version = std::fs::read_to_string(&marker_path).context(format!(
@@ -442,7 +436,7 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
         if managed_installed {
             info!("Upgrading Suricata to version {}...", SURICATA_VERSION);
 
-            if let Err(err) = stop_suricata_managed(paths) {
+            if let Err(err) = stop_managed_process(paths, Role::Suricata) {
                 warn!("Failed to stop running Suricata processes: {}", err);
             }
 
@@ -508,7 +502,9 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
     Ok(())
 }
 
-fn cleanup_suricata_leftovers(paths: &Paths) -> Result<()> {
+pub(super) fn uninstall_suricata(paths: &Paths) -> Result<()> {
+    info!("Removing evectl-managed Suricata installation...");
+
     let mut errors = vec![];
     let install_dir = paths.suricata_install_dir();
 
@@ -528,18 +524,8 @@ fn cleanup_suricata_leftovers(paths: &Paths) -> Result<()> {
                 escaped
             );
 
-            match Command::new("powershell")
-                .args(["-NoProfile", "-Command", &script])
-                .output()
-            {
-                Ok(output) if output.status.success() => {}
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    errors.push(format!("{}: {}", install_dir.display(), stderr.trim()));
-                }
-                Err(ps_err) => {
-                    errors.push(format!("{}: {}", install_dir.display(), ps_err));
-                }
+            if let Err(err) = powershell(&script, "PowerShell cleanup failed") {
+                errors.push(format!("{}: {}", install_dir.display(), err));
             }
         }
     }
@@ -563,11 +549,6 @@ fn cleanup_suricata_leftovers(paths: &Paths) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub(super) fn uninstall_suricata(paths: &Paths) -> Result<()> {
-    info!("Removing evectl-managed Suricata installation...");
-    cleanup_suricata_leftovers(paths)
 }
 
 pub(super) fn build_suricata_command(paths: &Paths, guid: &str) -> Result<Command> {
@@ -694,7 +675,7 @@ pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
         bail!("A managed Suricata process is already running. Use 'evectl stop' first.");
     }
 
-    let process_count = count_named_processes("suricata")?;
+    let process_count = list_named_processes("suricata")?.len();
     if process_count > 0 {
         bail!(
             "Suricata is already running ({} process(es) found). Stop the external Suricata process or service first.",
@@ -709,15 +690,7 @@ pub(super) fn start_suricata_background(paths: &Paths, guid: &str) -> Result<Run
     ensure_suricata_start_allowed(paths)?;
 
     let mut command = build_suricata_command(paths, guid)?;
-    info!("Running command: {}", format_command_line(&command));
-    let pid = spawn_detached(&mut command)?;
-    let metadata = build_runtime_metadata(Role::Suricata, &command, pid, None, None)?;
-
-    ensure_dir(&paths.suricata_run_dir())?;
-    write_pid(&Role::Suricata.pid_path(paths), pid)?;
-    write_runtime_metadata(&Role::Suricata.runtime_path(paths), &metadata)?;
-
-    Ok(metadata)
+    launch_managed(paths, Role::Suricata, &mut command, None)
 }
 
 pub(super) fn wait_for_suricata_pid_readiness(
@@ -745,12 +718,4 @@ pub(super) fn wait_for_suricata_pid_readiness(
     }
 
     Ok(())
-}
-
-pub(super) fn wait_for_suricata_readiness(paths: &Paths, metadata: &RuntimeMetadata) -> Result<()> {
-    wait_for_suricata_pid_readiness(paths, metadata.pid, Path::new(&metadata.exe_path))
-}
-
-pub(super) fn stop_suricata_managed(paths: &Paths) -> Result<()> {
-    stop_managed_process(paths, Role::Suricata)
 }

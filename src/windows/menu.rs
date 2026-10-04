@@ -4,22 +4,21 @@
 //! Interactive menus and the status display.
 
 use super::evebox::{
-    evebox_installed_channel, find_evebox_exe, get_evebox_installed_version,
+    evebox_installed_channel, evebox_installed_version, find_evebox_exe,
     reset_evebox_admin_password,
 };
 use super::install::{
     add_shortcuts, install_configured_components, install_with, upgrade_windows_components,
 };
 use super::interfaces::{
-    get_configured_interface_guid, get_configured_interface_value, get_windows_interfaces,
-    list_interfaces,
+    configured_interface_guid, configured_interface_value, list_interfaces, windows_interfaces,
 };
 use super::paths::{Paths, ensure_dir, load_evectl_config};
 use super::rules::{WindowsRulesBackend, update_rules};
-use super::runtime::Role;
-use super::runtime::{count_named_processes, managed_process_is_running};
-use super::stack::{evebox_server_url, restart_stack, start_stack, stop_stack};
-use super::suricata::find_suricata_executable;
+use super::runtime::{Role, list_named_processes, managed_process_is_running};
+use super::stack::{
+    WindowsStatus, evebox_server_url, restart_stack, start_stack, stop_stack, windows_status,
+};
 use super::uninstall::uninstall_windows_components;
 use super::update::UpdateOutcome;
 use crate::config::EveBoxChannel;
@@ -33,63 +32,6 @@ enum OtherMenuOption {
     Interfaces,
     Info,
     Return,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub(super) struct WindowsStatus {
-    suricata_enabled: bool,
-    suricata_installed: bool,
-    suricata_running: bool,
-    evebox_installed: bool,
-    evebox_server_enabled: bool,
-    evebox_server_running: bool,
-    evebox_agent_enabled: bool,
-    evebox_agent_running: bool,
-    housekeeper_enabled: bool,
-    housekeeper_running: bool,
-}
-
-impl WindowsStatus {
-    fn any_enabled(self) -> bool {
-        self.suricata_enabled || self.evebox_server_enabled || self.evebox_agent_enabled
-    }
-
-    fn any_running(self) -> bool {
-        self.suricata_running
-            || self.evebox_server_running
-            || self.evebox_agent_running
-            || self.housekeeper_running
-    }
-
-    fn evebox_enabled(self) -> bool {
-        self.evebox_server_enabled || self.evebox_agent_enabled
-    }
-
-    /// True when every enabled service has an executable the menu's
-    /// Start action can launch.
-    fn ready_to_start(self) -> bool {
-        self.any_enabled()
-            && (!self.suricata_enabled || self.suricata_installed)
-            && (!self.evebox_enabled() || self.evebox_installed)
-    }
-}
-
-pub(super) fn windows_status(
-    paths: &Paths,
-    config: &crate::config::Config,
-) -> Result<WindowsStatus> {
-    Ok(WindowsStatus {
-        suricata_enabled: config.suricata.enabled,
-        suricata_installed: find_suricata_executable(paths).is_some(),
-        suricata_running: managed_process_is_running(paths, Role::Suricata)?,
-        evebox_installed: find_evebox_exe(&paths.evebox_install_dir())?.is_some(),
-        evebox_server_enabled: config.evebox_server.enabled,
-        evebox_server_running: managed_process_is_running(paths, Role::EveBoxServer)?,
-        evebox_agent_enabled: config.evebox_agent.enabled,
-        evebox_agent_running: managed_process_is_running(paths, Role::EveBoxAgent)?,
-        housekeeper_enabled: super::file_extraction::cleanup_enabled(config),
-        housekeeper_running: managed_process_is_running(paths, Role::Housekeeper)?,
-    })
 }
 
 pub(super) fn log_status(status: WindowsStatus, config: &crate::config::Config) {
@@ -428,7 +370,7 @@ impl crate::fpc::Backend for WindowsFpcBackend<'_> {
     }
 
     fn check_remove_spool(&self) -> Result<()> {
-        if count_named_processes("suricata")? > 0 {
+        if !list_named_processes("suricata")?.is_empty() {
             bail!("Suricata is running; stop services before removing packet captures");
         }
         Ok(())
@@ -451,7 +393,7 @@ struct WindowsSuricataBackend<'a> {
 
 impl crate::suricata::configuration::Backend for WindowsSuricataBackend<'_> {
     fn interfaces(&self) -> Result<Vec<crate::suricata::configuration::Interface>> {
-        Ok(get_windows_interfaces()?
+        Ok(windows_interfaces()?
             .into_iter()
             .map(|interface| crate::suricata::configuration::Interface {
                 name: interface.name,
@@ -469,7 +411,7 @@ impl crate::suricata::configuration::Backend for WindowsSuricataBackend<'_> {
     }
 
     fn check_remove_extracted_files(&self) -> Result<()> {
-        if count_named_processes("suricata")? > 0
+        if !list_named_processes("suricata")?.is_empty()
             || managed_process_is_running(self.paths, Role::Housekeeper)?
         {
             bail!(
@@ -500,7 +442,7 @@ impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend<'_> {
     }
 
     fn bind_addresses(&self) -> Result<Vec<crate::evebox::configuration::BindAddress>> {
-        Ok(get_windows_interfaces()?
+        Ok(windows_interfaces()?
             .into_iter()
             .filter(|interface| interface.ip_address.parse::<std::net::Ipv4Addr>().is_ok())
             .map(|interface| crate::evebox::configuration::BindAddress {
@@ -600,12 +542,12 @@ pub(super) fn project_info(paths: &Paths) -> Result<()> {
         "  EveCtl config file:        {}",
         paths.config_file().display()
     );
-    match get_configured_interface_value(paths) {
+    match configured_interface_value(paths) {
         Ok(Some(interface)) => println!("  Configured interface:      {}", interface),
         Ok(None) => println!("  Configured interface:      <not set>"),
         Err(err) => println!("  Configured interface:      <error: {}>", err),
     }
-    match get_configured_interface_guid(paths) {
+    match configured_interface_guid(paths) {
         Ok(Some(guid)) => println!("  Resolved interface GUID:   {}", guid),
         Ok(None) => println!("  Resolved interface GUID:   <not set>"),
         Err(err) => println!("  Resolved interface GUID:   <error: {}>", err),
@@ -674,7 +616,7 @@ pub(super) fn project_info(paths: &Paths) -> Result<()> {
     );
     if let Some(evebox_exe) = evebox_exe {
         println!("  Current EveBox binary:     {}", evebox_exe.display());
-        if let Some(version) = get_evebox_installed_version(paths)? {
+        if let Some(version) = evebox_installed_version(&paths.evebox_install_dir())? {
             println!("  Current EveBox version:    {}", version);
         }
         if let Some(channel) = evebox_installed_channel(&evebox_install_dir)? {
