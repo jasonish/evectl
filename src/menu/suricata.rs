@@ -7,11 +7,10 @@ mod tests;
 use colored::Colorize;
 
 use crate::config::EveOutput;
-use crate::context::Context;
 use crate::menu::file_extraction;
 use crate::prelude::*;
 use crate::prompt::Selections;
-use crate::suricata::configuration::{Backend, ContainerBackend, Interface};
+use crate::suricata::configuration::{Backend, Interface};
 use crate::term;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,13 +26,6 @@ enum Options {
     FileExtractionRetention,
     FileExtractionRemove,
     Exit,
-}
-
-/// Container entry point. Only runtime paths, names, and cleanup image choices
-/// use the snapshot; settings are edited directly in the caller's config.
-pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
-    let runtime = context.clone();
-    menu(&mut context.config, &ContainerBackend(&runtime))
 }
 
 fn menu_options(config: &Config, backend: &dyn Backend) -> Result<Selections<Options>> {

@@ -10,8 +10,7 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use crate::prelude::*;
-use crate::update::UpdateContinuationArgs;
-use crate::{elastic, evebox, housekeeper, menu, rules, suricata};
+use crate::{elastic, evebox, housekeeper, suricata};
 
 /// A service EveCtl may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,105 +437,6 @@ pub(crate) fn verify_containers_running(context: &Context, containers: &[(&str, 
         }
     }
     ok
-}
-
-/// Main menu backed by the container runtime. The runtime snapshot's
-/// configuration is synchronized from the menu's before each action.
-struct MainMenuBackend<'a> {
-    runtime: Context,
-    update_continuation_args: &'a UpdateContinuationArgs,
-}
-
-impl MainMenuBackend<'_> {
-    fn context(&mut self, config: &Config) -> &Context {
-        if self.runtime.config != *config {
-            self.runtime.config = config.clone();
-        }
-        &self.runtime
-    }
-}
-
-impl menu::main::Backend for MainMenuBackend<'_> {
-    fn status(&mut self, config: &Config) -> menu::main::Status {
-        let context = self.context(config);
-        crate::status::log_status(context);
-        let running = enabled_containers(context)
-            .iter()
-            .any(|(_, name)| context.manager.is_running(name));
-        menu::main::Status {
-            running,
-            ready_to_start: true,
-            restart_recommended: false,
-        }
-    }
-
-    fn start(&mut self, config: &Config) -> Result<()> {
-        if start(self.context(config)) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to start")
-        }
-    }
-
-    fn stop(&mut self, config: &Config) -> Result<()> {
-        if stop_all(self.context(config)) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to stop")
-        }
-    }
-
-    fn restart(&mut self, config: &Config) -> Result<()> {
-        let context = self.context(config);
-        stop_all(context);
-        if start(context) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to start")
-        }
-    }
-
-    fn install(&mut self, _config: &mut Config) -> Result<()> {
-        bail!("Containers are installed on start")
-    }
-
-    fn update_rules(&mut self, config: &Config) -> Result<()> {
-        rules::update_rules(self.context(config), &[])
-    }
-
-    fn rules(&mut self, config: &Config) -> Box<dyn rules::Backend + '_> {
-        Box::new(rules::ContainerBackend(self.context(config)))
-    }
-
-    fn update(&mut self, config: &Config) -> Result<menu::main::UpdateOutcome> {
-        // A self-update replaces the process and never returns.
-        let args = self.update_continuation_args;
-        crate::update::update(self.context(config), args, false, true);
-        Ok(menu::main::UpdateOutcome::Completed)
-    }
-
-    fn configure(&mut self, config: &mut Config) -> Result<()> {
-        self.runtime.config = config.clone();
-        let result = menu::configure::main(&mut self.runtime);
-        *config = self.runtime.config.clone();
-        result
-    }
-
-    fn other(&mut self, config: &mut Config) -> Result<()> {
-        menu::other::menu(self.context(config));
-        Ok(())
-    }
-}
-
-pub(crate) fn menu_main(
-    mut context: Context,
-    update_continuation_args: &UpdateContinuationArgs,
-) -> Result<()> {
-    let mut backend = MainMenuBackend {
-        runtime: context.clone(),
-        update_continuation_args,
-    };
-    menu::main::menu(&mut context.config, &mut backend)
 }
 
 #[cfg(all(test, not(windows)))]

@@ -7,7 +7,7 @@
 use crate::prelude::*;
 
 use crate::prompt::Selections;
-use crate::{context::Context, term};
+use crate::term;
 
 /// A platform-only Configure option, shown after the shared options.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -32,14 +32,6 @@ enum Options {
     Fpc,
     Platform(&'static str),
     Return,
-}
-
-/// Linux Configure menu backed by the container runtime.
-pub(crate) fn main(context: &mut Context) -> Result<()> {
-    let mut backend = ContainerBackend {
-        runtime: context.clone(),
-    };
-    menu(&mut context.config, &mut backend)
 }
 
 pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()> {
@@ -114,90 +106,6 @@ fn run_action(config: &mut Config, backend: &mut dyn Backend, action: &Options) 
         Options::Platform(id) => backend.run_platform_option(config, id),
         Options::Return => Ok(()),
     }
-}
-
-/// Submenus that still take a Context edit a runtime snapshot; the caller's
-/// configuration is synchronized around each call.
-struct ContainerBackend {
-    runtime: Context,
-}
-
-impl ContainerBackend {
-    fn with_context(
-        &mut self,
-        config: &mut Config,
-        action: impl FnOnce(&mut Context) -> Result<()>,
-    ) -> Result<()> {
-        self.runtime.config = config.clone();
-        let result = action(&mut self.runtime);
-        *config = self.runtime.config.clone();
-        result
-    }
-}
-
-const CONTAINER_IMAGES: &str = "container-images";
-const START_ON_BOOT: &str = "start-on-boot";
-
-impl Backend for ContainerBackend {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(crate::suricata::configuration::ContainerBackend(
-            &self.runtime,
-        ))
-    }
-
-    fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_> {
-        Box::new(crate::fpc::ContainerBackend(&self.runtime))
-    }
-
-    fn configure_evebox_server(&mut self, config: &mut Config) -> Result<()> {
-        crate::menu::evebox_server::menu(
-            config,
-            &crate::evebox::configuration::ContainerBackend(&self.runtime),
-        )
-    }
-
-    fn platform_options(&self, _config: &Config) -> Vec<PlatformOption> {
-        vec![
-            PlatformOption {
-                id: CONTAINER_IMAGES,
-                label: "Containers Images".to_string(),
-            },
-            PlatformOption {
-                id: START_ON_BOOT,
-                label: if crate::systemd::is_enabled() {
-                    "Disable Start on Boot".to_string()
-                } else {
-                    "Enable Start on Boot".to_string()
-                },
-            },
-        ]
-    }
-
-    fn run_platform_option(&mut self, config: &mut Config, id: &str) -> Result<()> {
-        match id {
-            CONTAINER_IMAGES => self.with_context(config, |context| {
-                crate::menu::containers::edit(context);
-                Ok(())
-            }),
-            START_ON_BOOT => start_on_boot(&self.runtime),
-            _ => bail!("Unknown configuration option: {id}"),
-        }
-    }
-}
-
-pub(crate) fn start_on_boot(context: &Context) -> Result<()> {
-    if !crate::systemd::is_enabled() {
-        info!("Start on boot is enabled by using sudo to install a systemd service file.");
-        if !crate::prompt::confirm("Do you wish to continue?") {
-            return Ok(());
-        }
-        crate::systemd::install(&context.root, context.manager)?;
-    } else if crate::prompt::confirm("Do you wish to disable start on boot?")
-        && let Err(err) = crate::systemd::remove()
-    {
-        tracing::error!("Failed to remove systemd unit: {}", err);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::container::{CommandExt, Container, RunCommandBuilder, SuricataContainer};
+use crate::container::{CommandExt, SuricataContainer};
 use crate::prelude::*;
 use crate::ruleindex::RuleIndex;
 
@@ -166,79 +166,6 @@ fn build_update_args<'a>(extra_args: &[&'a str], suricata_running: bool) -> Vec<
         args.push("--no-reload");
     }
     args
-}
-
-pub(crate) struct ContainerBackend<'a>(pub(crate) &'a Context);
-
-impl Backend for ContainerBackend<'_> {
-    fn available_rulesets(&self) -> Result<Vec<Ruleset>> {
-        Ok(load_rule_index(self.0)?
-            .sources
-            .into_iter()
-            .map(|(id, source)| Ruleset {
-                id,
-                summary: Some(source.summary),
-                can_enable: source.obsolete.is_none() && source.parameters.is_none(),
-            })
-            .collect())
-    }
-
-    fn enabled_rulesets(&self) -> Result<Vec<Ruleset>> {
-        let enabled = get_enabled_ruleset(self.0)?;
-        if enabled.is_empty() {
-            return Ok(vec![]);
-        }
-        let index = load_rule_index(self.0).ok();
-        Ok(enabled
-            .into_iter()
-            .map(|id| {
-                let summary = index
-                    .as_ref()
-                    .and_then(|index| index.sources.get(&id))
-                    .map(|source| source.summary.clone());
-                Ruleset {
-                    id,
-                    summary,
-                    can_enable: false,
-                }
-            })
-            .collect())
-    }
-
-    fn enable_ruleset(&self, id: &str) -> Result<()> {
-        enable_ruleset(self.0, id)
-    }
-
-    fn disable_ruleset(&self, id: &str) -> Result<()> {
-        disable_ruleset(self.0, id)
-    }
-
-    fn update_sources(&self) -> Result<()> {
-        update_sources(self.0)
-    }
-
-    fn update_rules(&self) -> Result<()> {
-        update_rules(self.0, &[])
-    }
-
-    fn override_path(&self, file: OverrideFile) -> Option<PathBuf> {
-        Some(self.0.config_dir().join(file.filename()))
-    }
-
-    fn write_override_template(&self, file: OverrideFile) -> Result<()> {
-        let source = format!(
-            "/usr/lib/suricata/python/suricata/update/configs/{}",
-            file.filename()
-        );
-        let output = RunCommandBuilder::new(self.0.manager, self.0.image_name(Container::Suricata))
-            .rm()
-            .args(&["cat", &source])
-            .build()
-            .status_output()?;
-        std::fs::create_dir_all(self.0.config_dir())?;
-        std::fs::write(self.0.config_dir().join(file.filename()), output)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

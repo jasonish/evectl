@@ -6,7 +6,7 @@
 
 use colored::Colorize;
 
-use crate::{container::Container, prelude::*};
+use crate::prelude::*;
 
 pub(crate) trait Backend {
     fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_>;
@@ -28,14 +28,6 @@ enum InstallType {
     Server,
     Custom,
     Help,
-}
-
-/// Linux wizard backed by the container runtime.
-pub(crate) fn wizard(context: &mut Context) -> Result<()> {
-    let mut backend = ContainerBackend {
-        runtime: context.clone(),
-    };
-    menu(&mut context.config, &mut backend)
 }
 
 pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()> {
@@ -192,62 +184,4 @@ fn install_type_help(search_engines: bool) {
     );
     println!("{}", msg);
     crate::prompt::enter();
-}
-
-/// The runtime snapshot's configuration is synchronized from the
-/// wizard's before each action.
-struct ContainerBackend {
-    runtime: Context,
-}
-
-impl ContainerBackend {
-    fn context(&mut self, config: &Config) -> &Context {
-        if self.runtime.config != *config {
-            self.runtime.config = config.clone();
-        }
-        &self.runtime
-    }
-}
-
-impl Backend for ContainerBackend {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(crate::suricata::configuration::ContainerBackend(
-            &self.runtime,
-        ))
-    }
-
-    fn evebox_server(&self) -> Box<dyn crate::evebox::configuration::Backend + '_> {
-        Box::new(crate::evebox::configuration::ContainerBackend(
-            &self.runtime,
-        ))
-    }
-
-    fn install(&mut self, config: &Config) -> Result<()> {
-        let context = self.context(config);
-        if config.suricata.enabled {
-            info!("Pulling Suricata image...");
-            context
-                .manager
-                .pull(&context.image_name(Container::Suricata))?;
-        }
-
-        info!("Pulling EveBox image...");
-        context
-            .manager
-            .pull(&context.image_name(Container::EveBox))?;
-
-        if config.elasticsearch_enabled() {
-            info!("Pulling {} image...", config.elasticsearch.engine.name());
-            context
-                .manager
-                .pull(crate::elastic::docker_image(context))?;
-        }
-        Ok(())
-    }
-
-    fn update_rules(&mut self, config: &Config) -> Result<()> {
-        let context = self.context(config);
-        crate::suricata::mkdirs(context)?;
-        crate::rules::update_rules(context, &["--no-reload", "--no-test"])
-    }
 }

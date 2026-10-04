@@ -13,34 +13,3 @@ pub(crate) trait Backend {
     /// Recheck service state after confirmation, before deleting the spool.
     fn remove_spool(&self) -> Result<()>;
 }
-
-pub(crate) struct ContainerBackend<'a>(pub(crate) &'a Context);
-
-impl Backend for ContainerBackend<'_> {
-    fn spool_dir(&self) -> Result<PathBuf> {
-        Ok(crate::suricata::pcap_dir(self.0))
-    }
-
-    fn check_remove_spool(&self) -> Result<()> {
-        // Confirm absence by listing; an inspect failure may mean the daemon
-        // is unavailable, not that Suricata has stopped.
-        let existing = self.0.manager.container_names()?;
-        let name = crate::suricata::container_name(self.0);
-        if existing.contains(&name) {
-            let state = self.0.manager.state(&name)?;
-            if state.running || state.restarting {
-                bail!("Suricata is running; stop services before removing packet captures");
-            }
-        }
-        Ok(())
-    }
-
-    fn remove_spool(&self) -> Result<()> {
-        self.check_remove_spool()?;
-        let directory = self.spool_dir()?;
-        if directory.exists() {
-            crate::uninstall::remove_directory(self.0, &directory)?;
-        }
-        Ok(())
-    }
-}

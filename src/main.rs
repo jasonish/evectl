@@ -16,6 +16,8 @@ mod config;
 mod configs;
 #[cfg_attr(windows, allow(dead_code))]
 mod container;
+#[cfg(not(windows))]
+mod container_platform;
 #[cfg_attr(windows, allow(dead_code))]
 mod context;
 #[cfg_attr(windows, allow(dead_code))]
@@ -161,7 +163,7 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(&root)?;
         let config = Config::default_with_filename(&config_filename);
         let mut context = Context::new(config, root, manager);
-        menu::wizard::wizard(&mut context)?;
+        container_platform::wizard(&mut context)?;
         context
     };
 

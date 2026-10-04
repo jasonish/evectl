@@ -8,8 +8,7 @@ use crate::prelude::*;
 
 use crate::{
     config::{EveBoxServerConfig, SearchEngine},
-    context::Context,
-    evebox::configuration::{Backend, BindAddress, ContainerBackend},
+    evebox::configuration::{Backend, BindAddress},
     prompt::Selections,
     term,
 };
@@ -46,17 +45,6 @@ impl Datastore {
             _ => None,
         }
     }
-}
-
-/// Hidden CLI entry point backed by the container runtime; the
-/// configuration is saved on exit as no caller persists it.
-pub(crate) fn container_menu(context: &mut Context) -> Result<()> {
-    let runtime = context.clone();
-    menu(&mut context.config, &ContainerBackend(&runtime))?;
-    if context.config != runtime.config {
-        context.config.save()?;
-    }
-    Ok(())
 }
 
 /// Settings are edited directly in the caller's configuration, which

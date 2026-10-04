@@ -254,7 +254,7 @@ pub(crate) fn run(
     filesystem_only_uninstall: bool,
 ) -> Result<i32> {
     use crate::update::{UpdateContinuationArgs, update};
-    use crate::{menu, prompt, rules, services, systemd, uninstall};
+    use crate::{container_platform, menu, prompt, rules, services, systemd, uninstall};
 
     let manager = context.manager;
     let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
@@ -273,10 +273,7 @@ pub(crate) fn run(
     };
 
     if prompt_for_update
-        && let Ok(true) =
-            inquire::Confirm::new("Required container images not found, download now?")
-                .with_default(true)
-                .prompt()
+        && prompt::confirm("Required container images not found, download now?")
         && !update(&context, &update_continuation_args, false, false)
     {
         error!("Failed to downloading container images");
@@ -284,7 +281,7 @@ pub(crate) fn run(
     }
 
     let Some(command) = args.command else {
-        services::menu_main(context, &update_continuation_args)?;
+        container_platform::menu_main(context, &update_continuation_args)?;
         return Ok(0);
     };
 
@@ -325,7 +322,7 @@ pub(crate) fn run(
             );
             if return_to_menu {
                 prompt::enter();
-                services::menu_main(context, &update_continuation_args)?;
+                container_platform::menu_main(context, &update_continuation_args)?;
                 0
             } else if ok {
                 0
@@ -339,11 +336,11 @@ pub(crate) fn run(
         }
         Commands::Menu { menu } => match menu.as_str() {
             "configure" => {
-                menu::configure::main(&mut context)?;
+                container_platform::configure_menu(&mut context)?;
                 0
             }
             "suricata-update" => {
-                menu::rules::menu(&rules::ContainerBackend(&context))?;
+                menu::rules::menu(&container_platform::Runtime(&context))?;
                 0
             }
             "configure.containers" => {
@@ -351,7 +348,7 @@ pub(crate) fn run(
                 0
             }
             "configure-suricata" => {
-                menu::suricata::container_menu(&mut context)?;
+                container_platform::suricata_menu(&mut context)?;
                 0
             }
             "evebox-agent" => {
@@ -359,7 +356,7 @@ pub(crate) fn run(
                 0
             }
             "evebox-server" => {
-                menu::evebox_server::container_menu(&mut context)?;
+                container_platform::evebox_server_menu(&mut context)?;
                 0
             }
             _ => panic!("Unhandled menu: {}", menu),
