@@ -153,5 +153,8 @@ fn main() -> Result<()> {
     };
 
     let code = cli::run(args, context, filesystem_only_uninstall)?;
-    std::process::exit(code);
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
