@@ -4,6 +4,7 @@
 //! Suricata rule management through suricatax-rules.
 
 use super::paths::{Paths, load_evectl_config};
+use super::platform::WindowsPlatform;
 use super::runtime::{Role, stop_managed_process};
 use super::stack::capture_restart_plan;
 use super::suricata::{
@@ -16,70 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use suricatax_rules::cli as suricatax_cli;
 use suricatax_rules::paths::PathProvider;
-use suricatax_rules::sources::SourceManager;
 
 const WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS: [&str; 1] = ["file.magic"];
-
-pub(super) struct WindowsRulesBackend<'a> {
-    pub(super) paths: &'a Paths,
-}
-
-impl crate::rules::Backend for WindowsRulesBackend<'_> {
-    fn available_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
-        let provider = suricatax_paths(self.paths);
-        Ok(SourceManager::new(&provider)
-            .get_or_download_index()?
-            .sources
-            .into_iter()
-            .map(|(id, source)| crate::rules::Ruleset {
-                id,
-                summary: Some(source.summary),
-                can_enable: source.obsolete.is_none() && source.parameters.is_none(),
-            })
-            .collect())
-    }
-
-    fn enabled_rulesets(&self) -> Result<Vec<crate::rules::Ruleset>> {
-        let provider = suricatax_paths(self.paths);
-        let enabled = suricatax_cli::enabled_rulesets(&provider)?;
-        if enabled.is_empty() {
-            return Ok(vec![]);
-        }
-        let index = SourceManager::new(&provider)
-            .read_local_index()
-            .unwrap_or(None);
-        Ok(enabled
-            .into_iter()
-            .map(|id| {
-                let summary = index
-                    .as_ref()
-                    .and_then(|index| index.sources.get(&id))
-                    .map(|source| source.summary.clone());
-                crate::rules::Ruleset {
-                    id,
-                    summary,
-                    can_enable: false,
-                }
-            })
-            .collect())
-    }
-
-    fn enable_ruleset(&self, id: &str) -> Result<()> {
-        enable_ruleset(self.paths, Some(id))
-    }
-
-    fn disable_ruleset(&self, id: &str) -> Result<()> {
-        disable_ruleset(self.paths, id)
-    }
-
-    fn update_sources(&self) -> Result<()> {
-        update_sources(self.paths)
-    }
-
-    fn update_rules(&self) -> Result<()> {
-        update_rules(self.paths, false, false)
-    }
-}
 
 pub(super) struct EvectlWindowsPaths {
     sources_dir: PathBuf,
@@ -265,7 +204,7 @@ pub(super) fn update_sources(paths: &Paths) -> Result<()> {
 pub(super) fn enable_ruleset(paths: &Paths, name: Option<&str>) -> Result<()> {
     match name {
         Some(name) => with_path_provider(paths, |paths| suricatax_cli::enable_ruleset(paths, name)),
-        None => crate::menu::rules::enable_ruleset(&WindowsRulesBackend { paths }),
+        None => crate::menu::rules::enable_ruleset(&WindowsPlatform { paths }),
     }
 }
 
@@ -274,7 +213,7 @@ pub(super) fn disable_ruleset(paths: &Paths, name: &str) -> Result<()> {
 }
 
 pub(super) fn list_enabled_rulesets(paths: &Paths) -> Result<()> {
-    crate::menu::rules::list_enabled_rulesets(&WindowsRulesBackend { paths })
+    crate::menu::rules::list_enabled_rulesets(&WindowsPlatform { paths })
 }
 
 #[cfg(test)]

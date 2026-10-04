@@ -29,6 +29,8 @@ mod npcap;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod paths;
 #[cfg(windows)]
+mod platform;
+#[cfg(windows)]
 mod process;
 #[cfg(windows)]
 mod rules;

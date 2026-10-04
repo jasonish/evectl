@@ -1,36 +1,31 @@
 // SPDX-FileCopyrightText: (C) 2021 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-//! The top-level Configure menu. Shared submenus are reached through the
-//! platform backend, which also contributes platform-only options.
+//! The top-level Configure menu. Shared submenus run on the platform,
+//! which also contributes platform-only options.
 
+use crate::platform::Platform;
 use crate::prelude::*;
-
 use crate::prompt::Selections;
 use crate::term;
 
-/// A platform-only Configure option, shown after the shared options.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct PlatformOption {
-    pub(crate) id: &'static str,
-    pub(crate) label: String,
-}
-
 pub(crate) trait Backend {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_>;
-    fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_>;
-    fn configure_evebox_server(&mut self, config: &mut Config) -> Result<()>;
-    fn platform_options(&self, config: &Config) -> Vec<PlatformOption>;
-    fn run_platform_option(&mut self, config: &mut Config, id: &str) -> Result<()>;
+    /// The platform behind the shared submenus, brought up to date
+    /// with `config`.
+    fn platform(&mut self, config: &Config) -> &dyn Platform;
+    /// Labels of the platform-only options, shown after the shared ones.
+    fn platform_options(&self, config: &Config) -> Vec<String>;
+    /// Run the option at `index` of `platform_options` for `config`.
+    fn run_platform_option(&mut self, config: &mut Config, index: usize) -> Result<()>;
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Options {
     Suricata,
     EveBoxAgent,
     EveBoxServer,
     Fpc,
-    Platform(&'static str),
+    Platform(usize),
     Return,
 }
 
@@ -41,7 +36,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         match selections.prompt("EveCtl: Configure")? {
             None | Some(Options::Return) => break,
             Some(action) => {
-                crate::prompt::report("Configuration failed", run_action(config, backend, &action))
+                crate::prompt::report("Configuration failed", run_action(config, backend, action))
             }
         }
     }
@@ -90,20 +85,20 @@ fn menu_options(config: &Config, backend: &dyn Backend) -> Selections<Options> {
             config.fpc.enabled
         ),
     );
-    for option in backend.platform_options(config) {
-        selections.push(Options::Platform(option.id), option.label);
+    for (index, label) in backend.platform_options(config).into_iter().enumerate() {
+        selections.push(Options::Platform(index), label);
     }
     selections.push(Options::Return, "Return");
     selections
 }
 
-fn run_action(config: &mut Config, backend: &mut dyn Backend, action: &Options) -> Result<()> {
+fn run_action(config: &mut Config, backend: &mut dyn Backend, action: Options) -> Result<()> {
     match action {
-        Options::Suricata => crate::menu::suricata::menu(config, backend.suricata().as_ref()),
+        Options::Suricata => crate::menu::suricata::menu(config, backend.platform(config)),
         Options::EveBoxAgent => crate::menu::evebox_agent::menu(config),
-        Options::EveBoxServer => backend.configure_evebox_server(config),
-        Options::Fpc => crate::menu::fpc::menu(config, backend.fpc().as_ref()),
-        Options::Platform(id) => backend.run_platform_option(config, id),
+        Options::EveBoxServer => crate::menu::evebox_server::menu(config, backend.platform(config)),
+        Options::Fpc => crate::menu::fpc::menu(config, backend.platform(config)),
+        Options::Platform(index) => backend.run_platform_option(config, index),
         Options::Return => Ok(()),
     }
 }

@@ -3,27 +3,16 @@
 
 //! Interactive menus and the status display.
 
-use super::evebox::{
-    evebox_installed_channel, evebox_installed_version, find_evebox_exe,
-    reset_evebox_admin_password,
-};
-use super::install::{
-    add_shortcuts, install_configured_components, install_with, upgrade_windows_components,
-};
-use super::interfaces::{
-    configured_interface_guid, configured_interface_value, list_interfaces, windows_interfaces,
-};
+use super::evebox::{evebox_installed_channel, evebox_installed_version, find_evebox_exe};
+use super::install::{install_configured_components, install_with};
+use super::interfaces::{configured_interface_guid, configured_interface_value, list_interfaces};
 use super::paths::{Paths, load_evectl_config};
-use super::rules::{WindowsRulesBackend, update_rules};
-use super::runtime::{Role, list_named_processes, managed_process_is_running};
-use super::stack::{
-    WindowsStatus, evebox_server_url, restart_stack, start_stack, stop_stack, windows_status,
-};
+use super::platform::WindowsPlatform;
+use super::runtime::Role;
+use super::stack::{WindowsStatus, evebox_server_url, windows_status};
 use super::uninstall::uninstall_windows_components;
-use super::update::UpdateOutcome;
 use crate::config::EveBoxChannel;
 use crate::prelude::*;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy)]
 enum OtherMenuOption {
@@ -98,87 +87,7 @@ pub(super) fn menu_main(paths: &Paths) -> Result<()> {
 
     offer_install_if_missing(paths, &mut config);
 
-    crate::menu::main::menu(&mut config, &mut WindowsMainMenuBackend { paths })
-}
-
-struct WindowsMainMenuBackend<'a> {
-    paths: &'a Paths,
-}
-
-impl crate::menu::main::Backend for WindowsMainMenuBackend<'_> {
-    fn status(&mut self, config: &crate::config::Config) -> crate::menu::main::Status {
-        let status = match windows_status(self.paths, config) {
-            Ok(status) => status,
-            Err(err) => {
-                error!("Failed to determine Windows service status: {}", err);
-                WindowsStatus::default()
-            }
-        };
-        log_status(status, config);
-        let restart_recommended = super::update::restart_recommended(self.paths.root());
-        crate::menu::main::Status {
-            running: status.any_running(),
-            ready_to_start: status.ready_to_start(),
-            restart_recommended,
-        }
-    }
-
-    /// The release channel is applied by Update, not by a restart.
-    fn acknowledge_saved_changes(
-        &mut self,
-        original: &mut crate::config::Config,
-        current: &crate::config::Config,
-    ) {
-        if current.windows.evebox_channel != original.windows.evebox_channel {
-            info!(
-                "EveBox channel saved as {}. Choose Update to apply it; a restart alone does not change the installed build.",
-                current.windows.evebox_channel
-            );
-            original.windows.evebox_channel = current.windows.evebox_channel;
-        }
-    }
-
-    fn start(&mut self, _config: &crate::config::Config) -> Result<()> {
-        start_stack(self.paths, false, None)
-    }
-
-    fn stop(&mut self, _config: &crate::config::Config) -> Result<()> {
-        stop_stack(self.paths)
-    }
-
-    fn restart(&mut self, _config: &crate::config::Config) -> Result<()> {
-        restart_stack(self.paths)
-    }
-
-    fn install(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        install_with(self.paths, config)
-    }
-
-    fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
-        update_rules(self.paths, false, false)
-    }
-
-    fn rules(&mut self, _config: &crate::config::Config) -> Box<dyn crate::rules::Backend + '_> {
-        Box::new(WindowsRulesBackend { paths: self.paths })
-    }
-
-    fn update(
-        &mut self,
-        _config: &crate::config::Config,
-    ) -> Result<crate::menu::main::UpdateOutcome> {
-        Ok(match upgrade_windows_components(self.paths)? {
-            UpdateOutcome::Completed => crate::menu::main::UpdateOutcome::Completed,
-            UpdateOutcome::RestartEveCtl => crate::menu::main::UpdateOutcome::ExitMenu,
-        })
-    }
-
-    fn configure(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        crate::menu::configure::menu(config, &mut WindowsConfigureBackend { paths: self.paths })
-    }
-
-    fn other(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        other_menu(self.paths, config)
-    }
+    crate::menu::main::menu(&mut config, &mut WindowsPlatform { paths })
 }
 
 /// Mirror the Linux onboarding: on first run walk through the setup
@@ -214,40 +123,10 @@ fn offer_install_if_missing(paths: &Paths, config: &mut crate::config::Config) {
 }
 
 pub(super) fn wizard(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
-    crate::menu::wizard::menu(config, &mut WindowsWizardBackend { paths })
+    crate::menu::wizard::menu(config, &mut WindowsPlatform { paths })
 }
 
-struct WindowsWizardBackend<'a> {
-    paths: &'a Paths,
-}
-
-impl crate::menu::wizard::Backend for WindowsWizardBackend<'_> {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(WindowsSuricataBackend { paths: self.paths })
-    }
-
-    fn evebox_server(&self) -> Box<dyn crate::evebox::configuration::Backend + '_> {
-        Box::new(WindowsEveBoxServerBackend { paths: self.paths })
-    }
-
-    fn platform_questions(&mut self, config: &mut crate::config::Config) -> Result<bool> {
-        let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
-            return Ok(false);
-        };
-        config.windows.evebox_channel = channel;
-        Ok(true)
-    }
-
-    fn install(&mut self, config: &crate::config::Config) -> Result<()> {
-        install_configured_components(self.paths, config)
-    }
-
-    fn update_rules(&mut self, _config: &crate::config::Config) -> Result<()> {
-        update_rules(self.paths, false, false)
-    }
-}
-
-fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
+pub(super) fn prompt_for_evebox_channel(current: EveBoxChannel) -> Option<EveBoxChannel> {
     let mut selections = crate::prompt::Selections::new();
     selections.push(
         EveBoxChannel::Development,
@@ -287,157 +166,7 @@ pub(super) fn config_set_evebox_channel(
     Ok(())
 }
 
-struct WindowsConfigureBackend<'a> {
-    paths: &'a Paths,
-}
-
-const CONFIGURE_EVEBOX_CHANNEL: &str = "evebox-channel";
-const CONFIGURE_SHORTCUTS: &str = "shortcuts";
-
-impl crate::menu::configure::Backend for WindowsConfigureBackend<'_> {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(WindowsSuricataBackend { paths: self.paths })
-    }
-
-    fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_> {
-        Box::new(WindowsFpcBackend { paths: self.paths })
-    }
-
-    fn configure_evebox_server(&mut self, config: &mut crate::config::Config) -> Result<()> {
-        crate::menu::evebox_server::menu(config, &WindowsEveBoxServerBackend { paths: self.paths })
-    }
-
-    fn platform_options(
-        &self,
-        config: &crate::config::Config,
-    ) -> Vec<crate::menu::configure::PlatformOption> {
-        vec![
-            crate::menu::configure::PlatformOption {
-                id: CONFIGURE_EVEBOX_CHANNEL,
-                label: format!("EveBox Release Channel [{}]", config.windows.evebox_channel),
-            },
-            crate::menu::configure::PlatformOption {
-                id: CONFIGURE_SHORTCUTS,
-                label: "Add Desktop Shortcuts".to_string(),
-            },
-        ]
-    }
-
-    fn run_platform_option(&mut self, config: &mut crate::config::Config, id: &str) -> Result<()> {
-        match id {
-            CONFIGURE_EVEBOX_CHANNEL => {
-                if let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) {
-                    config.windows.evebox_channel = channel;
-                }
-            }
-            CONFIGURE_SHORTCUTS => crate::prompt::report_and_pause(
-                "Failed to add desktop shortcuts",
-                add_shortcuts(config),
-            ),
-            _ => bail!("Unknown configuration option: {id}"),
-        }
-        Ok(())
-    }
-}
-
-struct WindowsFpcBackend<'a> {
-    paths: &'a Paths,
-}
-
-impl crate::fpc::Backend for WindowsFpcBackend<'_> {
-    fn spool_dir(&self) -> Result<PathBuf> {
-        Ok(self.paths.suricata_pcap_dir())
-    }
-
-    fn check_remove_spool(&self) -> Result<()> {
-        if !list_named_processes("suricata")?.is_empty() {
-            bail!("Suricata is running; stop services before removing packet captures");
-        }
-        Ok(())
-    }
-
-    fn remove_spool(&self) -> Result<()> {
-        self.check_remove_spool()?;
-        let directory = self.spool_dir()?;
-        if directory.exists() {
-            std::fs::remove_dir_all(&directory)
-                .with_context(|| format!("Cannot remove {}", directory.display()))?;
-        }
-        Ok(())
-    }
-}
-
-struct WindowsSuricataBackend<'a> {
-    paths: &'a Paths,
-}
-
-impl crate::suricata::configuration::Backend for WindowsSuricataBackend<'_> {
-    fn interfaces(&self) -> Result<Vec<crate::suricata::configuration::Interface>> {
-        Ok(windows_interfaces()?
-            .into_iter()
-            .map(|interface| crate::suricata::configuration::Interface {
-                name: interface.name,
-                address: (!interface.ip_address.is_empty()).then_some(interface.ip_address),
-            })
-            .collect())
-    }
-
-    fn eve_outputs(&self) -> &'static [crate::config::EveOutput] {
-        &[crate::config::EveOutput::File]
-    }
-
-    fn filestore_dir(&self) -> Result<PathBuf> {
-        Ok(self.paths.suricata_filestore_dir())
-    }
-
-    fn check_remove_extracted_files(&self) -> Result<()> {
-        if !list_named_processes("suricata")?.is_empty()
-            || managed_process_is_running(self.paths, Role::Housekeeper)?
-        {
-            bail!(
-                "Suricata or housekeeping is running; stop services before removing extracted files"
-            );
-        }
-        Ok(())
-    }
-
-    fn remove_extracted_files(&self) -> Result<()> {
-        self.check_remove_extracted_files()?;
-        let directory = self.filestore_dir()?;
-        if directory.exists() {
-            std::fs::remove_dir_all(&directory)
-                .with_context(|| format!("Cannot remove {}", directory.display()))?;
-        }
-        Ok(())
-    }
-}
-
-struct WindowsEveBoxServerBackend<'a> {
-    paths: &'a Paths,
-}
-
-impl crate::evebox::configuration::Backend for WindowsEveBoxServerBackend<'_> {
-    fn supports_search_engines(&self) -> bool {
-        false
-    }
-
-    fn bind_addresses(&self) -> Result<Vec<crate::evebox::configuration::BindAddress>> {
-        Ok(windows_interfaces()?
-            .into_iter()
-            .filter(|interface| interface.ip_address.parse::<std::net::Ipv4Addr>().is_ok())
-            .map(|interface| crate::evebox::configuration::BindAddress {
-                interface: interface.name,
-                address: interface.ip_address,
-            })
-            .collect())
-    }
-
-    fn reset_password(&self) -> Result<()> {
-        reset_evebox_admin_password(self.paths)
-    }
-}
-
-fn other_menu(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
+pub(super) fn other_menu(paths: &Paths, config: &mut crate::config::Config) -> Result<()> {
     loop {
         crate::term::title("EveCtl: Other Menu Items");
 

@@ -29,7 +29,8 @@ pub(crate) enum UpdateOutcome {
     ExitMenu,
 }
 
-pub(crate) trait Backend {
+/// The main menu's platform, which also serves the Configure menu.
+pub(crate) trait Backend: crate::menu::configure::Backend {
     /// Log the service status lines and report the state.
     fn status(&mut self, config: &Config) -> Status;
     /// Called after a changed configuration was saved. Changes that do
@@ -39,11 +40,10 @@ pub(crate) trait Backend {
     fn start(&mut self, config: &Config) -> Result<()>;
     fn stop(&mut self, config: &Config) -> Result<()>;
     fn restart(&mut self, config: &Config) -> Result<()>;
+    /// Install the components of the enabled services, offered while
+    /// the status is not ready to start.
     fn install(&mut self, config: &mut Config) -> Result<()>;
-    fn update_rules(&mut self, config: &Config) -> Result<()>;
-    fn rules(&mut self, config: &Config) -> Box<dyn crate::rules::Backend + '_>;
     fn update(&mut self, config: &Config) -> Result<UpdateOutcome>;
-    fn configure(&mut self, config: &mut Config) -> Result<()>;
     fn other(&mut self, config: &mut Config) -> Result<()>;
 }
 
@@ -111,15 +111,15 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
             }
             Some(Options::UpdateRules) => crate::prompt::report_and_pause(
                 "Failed to update rules",
-                backend.update_rules(config),
+                backend.platform(config).update_rules(),
             ),
-            Some(Options::ManageRules) => crate::menu::rules::menu(backend.rules(config).as_ref())?,
+            Some(Options::ManageRules) => crate::menu::rules::menu(backend.platform(config))?,
             Some(Options::Update) => match backend.update(config) {
                 Ok(UpdateOutcome::ExitMenu) => break,
                 Ok(UpdateOutcome::Completed) => crate::prompt::enter(),
                 Err(err) => crate::prompt::report_and_pause("Update failed", Err(err)),
             },
-            Some(Options::Configure) => backend.configure(config)?,
+            Some(Options::Configure) => crate::menu::configure::menu(config, backend)?,
             Some(Options::Other) => backend.other(config)?,
         }
     }

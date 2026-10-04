@@ -340,7 +340,7 @@ pub(crate) fn run(
                 0
             }
             "suricata-update" => {
-                menu::rules::menu(&container_platform::Runtime(&context))?;
+                menu::rules::menu(&container_platform::ContainerBackend::new(&context))?;
                 0
             }
             "configure.containers" => {

@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use crate::config::EveOutput;
 use crate::evebox::configuration::BindAddress;
-use crate::menu::configure::PlatformOption;
 use crate::menu::main::{Status, UpdateOutcome};
+use crate::platform::Platform;
 use crate::prelude::*;
 use crate::rules::{OverrideFile, Ruleset};
 use crate::suricata::configuration::Interface;
@@ -30,7 +30,8 @@ pub(crate) struct FakePlatform {
     pub(crate) available: Vec<Ruleset>,
     pub(crate) enabled: Vec<Ruleset>,
     pub(crate) overrides: bool,
-    pub(crate) options: Vec<PlatformOption>,
+    /// Platform-only Configure options as (id, label).
+    pub(crate) options: Vec<(&'static str, &'static str)>,
     pub(crate) acknowledge_channel: bool,
     /// The recorded operation that fails, e.g. "update" or "remove".
     pub(crate) fail: Option<&'static str>,
@@ -85,6 +86,17 @@ impl FakePlatform {
 
     pub(crate) fn as_suricata(&self) -> &dyn crate::suricata::configuration::Backend {
         self
+    }
+
+    /// The ids of the platform options offered for `config`: the
+    /// configured ones, then "conditional" while packet capture is
+    /// enabled.
+    fn option_ids(&self, config: &Config) -> Vec<&'static str> {
+        let mut ids: Vec<&'static str> = self.options.iter().map(|(id, _)| *id).collect();
+        if config.fpc.enabled {
+            ids.push("conditional");
+        }
+        ids
     }
 
     fn check_remove(&self) -> Result<()> {
@@ -173,32 +185,25 @@ impl crate::rules::Backend for FakePlatform {
     }
 }
 
-/// Sub-backends are snapshots; the Configure tests do not exercise them.
 impl crate::menu::configure::Backend for FakePlatform {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_> {
-        Box::new(self.clone())
+    fn platform(&mut self, _config: &Config) -> &dyn Platform {
+        self
     }
-    fn fpc(&self) -> Box<dyn crate::fpc::Backend + '_> {
-        Box::new(self.clone())
-    }
-    fn configure_evebox_server(&mut self, config: &mut Config) -> Result<()> {
-        self.calls.borrow_mut().push("server".to_string());
-        config.evebox_server.enabled = true;
-        Ok(())
-    }
-    /// A "conditional" option appears while packet capture is enabled.
-    fn platform_options(&self, config: &Config) -> Vec<PlatformOption> {
-        let mut options = self.options.clone();
-        if config.fpc.enabled {
-            options.push(PlatformOption {
-                id: "conditional",
-                label: "Conditional".to_string(),
-            });
-        }
-        options
+    /// A "Conditional" option appears while packet capture is enabled.
+    fn platform_options(&self, config: &Config) -> Vec<String> {
+        self.option_ids(config)
+            .into_iter()
+            .map(
+                |id| match self.options.iter().find(|(option, _)| *option == id) {
+                    Some((_, label)) => label.to_string(),
+                    None => "Conditional".to_string(),
+                },
+            )
+            .collect()
     }
     /// Only the "ok" option succeeds, selecting the eth1 interface.
-    fn run_platform_option(&mut self, config: &mut Config, id: &str) -> Result<()> {
+    fn run_platform_option(&mut self, config: &mut Config, index: usize) -> Result<()> {
+        let id = self.option_ids(config)[index];
         self.calls.borrow_mut().push(format!("platform:{id}"));
         match id {
             "ok" => {
@@ -231,16 +236,7 @@ impl crate::menu::main::Backend for FakePlatform {
     fn install(&mut self, _config: &mut Config) -> Result<()> {
         unreachable!()
     }
-    fn update_rules(&mut self, _config: &Config) -> Result<()> {
-        unreachable!()
-    }
-    fn rules(&mut self, _config: &Config) -> Box<dyn crate::rules::Backend + '_> {
-        Box::new(self.clone())
-    }
     fn update(&mut self, _config: &Config) -> Result<UpdateOutcome> {
-        unreachable!()
-    }
-    fn configure(&mut self, _config: &mut Config) -> Result<()> {
         unreachable!()
     }
     fn other(&mut self, _config: &mut Config) -> Result<()> {

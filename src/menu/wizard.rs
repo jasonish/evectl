@@ -6,11 +6,12 @@
 
 use colored::Colorize;
 
+use crate::platform::Platform;
 use crate::prelude::*;
 
 pub(crate) trait Backend {
-    fn suricata(&self) -> Box<dyn crate::suricata::configuration::Backend + '_>;
-    fn evebox_server(&self) -> Box<dyn crate::evebox::configuration::Backend + '_>;
+    /// The platform, brought up to date with `config`.
+    fn platform(&mut self, config: &Config) -> &dyn Platform;
     /// Platform questions asked after the shared ones. Returns false if
     /// the user backed out.
     fn platform_questions(&mut self, _config: &mut Config) -> Result<bool> {
@@ -18,6 +19,7 @@ pub(crate) trait Backend {
     }
     /// Download or install the components for the enabled services.
     fn install(&mut self, config: &Config) -> Result<()>;
+    /// The first rule update, before Suricata has ever started.
     fn update_rules(&mut self, config: &Config) -> Result<()>;
 }
 
@@ -44,7 +46,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
     );
     selections.push(InstallType::Help, "Help:       Show help");
 
-    let search_engines = backend.evebox_server().supports_search_engines();
+    let search_engines = backend.platform(config).supports_search_engines();
     let install_type = loop {
         match selections.prompt("What type of installation would you like to initialize?")? {
             // Treat ESC like Custom: manual configuration.
@@ -62,7 +64,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
     if has_suricata {
         let interface = super::suricata::select_interface_from(
             "Suricata: What network interface should Suricata listen on?",
-            backend.suricata().interfaces()?,
+            backend.platform(config).interfaces()?,
         )?;
         config.suricata.enabled = true;
         config.suricata.interfaces = vec![interface];
@@ -146,7 +148,7 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         crate::prompt::enter_with_prefix(
             "EveBox Server: When prompted, enter the password for the EveBox \"admin\" user.",
         );
-        if let Err(err) = backend.evebox_server().reset_password() {
+        if let Err(err) = backend.platform(config).reset_password() {
             error!("Failed to set the EveBox admin password: {err:#}");
             info!("Reset it later from Configure > Configure EveBox Server");
             crate::prompt::enter();

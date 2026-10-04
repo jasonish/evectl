@@ -33,6 +33,7 @@ mod http;
 mod logs;
 #[cfg_attr(windows, allow(dead_code))]
 mod menu;
+mod platform;
 mod prelude;
 mod process_output;
 mod prompt;
