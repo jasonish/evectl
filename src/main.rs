@@ -6,7 +6,7 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{self, Child, Stdio},
+    process::{self, Child},
     sync::mpsc::Sender,
     thread,
 };
@@ -37,6 +37,7 @@ mod prompt;
 mod ruleindex;
 mod rules;
 mod selfupdate;
+mod services;
 mod suricata;
 mod system;
 mod systemd;
@@ -403,17 +404,17 @@ fn main() -> Result<()> {
 
     if let Some(command) = args.command {
         let code = match command {
-            Commands::Start { debug: detach } => command_start(&context, detach),
+            Commands::Start { debug: detach } => services::command_start(&context, detach),
             Commands::Stop => {
-                if stop_all(&context) {
+                if services::stop_all(&context) {
                     0
                 } else {
                     1
                 }
             }
             Commands::Restart => {
-                stop_all(&context);
-                command_start(&context, false)
+                services::stop_all(&context);
+                services::command_start(&context, false)
             }
             Commands::Status => {
                 log_status(&context);
@@ -439,7 +440,7 @@ fn main() -> Result<()> {
                 );
                 if return_to_menu {
                     prompt::enter();
-                    menu_main(context, &update_continuation_args)?;
+                    services::menu_main(context, &update_continuation_args)?;
                     0
                 } else if ok {
                     0
@@ -511,7 +512,7 @@ fn main() -> Result<()> {
         };
         std::process::exit(code);
     } else {
-        menu_main(context, &update_continuation_args)?;
+        services::menu_main(context, &update_continuation_args)?;
     }
 
     Ok(())
@@ -560,319 +561,6 @@ fn process_output_handler(child: &mut Child, label: &'static str, tx: Sender<boo
         let tx = tx.clone();
         thread::spawn(move || process_line_reader(stderr, label, tx));
     }
-}
-
-/// Run when "start" is run from the command line.
-fn command_start(context: &Context, debug: bool) -> i32 {
-    if debug {
-        if let Err(err) = start_foreground(context) {
-            error!("Failed to run foreground services: {err:#}");
-            return 1;
-        }
-    } else if !start(context) {
-        return 1;
-    }
-    0
-}
-
-/// Start EveCtl in the foreground.
-///
-/// Typically not done from the menus but instead the command line.
-fn start_foreground(context: &Context) -> Result<()> {
-    info!("Starting services in the foreground");
-    context.config.validate_start_configuration()?;
-
-    let _ = context
-        .manager
-        .stop(&crate::suricata::container_name(context), None);
-    context
-        .manager
-        .quiet_rm(&crate::suricata::container_name(context));
-
-    let _ = context
-        .manager
-        .stop(&crate::evebox::server::container_name(context), None);
-    context
-        .manager
-        .quiet_rm(&crate::evebox::server::container_name(context));
-
-    let _ = context
-        .manager
-        .stop(&crate::evebox::agent::container_name(context), None);
-    context
-        .manager
-        .quiet_rm(&crate::evebox::agent::container_name(context));
-
-    elastic::stop_elasticsearch(context);
-
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    {
-        let tx = tx.clone();
-        ctrlc::set_handler(move || {
-            info!("Received shutdown signal, stopping containers");
-            let _ = tx.send(true);
-        })?;
-    }
-    let _housekeeper = housekeeper::ForegroundGuard(context);
-    housekeeper::reconcile(context)?;
-
-    let mut children = vec![];
-
-    if context.config.elasticsearch_enabled() {
-        let engine = context.config.elasticsearch.engine.name();
-        if let Err(err) = elastic::create_data_dir(context) {
-            error!("Failed to create data directory for {}: {}", engine, err);
-            return Err(err);
-        }
-        let mut command = elastic::build_docker_command(context, false);
-        debug!("Starting {}: {:?}", engine, &command);
-        let mut child = match command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(err) => {
-                error!("Failed to spawn {} process: {}", engine, err);
-                return Err(err.into());
-            }
-        };
-        process_output_handler(&mut child, engine, tx.clone());
-        children.push((engine, child));
-    }
-
-    // Sleep for a moment to give the search engine container a chance
-    // to be created.
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
-    if context.config.evebox_server.enabled {
-        let mut command = evebox::server::build_command(context, false)?;
-        let mut child = match command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(err) => {
-                error!("Failed to spawn EveBox-Server process: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        process_output_handler(&mut child, "evebox-server", tx.clone());
-        children.push(("evebox-server", child));
-    } else {
-        info!("EveBox-Server not enabled");
-    }
-
-    if context.config.evebox_agent.enabled {
-        let mut command = evebox::agent::build_command(context, false)?;
-        let mut child = match command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(err) => {
-                error!("Failed to spawn EveBox-Agent process: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        process_output_handler(&mut child, "evebox-agent", tx.clone());
-        children.push(("evebox-agent", child));
-    } else {
-        info!("EveBox-Agent not enabled");
-    }
-
-    if context.config.suricata.enabled {
-        suricata::mkdirs(context)?;
-        suricata::remove_engine_log(context);
-        let mut command = match suricata::build_command(context, false) {
-            Ok(command) => command,
-            Err(err) => {
-                error!("Invalid Suricata configuration: {}", err);
-                return Err(err);
-            }
-        };
-
-        info!("Starting Suricata: {:?}", &command);
-
-        let mut child = match command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(err) => {
-                error!("Failed to spawn Suricata process: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        process_output_handler(&mut child, "suricata", tx.clone());
-
-        children.push(("suricata", child));
-    } else {
-        info!("Suricata not enabled");
-    }
-
-    if context.config.suricata.enabled
-        && let Some(script) = suricata::eve_prune_script_for(context)
-    {
-        let now = std::time::Instant::now();
-        loop {
-            if !context
-                .manager
-                .is_running(&crate::suricata::container_name(context))
-            {
-                if now.elapsed().as_secs() > 3 {
-                    error!(
-                        "Timed out waiting for the Suricata container to start running, not starting EVE spool pruning"
-                    );
-                    break;
-                } else {
-                    continue;
-                }
-            }
-
-            if let Err(err) = suricata::start_eve_prune(context, &script) {
-                error!("Failed to start EVE spool pruning: {err}");
-            }
-            break;
-        }
-    }
-
-    if housekeeper::enabled(context)
-        && !verify_containers_running(
-            context,
-            &[("Housekeeper", housekeeper::container_name(context))],
-        )
-    {
-        stop_all(context);
-        bail!("Housekeeper failed during foreground startup");
-    }
-
-    if children.is_empty() {
-        info!("No processes started. Exiting");
-        return Ok(());
-    }
-
-    let _ = rx.recv();
-    // Stop housekeeping before waiting on foreground children, including
-    // agent-only sessions. Waiting first could leave cleanup running forever.
-    let stopped = stop_all(context);
-
-    for (process, mut child) in children {
-        match child.wait() {
-            Ok(status) => {
-                if !status.success() {
-                    error!("Process {process} exited with error code {:?}", status);
-                }
-            }
-            Err(err) => {
-                error!(
-                    "Failed to get exist status for process {process}: {:?}",
-                    err
-                );
-            }
-        }
-    }
-
-    if !stopped {
-        bail!("Failed to stop foreground services");
-    }
-    Ok(())
-}
-
-fn stop_container(context: &Context, name: &str, signal: Option<&str>) -> bool {
-    let mut ok = true;
-    if context.manager.is_active(name)
-        && let Err(err) = context.manager.stop(name, signal)
-    {
-        error!("Failed to stop container {name}: {err}");
-        ok = false;
-    }
-    context.manager.quiet_rm(name);
-
-    ok
-}
-
-fn stop_all(context: &Context) -> bool {
-    let mut ok = true;
-
-    if let Err(err) = housekeeper::remove(context) {
-        error!("Failed to stop housekeeping: {err}");
-        ok = false;
-    }
-
-    if context
-        .manager
-        .container_exists(&crate::suricata::container_name(context))
-    {
-        info!("Stopping Suricata");
-        if !stop_container(context, &crate::suricata::container_name(context), None) {
-            ok = false;
-        }
-    } else {
-        debug!(
-            "Container {} is not running",
-            crate::suricata::container_name(context)
-        );
-    }
-
-    if context
-        .manager
-        .container_exists(&crate::evebox::server::container_name(context))
-    {
-        info!("Stopping EveBox-Server");
-        if !stop_container(
-            context,
-            &crate::evebox::server::container_name(context),
-            Some("SIGINT"),
-        ) {
-            ok = false;
-        }
-    } else {
-        debug!(
-            "Container {} is not running",
-            &crate::evebox::server::container_name(context)
-        );
-    }
-
-    // Agent.
-    if context
-        .manager
-        .container_exists(&crate::evebox::agent::container_name(context))
-    {
-        info!("Stopping EveBox-Agent");
-        if !stop_container(
-            context,
-            &crate::evebox::agent::container_name(context),
-            None,
-        ) {
-            ok = false;
-        }
-    } else {
-        debug!(
-            "Container {} is not running",
-            crate::evebox::agent::container_name(context)
-        );
-    }
-
-    // Stop both search engine container names even when the service is
-    // disabled, in case it was disabled or changed since the last start.
-    let existing_engines = elastic::existing_engines(context);
-    if existing_engines.is_empty() {
-        debug!("No search engine containers are running");
-    } else {
-        for engine in existing_engines {
-            info!("Stopping {}", engine.name());
-        }
-    }
-    elastic::stop_elasticsearch(context);
-
-    ok
 }
 
 fn guess_evebox_url(context: &Context) -> String {
@@ -1076,232 +764,6 @@ fn log_status(context: &Context) {
     }
 }
 
-/// Main menu backed by the container runtime. The runtime snapshot's
-/// configuration is synchronized from the menu's before each action.
-struct MainMenuBackend<'a> {
-    runtime: Context,
-    update_continuation_args: &'a UpdateContinuationArgs,
-}
-
-impl MainMenuBackend<'_> {
-    fn context(&mut self, config: &Config) -> &Context {
-        if self.runtime.config != *config {
-            self.runtime.config = config.clone();
-        }
-        &self.runtime
-    }
-}
-
-impl menu::main::Backend for MainMenuBackend<'_> {
-    fn status(&mut self, config: &Config) -> menu::main::Status {
-        let context = self.context(config);
-        log_status(context);
-        let running = context
-            .manager
-            .is_running(&crate::suricata::container_name(context))
-            || context
-                .manager
-                .is_running(&crate::evebox::server::container_name(context));
-        menu::main::Status {
-            running,
-            ready_to_start: true,
-            restart_recommended: false,
-        }
-    }
-
-    fn start(&mut self, config: &Config) -> Result<()> {
-        if start(self.context(config)) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to start")
-        }
-    }
-
-    fn stop(&mut self, config: &Config) -> Result<()> {
-        if stop_all(self.context(config)) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to stop")
-        }
-    }
-
-    fn restart(&mut self, config: &Config) -> Result<()> {
-        let context = self.context(config);
-        stop_all(context);
-        if start(context) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to start")
-        }
-    }
-
-    fn install(&mut self, _config: &mut Config) -> Result<()> {
-        bail!("Containers are installed on start")
-    }
-
-    fn update_rules(&mut self, config: &Config) -> Result<()> {
-        rules::update_rules(self.context(config), &[])
-    }
-
-    fn rules(&mut self, config: &Config) -> Box<dyn rules::Backend + '_> {
-        Box::new(rules::ContainerBackend(self.context(config)))
-    }
-
-    fn update(&mut self, config: &Config) -> Result<menu::main::UpdateOutcome> {
-        // A self-update replaces the process and never returns.
-        let args = self.update_continuation_args;
-        update(self.context(config), args, false, true);
-        Ok(menu::main::UpdateOutcome::Completed)
-    }
-
-    fn configure(&mut self, config: &mut Config) -> Result<()> {
-        self.runtime.config = config.clone();
-        let result = menu::configure::main(&mut self.runtime);
-        *config = self.runtime.config.clone();
-        result
-    }
-
-    fn other(&mut self, config: &mut Config) -> Result<()> {
-        menu::other::menu(self.context(config));
-        Ok(())
-    }
-}
-
-fn menu_main(
-    mut context: Context,
-    update_continuation_args: &UpdateContinuationArgs,
-) -> Result<()> {
-    let mut backend = MainMenuBackend {
-        runtime: context.clone(),
-        update_continuation_args,
-    };
-    menu::main::menu(&mut context.config, &mut backend)
-}
-
-fn restart(context: &Context) {
-    stop_all(context);
-    if !start(context) {
-        prompt::enter();
-    }
-}
-
-/// Returns true if everything started successfully, otherwise false
-/// is return.
-fn start(context: &Context) -> bool {
-    if let Err(err) = context.config.validate_start_configuration() {
-        error!("Invalid configuration: {err}");
-        return false;
-    }
-
-    let mut ok = true;
-
-    if context.config.elasticsearch_enabled() {
-        let engine = context.config.elasticsearch.engine.name();
-        info!("Starting {}", engine);
-        if let Err(err) = elastic::start_elasticsearch(context) {
-            error!("Failed to start {}: {}", engine, err);
-            ok = false;
-        }
-    }
-
-    if context.config.evebox_server.enabled {
-        info!("Starting EveBox-Server");
-        if let Err(err) = evebox::server::start(context) {
-            error!("Failed to start EveBox-Server: {}", err);
-            ok = false;
-        }
-    }
-
-    if context.config.evebox_agent.enabled {
-        info!("Starting EveBox-Agent");
-        if let Err(err) = evebox::agent::start(context) {
-            error!("Failed to start EveBox-Agent: {}", err);
-            ok = false;
-        }
-    }
-
-    if context.config.suricata.enabled {
-        info!("Starting Suricata");
-        if let Err(err) = suricata::start_detached(context) {
-            error!("Failed to start Suricata: {}", err);
-            ok = false;
-        }
-    }
-
-    // Reconcile even if Suricata was already running or cleanup was disabled.
-    if let Err(err) = housekeeper::reconcile(context) {
-        error!("Failed to reconcile housekeeper: {err:#}");
-        ok = false;
-    }
-
-    let containers = enabled_containers(context);
-    if !containers.is_empty() {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        if !verify_containers_running(context, &containers) {
-            ok = false;
-        }
-    }
-
-    ok
-}
-
-fn enabled_containers(context: &Context) -> Vec<(&'static str, String)> {
-    let mut containers = Vec::new();
-    if context.config.elasticsearch_enabled() {
-        containers.push((
-            context.config.elasticsearch.engine.name(),
-            elastic::container_name(context),
-        ));
-    }
-    if context.config.evebox_server.enabled {
-        containers.push((
-            "EveBox-Server",
-            crate::evebox::server::container_name(context),
-        ));
-    }
-    if context.config.evebox_agent.enabled {
-        containers.push((
-            "EveBox-Agent",
-            crate::evebox::agent::container_name(context),
-        ));
-    }
-    if context.config.suricata.enabled {
-        containers.push(("Suricata", crate::suricata::container_name(context)));
-    }
-    if housekeeper::enabled(context) {
-        containers.push(("Housekeeper", housekeeper::container_name(context)));
-    }
-    containers
-}
-
-fn verify_containers_running(context: &Context, containers: &[(&str, String)]) -> bool {
-    let mut ok = true;
-    for (label, name) in containers {
-        match context.manager.state(name) {
-            Ok(state) if state.running && !state.restarting => {
-                debug!("{label} container {name} remained running after startup");
-            }
-            Ok(state) => {
-                let detail = if state.error.is_empty() {
-                    String::new()
-                } else {
-                    format!("; error: {}", state.error)
-                };
-                error!(
-                    "{label} container {name} is {}; exit code {}{detail}",
-                    state.status, state.exit_code
-                );
-                ok = false;
-            }
-            Err(err) => {
-                error!("Failed to inspect {label} container {name}: {err}");
-                ok = false;
-            }
-        }
-    }
-    ok
-}
-
 /// Format a time in the local timezone with a short description of
 /// how long ago it was, for example `2026-09-16 00:17 (3 hours ago)`.
 pub(crate) fn format_time_with_age(
@@ -1371,7 +833,7 @@ fn prompt_restart_for_updated_suricata(context: &Context, running: &Version, ima
         .with_default(true)
         .prompt_skippable()
     {
-        restart(context);
+        services::restart(context);
     }
 }
 
@@ -1525,8 +987,6 @@ fn print(context: &Context, what: String) -> Result<()> {
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
-    use crate::container::{RESTART_POLICY_ARG, command_args};
-    use crate::context::testing::docker_context;
     use clap::CommandFactory;
 
     #[test]
@@ -1545,79 +1005,6 @@ mod tests {
         ends_with(now - Duration::from_secs(2 * 86400), "(2 days ago)");
         // A file time in the future should not panic.
         ends_with(now + Duration::from_secs(60), "(just now)");
-    }
-
-    #[test]
-    fn detached_service_commands_use_restart_policies() {
-        let mut server_config = Config::default();
-        server_config.evebox_server.enabled = true;
-        let (_server_root, server_context) = docker_context(server_config);
-        let detached = command_args(&evebox::server::build_command(&server_context, true).unwrap());
-        assert!(detached.contains(&RESTART_POLICY_ARG.to_string()));
-        let foreground =
-            command_args(&evebox::server::build_command(&server_context, false).unwrap());
-        assert!(!foreground.contains(&RESTART_POLICY_ARG.to_string()));
-
-        let mut agent_config = Config::default();
-        agent_config.evebox_agent.enabled = true;
-        agent_config.evebox_agent.server = "https://evebox.example".to_string();
-        let (_agent_root, agent_context) = docker_context(agent_config);
-        let agent = command_args(&evebox::agent::build_command(&agent_context, true).unwrap());
-        assert!(agent.contains(&RESTART_POLICY_ARG.to_string()));
-
-        let mut elastic_config = Config::default();
-        elastic_config.evebox_server.enabled = true;
-        elastic_config.elasticsearch.enabled = true;
-        let (_elastic_root, elastic_context) = docker_context(elastic_config);
-        let detached = command_args(&elastic::build_docker_command(&elastic_context, true));
-        assert!(detached.contains(&RESTART_POLICY_ARG.to_string()));
-        assert!(!detached.contains(&"--rm".to_string()));
-        let foreground = command_args(&elastic::build_docker_command(&elastic_context, false));
-        assert!(!foreground.contains(&RESTART_POLICY_ARG.to_string()));
-        assert!(foreground.contains(&"--rm".to_string()));
-    }
-
-    #[test]
-    fn enabled_containers_matches_configuration() {
-        let mut config = Config::default();
-        config.suricata.enabled = true;
-        config.evebox_server.enabled = true;
-        config.elasticsearch.enabled = true;
-        let (_root, context) = docker_context(config);
-
-        let containers = enabled_containers(&context);
-        assert_eq!(containers.len(), 3);
-        assert!(containers.iter().any(|(label, _)| *label == "Suricata"));
-        assert!(
-            containers
-                .iter()
-                .any(|(label, _)| *label == "EveBox-Server")
-        );
-        assert!(
-            containers
-                .iter()
-                .any(|(label, _)| *label == "Elasticsearch")
-        );
-    }
-
-    #[test]
-    fn enabled_containers_includes_housekeeper_only_when_required() {
-        let (_root, mut context) = docker_context(Config::default());
-        for suricata in [false, true] {
-            for extraction in [false, true] {
-                for retention in [0, 7, 19] {
-                    context.config.suricata.enabled = suricata;
-                    context.config.suricata.file_extraction.enabled = extraction;
-                    context.config.suricata.file_extraction.max_age_days = Some(retention);
-                    let names = enabled_containers(&context);
-                    assert_eq!(
-                        names.iter().any(|(label, name)| *label == "Housekeeper"
-                            && *name == housekeeper::container_name(&context)),
-                        suricata && extraction && retention > 0
-                    );
-                }
-            }
-        }
     }
 
     #[test]

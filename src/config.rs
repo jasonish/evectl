@@ -334,6 +334,9 @@ pub(crate) enum SearchEngine {
 }
 
 impl SearchEngine {
+    pub(crate) const ALL: [SearchEngine; 2] =
+        [SearchEngine::Elasticsearch, SearchEngine::OpenSearch];
+
     pub(crate) fn name(&self) -> &'static str {
         match self {
             SearchEngine::Elasticsearch => "Elasticsearch",

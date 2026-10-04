@@ -11,6 +11,7 @@ use clap::Parser;
 use regex::Regex;
 
 use crate::context::Context;
+use crate::services::Service;
 
 #[derive(Parser, Debug)]
 pub(crate) struct LogArgs {
@@ -19,13 +20,10 @@ pub(crate) struct LogArgs {
 }
 
 pub(crate) fn logs(ctx: &Context, args: LogArgs) {
-    let containers = [
-        crate::suricata::container_name(ctx),
-        crate::housekeeper::container_name(ctx),
-        crate::evebox::server::container_name(ctx),
-        crate::evebox::agent::container_name(ctx),
-        crate::elastic::container_name(ctx),
-    ];
+    let containers: Vec<String> = Service::ALL
+        .iter()
+        .map(|service| service.container_name(ctx))
+        .collect();
     let max_container_name_len = containers.iter().map(|s| s.len()).max().unwrap_or(0);
     let mut handles = vec![];
 

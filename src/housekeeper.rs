@@ -25,8 +25,11 @@ pub(crate) fn legacy_container_name(context: &Context) -> String {
 }
 
 pub(crate) fn enabled(context: &Context) -> bool {
-    context.config.uses_file_extraction()
-        && context.config.suricata.file_extraction.max_age_days() > 0
+    enabled_for(&context.config)
+}
+
+pub(crate) fn enabled_for(config: &Config) -> bool {
+    config.uses_file_extraction() && config.suricata.file_extraction.max_age_days() > 0
 }
 
 fn configuration(context: &Context) -> String {

@@ -14,9 +14,9 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use crate::config::SearchEngine;
 use crate::container::{CommandExt, Container};
 use crate::prelude::*;
+use crate::services::Service;
 use crate::{elastic, systemd};
 
 /// Returns Ok(false) if the uninstall was canceled at a prompt.
@@ -341,16 +341,10 @@ fn existing_containers(context: &Context) -> Result<Vec<String>> {
     // Per-container inspect failures cannot distinguish absence from daemon,
     // socket, or permission errors.
     let existing = context.manager.container_names()?;
-    let mut names = vec![
-        crate::housekeeper::legacy_container_name(context),
-        crate::housekeeper::container_name(context),
-        crate::suricata::container_name(context),
-        crate::evebox::server::container_name(context),
-        crate::evebox::agent::container_name(context),
-    ];
-    for engine in [SearchEngine::Elasticsearch, SearchEngine::OpenSearch] {
-        names.push(elastic::container_name_for(context, engine));
-    }
+    let mut names: Vec<String> = Service::STOP_ORDER
+        .iter()
+        .flat_map(|service| service.container_names(context))
+        .collect();
     names.retain(|name| existing.contains(name));
     Ok(names)
 }
