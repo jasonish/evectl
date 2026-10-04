@@ -11,6 +11,9 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::config::FileExtractionConfig;
 use crate::prelude::*;
 
+// Only used by the Windows housekeeper loop; this module also builds on
+// Linux for its tests.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(super) const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(240);
 
