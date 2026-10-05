@@ -17,8 +17,8 @@ use std::process::Command;
 use std::time::Duration;
 
 /// The bundled Suricata release and its Windows package revision.
-pub(super) const SURICATA_VERSION: &str = "8.0.6";
-const SURICATA_PACKAGE_VERSION: &str = "8.0.6-1";
+pub(super) const SURICATA_VERSION: &str = "8.0.7";
+const SURICATA_PACKAGE_VERSION: &str = "8.0.7-1";
 const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
     r"C:\Program Files\Suricata\suricata.exe",
     r"C:\Program Files (x86)\Suricata\suricata.exe",

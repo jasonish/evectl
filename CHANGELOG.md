@@ -81,6 +81,7 @@
 
 ### Changed
 
+- Windows installations now use Suricata 8.0.7
 - Windows `evectl update` refreshes enabled EveBox installations from the
   selected channel even when the version number is unchanged. It records
   the installed channel and build revision, and stages and validates the

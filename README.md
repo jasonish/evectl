@@ -207,7 +207,7 @@ Disabling extraction leaves existing files in place and stops cleanup and
 EveBox retrieval after restarting services. The Suricata menu offers to remove
 leftover extracted files once services are stopped.
 
-**Windows Suricata caveat:** the bundled Suricata 8.0.6 build was observed
+**Windows Suricata caveat:** the Suricata 8.0.6 Windows build was observed
 converting LF bytes to CRLF in extracted files. Filestore names and EVE SHA256
 values still identify the original network content, so the downloaded file's
 hash may differ. EveCtl does not rewrite extracted content to work around this
