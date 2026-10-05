@@ -379,7 +379,7 @@ impl menu::main::Backend for ContainerBackend<'_> {
             // Containers are pulled on start, so there is nothing to
             // install and `install` is never offered.
             ready_to_start: true,
-            restart_recommended: false,
+            restart_recommended: crate::restart_notice::pending(&context.root),
         }
     }
 
@@ -400,13 +400,7 @@ impl menu::main::Backend for ContainerBackend<'_> {
     }
 
     fn restart(&mut self, config: &Config) -> Result<()> {
-        let context = self.sync(config);
-        services::stop_all(context);
-        if services::start(context) {
-            Ok(())
-        } else {
-            bail!("One or more services failed to start")
-        }
+        services::restart(self.sync(config))
     }
 
     fn install(&mut self, _config: &mut Config) -> Result<()> {
@@ -418,7 +412,9 @@ impl menu::main::Backend for ContainerBackend<'_> {
             .update_continuation_args
             .context("Updates are only run from the main menu")?;
         // A self-update replaces the process and never returns.
-        crate::update::update(self.sync(config), args, false, true);
+        if !crate::update::update(self.sync(config), args, false, true, false) {
+            bail!("Update or service restart failed");
+        }
         Ok(UpdateOutcome::Completed)
     }
 

@@ -37,6 +37,8 @@ def main():
     elif args[:4] == ["image", "inspect", "--format", "{{.Id}}"]:
         assert args[4:] == ["fixture:testing"], args
         print((root / "image-id").read_text())
+    elif args[0] == "pull":
+        assert args[1:] == ["fixture:testing"], args
     elif args[0] == "inspect":
         if args[1] == "fixture:testing":
             print(json.dumps([{"Id": (root / "image-id").read_text()}]))
@@ -88,6 +90,8 @@ def main():
                         return 2
                     time.sleep(0.02)
                 (root / (name + ".reaped")).touch()
+    elif args[0] == "exec" and args[2:] == ["suricata", "-V"]:
+        print("Suricata version " + os.environ.get("EVECTL_FAKE_RUNNING_VERSION", "8.0.6"))
     elif args[0] == "exec" and args[1] == "-d":
         pass  # Record the EVE spool backstop, but do not execute it.
     else:

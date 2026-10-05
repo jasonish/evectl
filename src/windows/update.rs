@@ -11,24 +11,13 @@ use tracing::{error, info, warn};
 
 use crate::selfupdate::{self, SelfUpdate};
 
-pub(super) const RESTART_MARKER: &str = ".evectl-restart-recommended";
+#[cfg(test)]
+use crate::restart_notice::{RESTART_MARKER, pending as restart_recommended};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum UpdateOutcome {
     Completed,
     RestartEveCtl,
-}
-
-pub(super) fn restart_recommended(data_dir: &Path) -> bool {
-    data_dir.join(RESTART_MARKER).exists()
-}
-
-pub(super) fn clear_restart_recommendation(data_dir: &Path) -> Result<()> {
-    match std::fs::remove_file(data_dir.join(RESTART_MARKER)) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
 }
 
 pub(super) fn run(
@@ -40,9 +29,7 @@ pub(super) fn run(
         Ok(SelfUpdate::Updated(current_exe)) => {
             // Write the cookie before launching the helper. Keep it until a
             // full stack restart succeeds, not merely until the next launch.
-            if let Err(err) = std::fs::create_dir_all(data_dir)
-                .and_then(|_| std::fs::write(data_dir.join(RESTART_MARKER), b""))
-            {
+            if let Err(err) = crate::restart_notice::recommend(data_dir) {
                 warn!("Failed to save the restart recommendation: {err}");
             }
             if let Err(err) = selfupdate::schedule_staged_update(&current_exe) {
@@ -108,9 +95,9 @@ mod tests {
         }
         assert_eq!(std::fs::read(&target).unwrap(), b"new executable");
         assert!(restart_recommended(&data_dir));
-        clear_restart_recommendation(&data_dir).unwrap();
+        crate::restart_notice::complete_restart(&data_dir, || Ok(())).unwrap();
         assert!(!restart_recommended(&data_dir));
-        clear_restart_recommendation(&data_dir).unwrap();
+        crate::restart_notice::complete_restart(&data_dir, || Ok(())).unwrap();
     }
 
     #[test]

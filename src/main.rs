@@ -34,6 +34,7 @@ mod platform;
 mod prelude;
 mod process_output;
 mod prompt;
+mod restart_notice;
 #[cfg_attr(windows, allow(dead_code))]
 mod ruleindex;
 #[cfg_attr(windows, allow(dead_code))]

@@ -81,6 +81,9 @@ pub(crate) enum Commands {
 
     /// Update containers and EveCtl itself.
     Update {
+        /// Restart all enabled services after a successful update (interrupts monitoring)
+        #[arg(long)]
+        restart: bool,
         #[arg(long, hide = true)]
         containers_only: bool,
         #[arg(long, hide = true)]
@@ -146,6 +149,7 @@ pub(crate) fn is_interactive(command: &Option<Commands>) -> bool {
             | Some(Commands::Update {
                 containers_only: true,
                 return_to_menu: true,
+                ..
             })
     )
 }
@@ -257,7 +261,7 @@ pub(crate) fn run(
     use crate::{container_platform, menu, prompt, rules, services, systemd, uninstall};
 
     let manager = context.manager;
-    let update_continuation_args = UpdateContinuationArgs::new(manager, &args);
+    let update_continuation_args = UpdateContinuationArgs::new(manager, &args, &context.root);
 
     let prompt_for_update = should_prompt_for_missing_images(&args.command) && {
         let mut not_found = false;
@@ -274,7 +278,7 @@ pub(crate) fn run(
 
     if prompt_for_update
         && prompt::confirm("Required container images not found, download now?")
-        && !update(&context, &update_continuation_args, false, false)
+        && !update(&context, &update_continuation_args, false, false, false)
     {
         error!("Failed to downloading container images");
         prompt::enter();
@@ -294,12 +298,20 @@ pub(crate) fn run(
                 1
             }
         }
-        Commands::Restart => {
-            services::stop_all(&context);
-            services::command_start(&context, false)
-        }
+        Commands::Restart => match services::restart(&context) {
+            Ok(()) => 0,
+            Err(err) => {
+                error!("Failed to restart services: {err:#}");
+                1
+            }
+        },
         Commands::Status => {
             crate::status::log_status(&context);
+            if crate::restart_notice::pending(&context.root) {
+                warn!(
+                    "Updates applied, but services have not been restarted. Restart is recommended."
+                );
+            }
             0
         }
         Commands::UpdateRules => {
@@ -313,22 +325,20 @@ pub(crate) fn run(
         Commands::Update {
             containers_only,
             return_to_menu,
+            restart,
         } => {
             let ok = update(
                 &context,
                 &update_continuation_args,
                 containers_only,
                 return_to_menu,
+                restart,
             );
             if return_to_menu {
                 prompt::enter();
                 container_platform::menu_main(context, &update_continuation_args)?;
-                0
-            } else if ok {
-                0
-            } else {
-                1
             }
+            if ok { 0 } else { 1 }
         }
         Commands::Logs(args) => {
             crate::logs::logs(&context, args);
@@ -452,10 +462,12 @@ mod tests {
         assert!(!should_prompt_for_missing_images(&Some(Commands::Update {
             containers_only: false,
             return_to_menu: false,
+            restart: false,
         })));
         assert!(!should_prompt_for_missing_images(&Some(Commands::Update {
             containers_only: true,
             return_to_menu: true,
+            restart: true,
         })));
         assert!(should_prompt_for_missing_images(&Some(Commands::Status)));
         assert!(should_prompt_for_missing_images(&None));
@@ -471,6 +483,7 @@ mod tests {
             Some(Commands::Update {
                 containers_only: true,
                 return_to_menu: true,
+                restart: false,
             })
         ));
 
@@ -484,6 +497,7 @@ mod tests {
 
         assert!(!help.contains("containers-only"));
         assert!(!help.contains("return-to-menu"));
+        assert!(help.contains("--restart"));
     }
 
     #[test]
@@ -491,14 +505,17 @@ mod tests {
         assert!(is_interactive(&Some(Commands::Update {
             containers_only: true,
             return_to_menu: true,
+            restart: false,
         })));
         assert!(!is_interactive(&Some(Commands::Update {
             containers_only: true,
             return_to_menu: false,
+            restart: true,
         })));
         assert!(!is_interactive(&Some(Commands::Update {
             containers_only: false,
             return_to_menu: true,
+            restart: false,
         })));
         assert!(is_interactive(&None));
         assert!(is_interactive(&Some(Commands::Menu {

@@ -244,7 +244,7 @@ impl crate::menu::main::Backend for WindowsPlatform<'_> {
             }
         };
         log_status(status, config);
-        let restart_recommended = super::update::restart_recommended(self.paths.root());
+        let restart_recommended = crate::restart_notice::pending(self.paths.root());
         Status {
             running: status.any_running(),
             ready_to_start: status.ready_to_start(),

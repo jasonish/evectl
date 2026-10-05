@@ -66,7 +66,7 @@ fn data_paths_for_uninstall(paths: &Paths) -> Result<Vec<PathBuf>> {
         Role::EveBoxServer.pid_path(paths),
         Role::EveBoxServer.runtime_path(paths),
         paths.downloads_dir(),
-        paths.root().join(super::update::RESTART_MARKER),
+        paths.root().join(crate::restart_notice::RESTART_MARKER),
     ])
 }
 

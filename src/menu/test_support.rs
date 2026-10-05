@@ -231,7 +231,7 @@ impl crate::menu::main::Backend for FakePlatform {
         unreachable!()
     }
     fn restart(&mut self, _config: &Config) -> Result<()> {
-        unreachable!()
+        self.record("restart", "")
     }
     fn install(&mut self, _config: &mut Config) -> Result<()> {
         unreachable!()

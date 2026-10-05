@@ -351,11 +351,48 @@ pub(crate) fn stop_all(context: &Context) -> bool {
     ok
 }
 
-pub(crate) fn restart(context: &Context) {
-    stop_all(context);
-    if !start(context) {
-        crate::prompt::enter();
+/// Restart every enabled service, checking stop and start failures before
+/// clearing the persistent update reminder. Never prompt here: CLI callers
+/// (including automated updates) must be able to report failure and exit.
+pub(crate) fn restart(context: &Context) -> Result<()> {
+    crate::restart_notice::complete_restart(&context.root, || {
+        context.config.validate_start_configuration()?;
+        stop_for_restart(context)?;
+        if !start(context) {
+            bail!("One or more services failed to start");
+        }
+        Ok(())
+    })
+}
+
+/// Unlike best-effort stop paths, confirm absence with a successful listing
+/// and propagate inspect, stop and removal failures for every managed name,
+/// including retired housekeeping and alternate search-engine containers.
+fn stop_for_restart(context: &Context) -> Result<()> {
+    let existing = context.manager.container_names()?;
+    for service in Service::STOP_ORDER {
+        for name in service.container_names(context) {
+            if !existing.contains(&name) {
+                continue;
+            }
+            let state = context
+                .manager
+                .state(&name)
+                .with_context(|| format!("Cannot inspect {name} before restart"))?;
+            if state.running || state.restarting {
+                info!("Stopping {}", service.label(&context.config));
+                context
+                    .manager
+                    .stop(&name, service.stop_signal())
+                    .with_context(|| format!("Cannot stop {name} before restart"))?;
+            }
+            context
+                .manager
+                .rm(&name)
+                .with_context(|| format!("Cannot remove {name} before restart"))?;
+        }
     }
+    Ok(())
 }
 
 /// Returns true if everything started successfully, otherwise false

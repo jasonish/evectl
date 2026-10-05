@@ -49,6 +49,16 @@ fn service_actions_follow_status() {
     let mut expected = vec![Options::Refresh, Options::Restart, Options::Start];
     expected.extend(tail);
     assert_eq!(tags(&config, updated), expected);
+    assert!(
+        menu_options(&config, updated)
+            .labels()
+            .contains(&"Restart (recommended)".to_string())
+    );
+    assert!(
+        menu_options(&config, running)
+            .labels()
+            .contains(&"Restart".to_string())
+    );
     let updated_not_installed = Status {
         restart_recommended: true,
         ..not_installed
@@ -65,6 +75,23 @@ fn service_actions_follow_status() {
         "{items:?}"
     );
     assert_eq!(&items[4..], tail);
+}
+
+#[test]
+fn failed_restart_does_not_acknowledge_configuration_changes() {
+    let mut backend = FakePlatform {
+        fail: Some("restart"),
+        ..Default::default()
+    };
+    let mut original = Config::default();
+    let mut config = original.clone();
+    config.suricata.enabled = true;
+    assert!(restart_services(&config, &mut original, &mut backend).is_err());
+    assert!(!original.suricata.enabled);
+
+    backend.fail = None;
+    restart_services(&config, &mut original, &mut backend).unwrap();
+    assert_eq!(original, config);
 }
 
 fn config_in(dir: &tempfile::TempDir) -> Config {

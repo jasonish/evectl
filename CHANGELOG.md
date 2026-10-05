@@ -4,6 +4,11 @@
 
 ### Added
 
+- Linux self-updates now offer to restart all enabled services after updating,
+  with a persistent menu reminder if declined. Command-line updates print the
+  instance-specific restart command; `evectl update --restart` opts into a
+  restart after successful updates. Failed restarts retain the reminder and
+  report failure
 - Windows EveBox server settings now match Linux: remote access, bind
   address, TLS, authentication, and admin password reset. The setup
   wizard asks the same server questions as Linux. OpenSearch and

@@ -54,7 +54,10 @@ pub(crate) fn uninstall(
     } else {
         existing_containers(context).context("Cannot discover containers, nothing removed")?
     };
-    let mut paths = vec![context.data_dir()];
+    let mut paths = vec![
+        context.data_dir(),
+        context.root.join(crate::restart_notice::RESTART_MARKER),
+    ];
     if remove_config {
         paths.push(context.config_dir());
         paths.push(config_file(context));

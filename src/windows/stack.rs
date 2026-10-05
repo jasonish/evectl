@@ -667,13 +667,11 @@ pub(super) fn start_stack(paths: &Paths, debug: bool, guid: Option<String>) -> R
 /// Restart the stack, preferring the interface the running Suricata
 /// was started with (e.g. a --guid override) over the saved config.
 pub(super) fn restart_stack(paths: &Paths) -> Result<()> {
-    let guid = capture_restart_plan(paths)?.suricata_guid;
-    stop_stack(paths)?;
-    start_stack(paths, false, guid)?;
-    if let Err(err) = super::update::clear_restart_recommendation(paths.root()) {
-        warn!("Services restarted, but failed to clear the restart recommendation: {err}");
-    }
-    Ok(())
+    crate::restart_notice::complete_restart(paths.root(), || {
+        let guid = capture_restart_plan(paths)?.suricata_guid;
+        stop_stack(paths)?;
+        start_stack(paths, false, guid)
+    })
 }
 
 pub(super) fn stop_stack(paths: &Paths) -> Result<()> {

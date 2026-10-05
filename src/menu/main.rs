@@ -16,7 +16,7 @@ pub(crate) struct Status {
     pub(crate) running: bool,
     /// Every enabled service can be started; otherwise offer Install.
     pub(crate) ready_to_start: bool,
-    /// EveCtl itself was updated and services should be restarted.
+    /// Updates were applied and services should be restarted.
     pub(crate) restart_recommended: bool,
 }
 
@@ -71,8 +71,10 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         if save_changes(config, &mut original, backend)?
             && crate::prompt::confirm("Configuration has changed, restart?")
         {
-            crate::prompt::report("Failed to restart services", backend.restart(config));
-            original = config.clone();
+            crate::prompt::report(
+                "Failed to restart services",
+                restart_services(config, &mut original, backend),
+            );
         }
 
         term::title("EveCtl: Main Menu");
@@ -84,8 +86,8 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
         }
         if status.restart_recommended {
             warn!(
-                "EveCtl was updated. Choosing Restart from this menu to restart all enabled \
-                 services is recommended."
+                "Updates applied, but services have not been restarted. Choose Restart \
+                 (recommended) to restart all enabled services; this briefly interrupts monitoring."
             );
         }
 
@@ -94,8 +96,10 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
             None | Some(Options::Exit) => break,
             Some(Options::Refresh) => {}
             Some(Options::Restart) => {
-                crate::prompt::report("Failed to restart services", backend.restart(config));
-                original = config.clone();
+                crate::prompt::report(
+                    "Failed to restart services",
+                    restart_services(config, &mut original, backend),
+                );
             }
             Some(Options::Stop) => {
                 crate::prompt::report("Failed to stop services", backend.stop(config))
@@ -127,6 +131,17 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
     Ok(())
 }
 
+/// Only acknowledge configuration changes after a successful restart.
+fn restart_services(
+    config: &Config,
+    original: &mut Config,
+    backend: &mut dyn Backend,
+) -> Result<()> {
+    backend.restart(config)?;
+    *original = config.clone();
+    Ok(())
+}
+
 /// Save a changed configuration. Returns true if the saved changes
 /// require a service restart.
 fn save_changes(config: &Config, original: &mut Config, backend: &mut dyn Backend) -> Result<bool> {
@@ -142,7 +157,14 @@ fn menu_options(config: &Config, status: Status) -> Selections<Options> {
     let mut selections = Selections::with_index();
     selections.push(Options::Refresh, "Refresh Status");
     if status.running || (status.restart_recommended && status.ready_to_start) {
-        selections.push(Options::Restart, "Restart");
+        selections.push(
+            Options::Restart,
+            if status.restart_recommended {
+                "Restart (recommended)"
+            } else {
+                "Restart"
+            },
+        );
     }
     if status.running {
         selections.push(Options::Stop, "Stop");

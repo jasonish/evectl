@@ -22,6 +22,7 @@ import fake_runtime
 
 BINARY = Path(__file__).resolve().parents[2] / "target/debug/evectl"
 SPEC_LABEL = "org.evebox.evectl.housekeeping-spec"
+RESTART_MARKER = ".evectl-restart-recommended"
 
 
 @unittest.skipUnless(sys.platform == "linux", "Linux CLI lifecycle")
@@ -48,7 +49,9 @@ class CliTests(unittest.TestCase):
         self.config = self.instance / "config/keep"
         self.config.write_text("configuration must survive failed discovery")
         self.env = dict(os.environ, PATH=str(self.bin),
-                        EVECTL_FAKE_RUNTIME=str(self.runtime))
+                        EVECTL_FAKE_RUNTIME=str(self.runtime),
+                        EVECTL_SKIP_UPDATE_CHECK="1")
+        self.env.pop("EVECTL_FAKE_RUNNING_VERSION", None)
         self.env.pop("EVECTL_FAKE_FAIL", None)
         self.env.pop("EVECTL_FAKE_ERROR", None)
         self.write_config()
@@ -168,6 +171,120 @@ class CliTests(unittest.TestCase):
         removed = [row[-1] for row in self.commands() if row[1] == "rm"]
         self.assertEqual(removed, ["instance-evectl-" + service for service in
                                   ("housekeeping", "housekeeper", "suricata", "evebox-agent")])
+
+    def test_cli_update_reminds_without_restarting_on_both_runtimes(self):
+        marker = self.instance / RESTART_MARKER
+        marker.touch()
+        self.seed("suricata")
+        for runtime in ("docker", "podman"):
+            with self.subTest(runtime=runtime):
+                self.install_runtime(runtime)
+                offset = len(self.commands())
+                result = self.cli("update", podman=runtime == "podman")
+                output = result.stdout + result.stderr
+                self.assertIn("services have not been restarted", output)
+                command = next(line.split("with: ", 1)[1] for line in output.splitlines()
+                               if "Restart all enabled services with: " in line)
+                self.assertIn(str(BINARY), command)
+                self.assertIn("--no-root", command)
+                self.assertIn("--data-directory " + str(self.instance), command)
+                self.assertEqual("--podman" in command, runtime == "podman")
+                self.assertTrue(marker.exists())
+                self.assertFalse(any(row[1] in ("stop", "rm", "run")
+                                     for row in self.commands()[offset:]))
+        result = self.cli("status")
+        self.assertIn("Restart is recommended", result.stdout + result.stderr)
+
+    def test_suricata_version_change_saves_restart_reminder(self):
+        self.install_runtime()
+        self.write_config(suricata=True)
+        self.seed("suricata")
+        self.env["EVECTL_FAKE_RUNNING_VERSION"] = "8.0.5"
+        result = self.cli("update")
+        self.assertIn("Suricata updated from 8.0.5 to 8.0.6", result.stdout + result.stderr)
+        self.assertTrue((self.instance / RESTART_MARKER).exists())
+        self.assertFalse(any(row[1] in ("stop", "rm") for row in self.commands()))
+
+    def test_update_without_changes_does_not_recommend_restart(self):
+        self.install_runtime()
+        self.write_config(suricata=True)
+        self.seed("suricata")
+        result = self.cli("update")
+        self.assertNotIn("Restart is recommended", result.stdout + result.stderr)
+        self.assertFalse((self.instance / RESTART_MARKER).exists())
+        self.assertFalse(any(row[1] in ("stop", "rm") for row in self.commands()))
+
+    def test_explicit_update_restart_restarts_then_clears_marker(self):
+        self.install_runtime()
+        self.write_config(server=True)
+        marker = self.instance / RESTART_MARKER
+        marker.touch()
+        for service in ("housekeeping", "housekeeper", "suricata", "evebox-server"):
+            self.seed(service)
+        self.cli("update", "--restart")
+        self.assertFalse(marker.exists())
+        commands = self.commands()
+        last_pull = max(index for index, row in enumerate(commands) if row[1] == "pull")
+        first_stop = min(index for index, row in enumerate(commands) if row[1] == "stop")
+        self.assertLess(last_pull, first_stop)
+        removed = [row[-1] for row in commands[first_stop:] if row[1] == "rm"]
+        self.assertEqual(removed[:4], ["instance-evectl-" + service for service in
+                                     ("housekeeping", "housekeeper", "suricata", "evebox-server")])
+        server = self.runtime / "containers/instance-evectl-evebox-server"
+        self.assertTrue(json.loads(server.read_text())["State"]["Running"])
+        self.assertTrue(any(row[1] == "run" and "--detach" in row for row in commands))
+
+    def test_restart_stop_failures_retain_marker_and_do_not_start(self):
+        self.install_runtime()
+        marker = self.instance / RESTART_MARKER
+        for command in ("ps", "inspect", "stop", "rm"):
+            with self.subTest(command=command):
+                marker.touch()
+                self.seed("suricata")
+                self.env["EVECTL_FAKE_FAIL"] = command
+                offset = len(self.commands())
+                result = self.cli("restart", success=False)
+                self.assertIn("Failed to restart services", result.stdout + result.stderr)
+                self.assertTrue(marker.exists())
+                self.assertFalse(any(row[1] == "run" for row in self.commands()[offset:]))
+
+    def test_failed_update_restart_saves_and_keeps_marker(self):
+        self.install_runtime()
+        self.write_config(server=True)
+        for command in ("stop", "run"):
+            with self.subTest(command=command):
+                marker = self.instance / RESTART_MARKER
+                marker.unlink(missing_ok=True)
+                self.seed("evebox-server")
+                self.env["EVECTL_FAKE_FAIL"] = command
+                result = self.cli("update", "--restart", success=False)
+                self.assertIn("Failed to restart services", result.stdout + result.stderr)
+                self.assertTrue(marker.exists())
+
+    def test_failed_update_does_not_restart_even_with_flag(self):
+        self.install_runtime()
+        marker = self.instance / RESTART_MARKER
+        marker.touch()
+        self.seed("suricata")
+        self.env["EVECTL_FAKE_FAIL"] = "pull"
+        result = self.cli("update", "--restart", success=False)
+        self.assertIn("Updates were incomplete", result.stdout + result.stderr)
+        self.assertTrue(marker.exists())
+        self.assertFalse(any(row[1] in ("stop", "rm", "run") for row in self.commands()))
+
+    def test_successful_manual_restart_clears_marker(self):
+        self.install_runtime()
+        marker = self.instance / RESTART_MARKER
+        marker.touch()
+        self.seed("suricata")
+        self.cli("restart")
+        self.assertFalse(marker.exists())
+
+    def test_uninstall_removes_restart_marker(self):
+        self.install_runtime()
+        (self.instance / RESTART_MARKER).touch()
+        self.cli("uninstall", "--config", "--yes")
+        self.assertFalse(self.instance.exists())
 
     def test_same_tag_new_image_id_reconciles_worker(self):
         self.install_runtime()

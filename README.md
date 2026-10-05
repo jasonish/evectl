@@ -48,6 +48,27 @@ Run EveCtl with:
 evectl
 ```
 
+### Updating on Linux
+
+The menu's **Update** action checks for an EveCtl self-update and pulls
+container images. If EveCtl changes, the new binary automatically finishes
+updating. Services are not silently restarted: the menu asks whether to
+restart all enabled services, briefly interrupting monitoring.
+
+If you decline, **Restart (recommended)** and a warning remain in the menu
+until a full restart succeeds. Command-line updates do not prompt for a
+restart; they print the command to run for the selected instance. To explicitly
+restart all enabled services after a successful update:
+
+```bash
+evectl update --restart
+# Or select an instance and runtime:
+evectl --podman -D /var/lib/evectl-sensor1 update --restart
+```
+
+Failed updates do not automatically restart services. A failed restart keeps
+the reminder and returns a nonzero exit status.
+
 ### Windows PowerShell
 
 Install EveCtl with the PowerShell equivalent of the Linux `curl`
