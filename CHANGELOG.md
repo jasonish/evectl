@@ -2,8 +2,21 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-05
+
 ### Added
 
+- Windows support: Suricata, EveBox and Npcap are installed and managed
+  natively rather than in containers, with the same menu, setup wizard,
+  Standalone/Agent/Server setups, rule management and
+  start/stop/status/update commands as Linux
+- EVE output selection in the Suricata menu. Suricata now sends EVE events
+  to EveBox over a Unix stream socket by default on Linux. File mode writes
+  minute-rotated, timestamped spool files that EveBox consumes and deletes,
+  replacing logrotate. Requires EveBox 0.28.0 or newer
+- The main menu and `evectl status` show the Suricata and EveBox versions
+  and the time of the last rule update. After an update, EveCtl offers to
+  restart Suricata if the running version differs from the new image
 - Linux self-updates now offer to restart all enabled services after updating,
   with a persistent menu reminder if declined. Command-line updates print the
   instance-specific restart command; `evectl update --restart` opts into a
@@ -81,6 +94,16 @@
 
 ### Changed
 
+- The datastore (SQLite, OpenSearch, Elasticsearch or external) is now
+  selected from the EveBox server menu, and a bundled search engine only
+  runs when the EveBox server is enabled
+- Suricata's non-EVE outputs, such as `fast.log` and `stats.log`, are now
+  disabled
+- Suricata 8.0.6 is now the minimum supported version, with a warning when
+  an older image is configured. AF_PACKET now uses the Suricata 8 defaults
+- The setup wizard asks all questions before downloading images and rules,
+  no longer asks about start on boot, and saves the configuration only after
+  setup completes, so a failed download re-runs the wizard
 - Windows installations now use Suricata 8.0.7
 - Windows `evectl update` refreshes enabled EveBox installations from the
   selected channel even when the version number is unchanged. It records
@@ -102,7 +125,6 @@
 - Update reqwest to 0.13: TLS certificate verification now uses the system
   trust store merged with the bundled Mozilla roots, so locally installed
   CAs are honored and hosts without ca-certificates still work
-- Update sha2 to 0.11 and toml to 1.1
 - Update Elasticsearch to 8.19.19
 
 ### Fixed
@@ -146,6 +168,8 @@
   Suricata on Windows can't reload rules in place
 - Apply generated JA4 Suricata overrides when starting Suricata
 - Restart services in detached mode instead of foreground debug mode
+- Initial setup no longer reports a spurious suricata-update reload error
+- Container image updates continue when the EveCtl self-update fails
 
 ## [0.3.0] - 2026-06-30
 
