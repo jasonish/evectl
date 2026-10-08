@@ -5,9 +5,9 @@
 //!
 //! FPC has Suricata write a rotating pcap spool which is served through
 //! the EveBox web UI, either by the local EveBox server or by the local
-//! EveBox agent on behalf of a remote server. The agent identifies
-//! itself with an agent ID and authenticates the packet capture channel
-//! with an agent key issued by the server.
+//! EveBox agent on behalf of a remote server. The agent authenticates
+//! the packet capture channel with an agent key issued by the server,
+//! whose name is the agent's identity.
 
 use std::path::Path;
 
@@ -22,7 +22,6 @@ use crate::term;
 enum Options {
     Toggle,
     MaxFiles,
-    AgentId,
     Key,
     RemoveSpool,
     Return,
@@ -52,10 +51,6 @@ fn menu_options(config: &Config, spool: &Path) -> Selections<Options> {
     );
 
     if config.evebox_agent.enabled {
-        selections.push(
-            Options::AgentId,
-            crate::menu::evebox_agent::agent_id_label(config),
-        );
         selections.push(Options::Key, crate::menu::evebox_agent::key_label(config));
     }
     // Captures left behind after disabling are no longer managed.
@@ -96,9 +91,6 @@ fn run_action(
     match action {
         Options::Toggle => toggle_enabled(config, spool)?,
         Options::MaxFiles => set_max_files(config),
-        Options::AgentId => {
-            crate::menu::evebox_agent::set_agent_id(config);
-        }
         Options::Key => {
             crate::menu::evebox_agent::set_key(config);
         }

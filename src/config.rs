@@ -367,16 +367,9 @@ pub(crate) struct EveBoxAgentConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub disable_certificate_validation: bool,
 
-    /// Identifier the agent presents to the server, stamped on each
-    /// event and claimed on the packet capture channel. EveBox
-    /// defaults to the hostname when unset. Full packet capture
-    /// requires it to match the name of an agent key on the server.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub agent_id: Option<String>,
-
     /// Agent key issued by the EveBox server (`evebox config agents
-    /// add <agent-id>`), used to authenticate the packet capture
-    /// channel.
+    /// add <name>`), used to authenticate the file and packet
+    /// retrieval channel. The key's name is the agent's identity.
     #[serde(default, skip_serializing_if = "is_default")]
     pub key: Option<String>,
 }
@@ -570,7 +563,6 @@ mod tests {
         config.evebox_server.bind_address = Some("192.168.1.10".to_string());
         config.elasticsearch.engine = SearchEngine::OpenSearch;
         config.elasticsearch.memory = Some(4);
-        config.evebox_agent.agent_id = Some("sensor-1".to_string());
         config.evebox_agent.key = Some("secret".to_string());
         config.fpc.enabled = true;
         config.fpc.max_files = Some(20);

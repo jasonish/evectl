@@ -86,6 +86,9 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
             config.evebox_agent.disable_certificate_validation = disable_certificate_validation;
             break;
         }
+        // Optional, but without a key the server does not know which
+        // agent the events came from.
+        crate::menu::evebox_agent::set_key(config);
     }
 
     if has_server {

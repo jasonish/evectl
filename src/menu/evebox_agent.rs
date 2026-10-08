@@ -9,7 +9,6 @@ use crate::term;
 enum Options {
     Toggle,
     Server,
-    AgentId,
     Key,
     Exit,
 }
@@ -25,7 +24,6 @@ fn menu_options(config: &Config) -> Selections<Options> {
         Options::Server,
         format!("EveBox Server URL [{}]", config.evebox_agent.server),
     );
-    selections.push(Options::AgentId, agent_id_label(config));
     selections.push(Options::Key, key_label(config));
     selections.push(Options::Exit, "Return");
     selections
@@ -50,30 +48,22 @@ fn run_action(config: &mut Config, action: Options) -> Result<()> {
     match action {
         Options::Toggle => {
             config.evebox_agent.enabled = !config.evebox_agent.enabled;
-            if config.evebox_agent.enabled && config.evebox_agent.server.is_empty() {
-                set_server(config)?;
+            if config.evebox_agent.enabled {
+                if config.evebox_agent.server.is_empty() {
+                    set_server(config)?;
+                }
+                if config.evebox_agent.key.is_none() {
+                    set_key(config);
+                }
             }
         }
         Options::Server => set_server(config)?,
-        Options::AgentId => {
-            set_agent_id(config);
-        }
         Options::Key => {
             set_key(config);
         }
         Options::Exit => {}
     }
     Ok(())
-}
-
-pub(crate) fn agent_id_label(config: &Config) -> String {
-    match &config.evebox_agent.agent_id {
-        Some(agent_id) => format!("Agent ID [{agent_id}]"),
-        None => match crate::system::hostname() {
-            Some(hostname) => format!("Agent ID [not set, defaults to {hostname}]"),
-            None => "Agent ID [not set, defaults to the hostname]".to_string(),
-        },
-    }
 }
 
 pub(crate) fn key_label(config: &Config) -> String {
@@ -84,41 +74,24 @@ pub(crate) fn key_label(config: &Config) -> String {
     }
 }
 
-/// Prompt for the agent ID. Returns true if an agent ID is set on
-/// return, whether or not it was changed.
-pub(crate) fn set_agent_id(config: &mut Config) -> bool {
-    let default = config
-        .evebox_agent
-        .agent_id
-        .clone()
-        .or_else(crate::system::hostname)
-        .unwrap_or_default();
-    if let Some(agent_id) = crate::prompt::edit_optional_with(
-        config.evebox_agent.agent_id.as_deref(),
-        "Clear Agent ID?",
-        || {
-            inquire::Text::new("EveBox Agent ID:")
-                .with_default(&default)
-                .with_help_message("Must match the agent key name on the EveBox server")
-                .prompt()
-                .ok()
-        },
-    ) {
-        config.evebox_agent.agent_id = agent_id;
-    }
-    config.evebox_agent.agent_id.is_some()
+/// Suggested agent key name, used in instructions for issuing a key.
+/// The name of the key becomes the agent's identity on the server.
+fn suggested_key_name() -> String {
+    crate::system::hostname().unwrap_or_else(|| "<name>".to_string())
 }
 
 /// Prompt for the agent key. Returns true if a key is set on return,
 /// whether or not it was changed.
 pub(crate) fn set_key(config: &mut Config) -> bool {
-    let agent_id = config
-        .evebox_agent
-        .agent_id
-        .clone()
-        .or_else(crate::system::hostname)
-        .unwrap_or_else(|| "<agent-id>".to_string());
-    let help = format!("Blank to clear. Issue with: evebox config agents add {agent_id}");
+    let blank = if config.evebox_agent.key.is_some() {
+        "clear"
+    } else {
+        "skip"
+    };
+    let help = format!(
+        "Blank to {blank}. Issue on the server with: evebox config agents add {}",
+        suggested_key_name()
+    );
     if config.evebox_agent.server.starts_with("http://") {
         warn!("The EveBox server URL is plain HTTP; the agent key will be sent unencrypted");
     }
@@ -140,37 +113,27 @@ pub(crate) fn set_key(config: &mut Config) -> bool {
     config.evebox_agent.key.is_some()
 }
 
-/// Collect the identity and key used to serve files and packet captures
-/// over the agent channel. Returns false if the user backed out.
+/// Collect the key used to serve files and packet captures over the
+/// agent channel. Returns false if the user backed out.
 pub(crate) fn setup_retrieval(config: &mut Config) -> bool {
-    if config.evebox_agent.agent_id.is_some() && config.evebox_agent.key.is_some() {
+    if config.evebox_agent.key.is_some() {
         return true;
     }
 
-    let agent_id = config
-        .evebox_agent
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| "<agent-id>".to_string());
     println!(
         "
 The EveBox agent serves extracted files and packet captures to the server
-over an authenticated channel. On the server, create an agent key named
-after this agent's ID:
+over an authenticated channel. On the server, create an agent key; its name
+identifies this agent:
 
-    evebox config agents add {agent_id}
+    evebox config agents add {}
 
 or use the Agents page in the EveBox web UI, then enter the key here.
-"
+",
+        suggested_key_name()
     );
 
-    if config.evebox_agent.agent_id.is_none() && !set_agent_id(config) {
-        error!("File and packet retrieval on an agent requires an agent ID");
-        crate::prompt::enter();
-        return false;
-    }
-
-    if config.evebox_agent.key.is_none() && !set_key(config) {
+    if !set_key(config) {
         warn!(
             "No agent key set; the server will reject the retrieval channel unless it allows \
              unauthenticated agents"

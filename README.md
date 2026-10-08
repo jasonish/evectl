@@ -170,10 +170,10 @@ Enable capture from "Configure" → "Configure Full Packet Capture".
 Requires Suricata and either the local EveBox server or the EveBox agent.
 Restart services after changing capture or retention settings.
 Captures can be retrieved through the EveBox web UI, locally or through
-an agent connected to a remote server. Agent setups prompt for an agent ID
-and the matching key issued on the server with
-`evebox config agents add <agent-id>` (or through its Agents page).
-These settings can also be changed in the EveBox Agent menu.
+an agent connected to a remote server. Agent setups prompt for an agent key
+issued on the server with `evebox config agents add <name>` (or through its
+Agents page); the key's name identifies the agent. The key can also be
+changed in the EveBox Agent menu.
 
 Captures are stored in `%LOCALAPPDATA%\evectl\suricata\log\pcap`.
 Suricata uses multi mode, writing separate `log.<thread>.<timestamp>.pcap`
@@ -201,8 +201,8 @@ size can be stored truncated. Suricata's relevant limits are raised, never lower
 Files are stored by SHA256 in `data/suricata/log/filestore` on Linux and
 `%LOCALAPPDATA%\evectl\suricata\log\filestore` on Windows. The local EveBox
 server or agent makes them available through events containing their SHA256.
-Agent retrieval uses the agent ID and matching server-issued key, independently
-of full packet capture; enabling extraction prompts for these when needed.
+Agent retrieval uses the server-issued agent key, independently of full
+packet capture; enabling extraction prompts for it when needed.
 Disabling extraction leaves existing files in place and stops cleanup and
 EveBox retrieval after restarting services. The Suricata menu offers to remove
 leftover extracted files once services are stopped.

@@ -294,7 +294,6 @@ mod tests {
                         config.suricata.file_extraction.max_age_days = Some(retention);
                         config.fpc.enabled = capture;
                         config.evebox_agent.enabled = true;
-                        config.evebox_agent.agent_id = Some("sensor".into());
                         config.evebox_agent.key = Some("secret-key".into());
                         assert_eq!(
                             cleanup_enabled(&config),
@@ -324,12 +323,9 @@ mod tests {
                             actual.iter().any(|arg| arg == "--pcap-directory"),
                             suricata && capture
                         );
-                        assert_eq!(&actual[..2], ["--agent-id", "sensor"]);
+                        assert!(!actual.iter().any(|arg| arg == "--agent-id"));
                         assert!(!actual.iter().any(|arg| arg.contains("secret-key")));
-                        assert_eq!(
-                            agent.get_envs().count(),
-                            usize::from(suricata && (capture || extraction))
-                        );
+                        assert_eq!(agent.get_envs().count(), 1);
                     }
                 }
             }

@@ -21,7 +21,7 @@ fn menu_shares_credentials_and_gates_spool_cleanup() {
                 let items = menu_options(&config, dir.path()).to_vec();
                 let mut expected = vec![Options::Toggle, Options::MaxFiles];
                 if agent {
-                    expected.extend([Options::AgentId, Options::Key]);
+                    expected.push(Options::Key);
                 }
                 if has_captures && !enabled {
                     expected.push(Options::RemoveSpool);

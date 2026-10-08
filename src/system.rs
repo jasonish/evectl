@@ -30,8 +30,7 @@ pub(crate) fn online_cpus() -> usize {
         .unwrap_or(1)
 }
 
-/// The system hostname, which is what the EveBox agent identifies
-/// itself as when no agent ID is configured.
+/// The system hostname, suggested as the name of the agent key.
 #[cfg(unix)]
 pub(crate) fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];

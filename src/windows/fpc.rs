@@ -27,21 +27,18 @@ pub(super) fn configure_evebox_command(command: &mut Command, config: &Config, s
 }
 
 pub(super) fn configure_agent_command(command: &mut Command, config: &Config, spool: &Path) {
-    if let Some(agent_id) = &config.evebox_agent.agent_id {
-        command.arg("--agent-id").arg(agent_id);
-    }
     configure_evebox_command(command, config, spool);
-    if effective_config(config).enabled || super::file_extraction::enabled(config) {
-        match &config.evebox_agent.key {
-            Some(key) => {
-                // Keep the key out of command logs and runtime metadata.
-                command.env("EVEBOX_SERVER_KEY", key);
-            }
-            None => warn!(
-                "File or packet retrieval is enabled but no agent key is set; the EveBox server \
-                 will reject the retrieval channel unless it allows unauthenticated agents"
-            ),
+    let retrieval = effective_config(config).enabled || super::file_extraction::enabled(config);
+    match &config.evebox_agent.key {
+        Some(key) => {
+            // Keep the key out of command logs and runtime metadata.
+            command.env("EVEBOX_SERVER_KEY", key);
         }
+        None if retrieval => warn!(
+            "File or packet retrieval is enabled but no agent key is set; the EveBox server \
+             will reject the retrieval channel unless it allows unauthenticated agents"
+        ),
+        None => {}
     }
 }
 
@@ -116,7 +113,6 @@ mod tests {
                         config.suricata.enabled = suricata;
                         config.evebox_server.enabled = server;
                         config.evebox_agent.enabled = agent;
-                        config.evebox_agent.agent_id = Some("sensor".into());
                         config.evebox_agent.key = Some("secret-key".into());
                         config.fpc.enabled = capture;
                         config.fpc.max_files = Some(20);
@@ -141,13 +137,11 @@ mod tests {
 
                         let mut agent_command = Command::new("evebox.exe");
                         configure_agent_command(&mut agent_command, &config, spool);
-                        let mut expected_agent = vec!["--agent-id", "sensor"];
-                        expected_agent.extend(expected);
-                        assert_eq!(args(&agent_command), expected_agent);
+                        assert_eq!(args(&agent_command), expected);
                         let key = agent_command
                             .get_envs()
                             .find(|(name, _)| *name == "EVEBOX_SERVER_KEY");
-                        assert_eq!(key.is_some(), enabled);
+                        assert!(key.is_some());
                         if let Some((_, value)) = key {
                             assert_eq!(value, Some(std::ffi::OsStr::new("secret-key")));
                         }

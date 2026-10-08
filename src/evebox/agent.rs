@@ -62,20 +62,20 @@ pub(crate) fn build_command(context: &Context, detached: bool) -> Result<Command
 
     let fpc = context.config.uses_fpc();
     let file_extraction = context.config.uses_file_extraction();
-    if fpc || file_extraction {
-        // The agent key authenticates the file and packet retrieval channel to
-        // the server. Passed in the environment, like the server's
-        // Elasticsearch credentials, to keep it out of the generated
-        // configuration file.
-        match &context.config.evebox_agent.key {
-            Some(key) => {
-                command.args(["--env", &format!("EVEBOX_SERVER_KEY={key}")]);
-            }
-            None => warn!(
-                "File or packet retrieval is enabled but no agent key is set; the EveBox server \
-                 will reject the retrieval channel unless it allows unauthenticated agents"
-            ),
+    // The agent key authenticates the agent to the server and its name is
+    // the agent's identity, stamped on submitted events and used for
+    // presence and file and packet retrieval. Passed in the environment,
+    // like the server's Elasticsearch credentials, to keep it out of the
+    // generated configuration file.
+    match &context.config.evebox_agent.key {
+        Some(key) => {
+            command.args(["--env", &format!("EVEBOX_SERVER_KEY={key}")]);
         }
+        None if fpc || file_extraction => warn!(
+            "File or packet retrieval is enabled but no agent key is set; the EveBox server \
+             will reject the retrieval channel unless it allows unauthenticated agents"
+        ),
+        None => {}
     }
 
     command.arg(context.image_name(Container::EveBox));
@@ -86,13 +86,6 @@ pub(crate) fn build_command(context: &Context, detached: bool) -> Result<Command
 
     if context.config.evebox_agent.disable_certificate_validation {
         command.arg("--disable-certificate-check");
-    }
-
-    // Stamped on every event and claimed on the retrieval
-    // channel, so the server routes file and packet requests for this
-    // sensor's events back to this agent.
-    if let Some(agent_id) = &context.config.evebox_agent.agent_id {
-        command.args(["--agent-id", agent_id]);
     }
 
     if fpc {
@@ -121,21 +114,18 @@ mod tests {
         config.fpc.enabled = true;
         config.evebox_agent.enabled = true;
         config.evebox_agent.server = "https://evebox.example".to_string();
-        config.evebox_agent.agent_id = Some("sensor-1".to_string());
         config.evebox_agent.key = Some("secret-key".to_string());
         let (_root, context) = docker_context(config);
 
         let args = command_args(&build_command(&context, true).unwrap());
         assert!(args.contains(&"--pcap-directory=/var/log/suricata/pcap".to_string()));
         assert!(args.contains(&"--pcap-prefix=log.".to_string()));
-        let agent_id = args.iter().position(|a| a == "--agent-id").unwrap();
-        assert_eq!(args[agent_id + 1], "sensor-1");
+        assert!(!args.iter().any(|a| a == "--agent-id"));
 
         // The key is a container environment variable, so it must
-        // come before the image name; the agent ID and pcap options
-        // are agent arguments, so they must come after.
+        // come before the image name; the pcap options are agent
+        // arguments, so they must come after.
         let image = args.iter().position(|a| a == "evebox").unwrap() - 1;
-        assert!(agent_id > image);
         let key = args
             .iter()
             .position(|a| a == "EVEBOX_SERVER_KEY=secret-key")
@@ -148,14 +138,13 @@ mod tests {
             .unwrap();
         assert!(pcap > image);
 
-        // The agent ID stamps events even without packet capture, but
-        // the key and pcap options are only passed with it.
+        // The pcap options are only passed with packet capture, but the
+        // key is always passed as it is the agent's identity.
         let mut context = context;
         context.config.fpc.enabled = false;
         let args = command_args(&build_command(&context, true).unwrap());
-        assert!(args.contains(&"--agent-id".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("--pcap-")));
-        assert!(!args.iter().any(|a| a.starts_with("EVEBOX_SERVER_KEY=")));
+        assert!(args.contains(&"EVEBOX_SERVER_KEY=secret-key".to_string()));
 
         // Without a key the channel is still configured; the server
         // decides whether to accept it.
@@ -179,7 +168,6 @@ mod tests {
                             config.suricata.file_extraction.enabled = extraction;
                             config.fpc.enabled = fpc;
                             config.evebox_agent.enabled = true;
-                            config.evebox_agent.agent_id = Some("sensor-1".to_string());
                             config.evebox_agent.key = Some("secret-key".to_string());
                             let (_root, mut context) = docker_context(config);
 
@@ -199,13 +187,12 @@ mod tests {
                             let key = args
                                 .iter()
                                 .position(|a| a == "EVEBOX_SERVER_KEY=secret-key");
-                            assert_eq!(key.is_some(), suricata && (fpc || extraction));
+                            assert!(key.is_some());
                             if let Some(position) = key {
                                 assert_eq!(args[position - 1], "--env");
                                 assert!(position < agent - 2);
                             }
-                            let id = args.iter().position(|a| a == "--agent-id").unwrap();
-                            assert_eq!(args[id + 1], "sensor-1");
+                            assert!(!args.iter().any(|a| a == "--agent-id"));
 
                             context.config.evebox_agent.key = None;
                             let args = command_args(&build_command(&context, detached).unwrap());
