@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+use super::checksum::checksum_for;
 use super::paths::{Paths, ensure_dir};
 use crate::config::EveBoxChannel;
 use crate::prelude::*;
@@ -75,6 +76,22 @@ impl Download {
         })
     }
 
+    /// The SHA-256 of the archive, from the checksum file published
+    /// next to it.
+    pub(super) fn published_sha256(&self) -> Result<String> {
+        let url = format!("{}.sha256", self.url);
+        let checksums = crate::http::client_builder()
+            .timeout(Duration::from_secs(30))
+            .build()?
+            .get(&url)
+            .send()
+            .and_then(|response| response.error_for_status())
+            .and_then(|response| response.text())
+            .with_context(|| format!("Failed to fetch {url}"))?;
+        checksum_for(&checksums, &self.archive_name)
+            .with_context(|| format!("{url} has no checksum for {}", self.archive_name))
+    }
+
     /// Check the executable's identity before committing a release install.
     /// Main-branch builds may share a semantic version but differ by revision.
     pub(super) fn validate_version(&self, reported: &str) -> Result<()> {
@@ -92,6 +109,8 @@ impl Download {
 
 pub(super) const EVEBOX_VERSION_MARKER: &str = ".evectl-evebox-version";
 pub(super) const EVEBOX_CHANNEL_MARKER: &str = ".evectl-evebox-channel";
+/// The SHA-256 of the archive the installation came from.
+pub(super) const EVEBOX_SHA256_MARKER: &str = ".evectl-evebox-sha256";
 
 /// Replace the EveBox "admin" user, prompting for the new password.
 /// Uses the server's data directory, where EveBox keeps its
@@ -210,6 +229,28 @@ pub(super) fn evebox_installed_channel(install_dir: &Path) -> Result<Option<EveB
     }))
 }
 
+/// Whether the installation is of `channel` and came from the archive
+/// with checksum `sha256`. Installs from before the checksum was
+/// recorded never are.
+pub(super) fn evebox_is_current(
+    install_dir: &Path,
+    channel: EveBoxChannel,
+    sha256: &str,
+) -> Result<bool> {
+    if evebox_installed_channel(install_dir)? != Some(channel) {
+        return Ok(false);
+    }
+    let marker = install_dir.join(EVEBOX_SHA256_MARKER);
+    if !marker.exists() {
+        return Ok(false);
+    }
+    let installed = std::fs::read_to_string(&marker).context(format!(
+        "Failed to read EveBox checksum marker {}",
+        marker.display()
+    ))?;
+    Ok(installed.trim() == sha256)
+}
+
 pub(super) fn uninstall_evebox(paths: &Paths) -> Result<()> {
     let root_dir = paths.evebox_dir();
 
@@ -279,6 +320,29 @@ mod tests {
             evebox_installed_channel(dir.path()).unwrap(),
             Some(EveBoxChannel::Development)
         );
+    }
+
+    #[test]
+    fn evebox_is_current_only_for_the_same_channel_and_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let sha256 = "0".repeat(64);
+        let current = |channel| evebox_is_current(dir.path(), channel, &sha256).unwrap();
+        assert!(!current(EveBoxChannel::Development));
+
+        std::fs::write(dir.path().join("evebox.exe"), b"binary").unwrap();
+        std::fs::write(dir.path().join(EVEBOX_CHANNEL_MARKER), "development").unwrap();
+        // Installed before the checksum was recorded.
+        assert!(!current(EveBoxChannel::Development));
+
+        std::fs::write(dir.path().join(EVEBOX_SHA256_MARKER), &sha256).unwrap();
+        assert!(current(EveBoxChannel::Development));
+        assert!(!current(EveBoxChannel::Release));
+        assert!(
+            !evebox_is_current(dir.path(), EveBoxChannel::Development, &"1".repeat(64)).unwrap()
+        );
+
+        std::fs::remove_file(dir.path().join("evebox.exe")).unwrap();
+        assert!(!current(EveBoxChannel::Development));
     }
 
     #[test]

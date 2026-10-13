@@ -3,10 +3,12 @@
 
 //! Component installation and upgrades.
 
+use super::checksum::file_sha256;
 use super::component::{Upgrade, upgrade, upgrade_needed};
 use super::evebox::Download as EveBoxDownload;
 use super::evebox::{
-    EVEBOX_CHANNEL_MARKER, EVEBOX_VERSION_MARKER, find_evebox_exe, replace_evebox_installation,
+    EVEBOX_CHANNEL_MARKER, EVEBOX_SHA256_MARKER, EVEBOX_VERSION_MARKER, evebox_is_current,
+    find_evebox_exe, replace_evebox_installation,
 };
 use super::menu::wizard;
 use super::npcap::{Npcap, install_or_upgrade_npcap};
@@ -29,12 +31,13 @@ pub(super) const EVEBOX_SHORTCUT_NAME: &str = "EveBox.url";
 struct UpgradePlan {
     npcap: Option<Upgrade>,
     suricata: Option<(Suricata, Upgrade)>,
-    evebox: bool,
+    /// The EveBox build to install and the SHA-256 of its archive.
+    evebox: Option<(EveBoxDownload, String)>,
 }
 
 impl UpgradePlan {
     fn any(&self) -> bool {
-        self.npcap.is_some() || self.suricata.is_some() || self.evebox
+        self.npcap.is_some() || self.suricata.is_some() || self.evebox.is_some()
     }
 }
 
@@ -209,11 +212,29 @@ fn build_upgrade_plan(paths: &Paths, config: &crate::config::Config) -> Result<U
         } else {
             None
         },
-        // Always refresh the selected channel on an explicit update. This
-        // covers same-version development revisions and intentional channel
-        // switches (including development -> an older stable release).
-        evebox: use_evebox,
+        evebox: if use_evebox {
+            evebox_upgrade_needed(paths, config.windows.evebox_channel)?
+        } else {
+            None
+        },
     })
+}
+
+/// The latest build of the selected channel, unless it's the one
+/// installed. Compared by archive checksum, so that development builds
+/// sharing a version and channel switches (including development to
+/// an older stable release) are installed.
+fn evebox_upgrade_needed(
+    paths: &Paths,
+    channel: EveBoxChannel,
+) -> Result<Option<(EveBoxDownload, String)>> {
+    let download = EveBoxDownload::resolve(channel)?;
+    let sha256 = download.published_sha256()?;
+    if evebox_is_current(&paths.evebox_install_dir(), channel, &sha256)? {
+        info!("EveBox is up to date with the latest {channel} build.");
+        return Ok(None);
+    }
+    Ok(Some((download, sha256)))
 }
 
 pub(super) fn upgrade_windows_components(paths: &Paths) -> Result<UpdateOutcome> {
@@ -243,8 +264,8 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
         if let Some((suricata, reason)) = &plan.suricata {
             upgrade(suricata, paths, reason)?;
         }
-        if plan.evebox {
-            install_or_upgrade_evebox(paths, true, config.windows.evebox_channel)?;
+        if let Some((download, sha256)) = &plan.evebox {
+            install_evebox(paths, download, sha256)?;
         }
         Ok(())
     })();
@@ -270,27 +291,37 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
 }
 
 fn install_or_upgrade_evebox(paths: &Paths, upgrade: bool, channel: EveBoxChannel) -> Result<()> {
-    let root_dir = paths.evebox_dir();
-    let install_dir = paths.evebox_install_dir();
-    let data_dir = paths.evebox_data_dir();
-
-    if !upgrade && find_evebox_exe(&install_dir)?.is_some() {
+    if !upgrade && find_evebox_exe(&paths.evebox_install_dir())?.is_some() {
         info!(
             "EveBox is already installed. Run 'evectl update' to install the latest {channel} build."
         );
         return Ok(());
     }
 
-    std::fs::create_dir_all(&root_dir).context("Failed to create EveBox root directory")?;
-    std::fs::create_dir_all(&data_dir).context("Failed to create EveBox data directory")?;
-
     // Resolve the latest version of the selected channel, without caching.
     let download = EveBoxDownload::resolve(channel)?;
+    let sha256 = download.published_sha256()?;
+    install_evebox(paths, &download, &sha256)
+}
+
+/// Download and install an EveBox build, given its archive's SHA-256.
+fn install_evebox(paths: &Paths, download: &EveBoxDownload, sha256: &str) -> Result<()> {
+    let install_dir = paths.evebox_install_dir();
+    let data_dir = paths.evebox_data_dir();
+    std::fs::create_dir_all(paths.evebox_dir())
+        .context("Failed to create EveBox root directory")?;
+    std::fs::create_dir_all(&data_dir).context("Failed to create EveBox data directory")?;
+
+    let channel = download.channel;
     let temp_dir = tempfile::tempdir()?;
     let zip_path = temp_dir.path().join(&download.archive_name);
     download_file(&download.url, &zip_path, &format!("EveBox {channel} build"))?;
+    let checksum = file_sha256(&zip_path)?;
+    if checksum != sha256 {
+        bail!("The downloaded EveBox archive has SHA-256 {checksum}, expected {sha256}");
+    }
 
-    let version = install_evebox_archive(&zip_path, &install_dir, &download)?;
+    let version = install_evebox_archive(&zip_path, &install_dir, download, sha256)?;
     info!(
         "EveBox {} ({}) installed successfully at {} (data preserved in {})",
         version,
@@ -306,6 +337,7 @@ fn install_evebox_archive(
     zip_path: &Path,
     install_dir: &Path,
     download: &EveBoxDownload,
+    sha256: &str,
 ) -> Result<String> {
     let root_dir = install_dir
         .parent()
@@ -324,6 +356,8 @@ fn install_evebox_archive(
         download.channel.to_string(),
     )
     .context("Failed to write EveBox channel marker")?;
+    std::fs::write(staging.path().join(EVEBOX_SHA256_MARKER), sha256)
+        .context("Failed to write EveBox checksum marker")?;
 
     replace_evebox_installation(staging.path(), install_dir)?;
     Ok(version)
@@ -382,22 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn evebox_updates_refresh_both_channels_only_when_enabled() {
+    fn disabled_services_plan_no_upgrades() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path().to_path_buf());
         for channel in [EveBoxChannel::Release, EveBoxChannel::Development] {
-            for (server, agent) in [(false, false), (true, false), (false, true), (true, true)] {
-                let mut config = crate::config::Config::default();
-                config.evebox_server.enabled = server;
-                config.evebox_agent.enabled = agent;
-                config.windows.evebox_channel = channel;
-                for _ in 0..2 {
-                    let plan = build_upgrade_plan(&paths, &config).unwrap();
-                    assert_eq!(plan.evebox, server || agent);
-                    assert!(plan.npcap.is_none());
-                    assert!(plan.suricata.is_none());
-                }
-            }
+            let mut config = crate::config::Config::default();
+            config.windows.evebox_channel = channel;
+            assert!(!build_upgrade_plan(&paths, &config).unwrap().any());
         }
     }
 
@@ -427,15 +452,16 @@ mod tests {
         let zip_path = dir.path().join("evebox.zip");
 
         let download = EveBoxDownload::development();
+        let sha256 = "0".repeat(64);
         std::fs::write(&zip_path, b"not a zip").unwrap();
-        assert!(install_evebox_archive(&zip_path, &install_dir, &download).is_err());
+        assert!(install_evebox_archive(&zip_path, &install_dir, &download, &sha256).is_err());
         for entries in [
             vec![("README", b"no binary".as_slice())],
             vec![("evebox.exe", b"not an executable".as_slice())],
             vec![("../outside.txt", b"invalid path".as_slice())],
         ] {
             write_evebox_zip(&zip_path, &entries);
-            assert!(install_evebox_archive(&zip_path, &install_dir, &download).is_err());
+            assert!(install_evebox_archive(&zip_path, &install_dir, &download, &sha256).is_err());
             assert_eq!(
                 std::fs::read(install_dir.join("evebox.exe")).unwrap(),
                 b"old binary"
@@ -461,10 +487,15 @@ mod tests {
             EveBoxChannel::Release,
         ] {
             let download = EveBoxDownload::resolve(channel).unwrap();
+            let sha256 = download.published_sha256().unwrap();
+            assert!(!evebox_is_current(&install_dir, channel, &sha256).unwrap());
             let zip_path = dir.path().join(&download.archive_name);
             download_file(&download.url, &zip_path, "EveBox channel smoke test").unwrap();
-            let version = install_evebox_archive(&zip_path, &install_dir, &download).unwrap();
+            assert_eq!(file_sha256(&zip_path).unwrap(), sha256);
+            let version =
+                install_evebox_archive(&zip_path, &install_dir, &download, &sha256).unwrap();
             println!("Installed EveBox {version} ({channel})");
+            assert!(evebox_is_current(&install_dir, channel, &sha256).unwrap());
             assert_eq!(
                 evebox_installed_version(&install_dir).unwrap().as_deref(),
                 Some(version.as_str())
@@ -476,7 +507,7 @@ mod tests {
             std::fs::write(install_dir.join("obsolete"), b"old").unwrap();
             // Refreshing an identical build must not be skipped either.
             assert_eq!(
-                install_evebox_archive(&zip_path, &install_dir, &download).unwrap(),
+                install_evebox_archive(&zip_path, &install_dir, &download, &sha256).unwrap(),
                 version
             );
             assert!(!install_dir.join("obsolete").exists());
