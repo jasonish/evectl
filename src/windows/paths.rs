@@ -82,6 +82,10 @@ impl Paths {
         self.suricata_log_dir().join("eve.json")
     }
 
+    pub(super) fn suricata_log_file(&self) -> PathBuf {
+        self.suricata_log_dir().join("suricata.log")
+    }
+
     pub(super) fn suricata_threshold_config(&self) -> PathBuf {
         self.suricata_run_dir().join("threshold.config")
     }

@@ -673,7 +673,7 @@ fn wait_for_suricata_service_readiness(paths: &Paths) -> Result<()> {
         if !service::is_running(paths)? {
             bail!(
                 "Suricata stopped during startup, see {}",
-                paths.suricata_log_dir().join("suricata.log").display()
+                paths.suricata_log_file().display()
             );
         }
 

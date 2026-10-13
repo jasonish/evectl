@@ -15,8 +15,13 @@ use crate::prelude::*;
 use semver::Version;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 use suricatax_rules::cli as suricatax_cli;
 use suricatax_rules::paths::PathProvider;
+
+/// How long Suricata has to reload its rules.
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const RELOAD_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 pub(super) struct EvectlWindowsPaths {
     sources_dir: PathBuf,
@@ -93,14 +98,116 @@ pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()
 /// Have a running Suricata load the current rules: with the reload
 /// control when its service supports it, otherwise by restarting it.
 pub(super) fn reload_rules(paths: &Paths) -> Result<()> {
-    if service::is_running(paths)? {
-        if service::control(paths, Control::ReloadRules)? {
-            info!("Asked the Suricata service to reload its rules");
-            return Ok(());
-        }
-        info!("The installed Suricata can't reload rules as a service");
+    if reload_service_rules(paths)? {
+        return Ok(());
     }
     restart_suricata_for_rules(paths)
+}
+
+/// Have a running Suricata service reload its rules, waiting for it to
+/// finish. False if the service isn't running or can't reload rules.
+fn reload_service_rules(paths: &Paths) -> Result<bool> {
+    if !service::is_running(paths)? {
+        return Ok(false);
+    }
+    // The reload's outcome is logged after where the log ends now.
+    let log = paths.suricata_log_file();
+    let offset = std::fs::metadata(&log).map(|metadata| metadata.len());
+    if !service::control(paths, Control::ReloadRules)? {
+        info!("The installed Suricata can't reload rules as a service");
+        return Ok(false);
+    }
+    info!("Asked the Suricata service to reload its rules");
+    if let Ok(offset) = offset {
+        wait_for_reload(&log, offset)?;
+    }
+    Ok(true)
+}
+
+/// Wait for Suricata to log that it finished reloading its rules, past
+/// `offset` in its log. A failed reload logs no outcome, so it's
+/// reported once the reload doesn't finish in time.
+fn wait_for_reload(log: &Path, offset: u64) -> Result<()> {
+    let deadline = Instant::now() + RELOAD_TIMEOUT;
+    loop {
+        match reload_progress(&read_log_from(log, offset)?) {
+            Reload::Complete { summary } => {
+                match summary {
+                    Some(summary) => info!("Suricata reloaded its rules: {summary}"),
+                    None => info!("Suricata reloaded its rules"),
+                }
+                return Ok(());
+            }
+            Reload::Pending { errors } if Instant::now() >= deadline => {
+                let mut message = format!(
+                    "Suricata did not finish reloading its rules within {} seconds, see {}",
+                    RELOAD_TIMEOUT.as_secs(),
+                    log.display()
+                );
+                for error in &errors[errors.len().saturating_sub(5)..] {
+                    message.push_str("\n  ");
+                    message.push_str(error);
+                }
+                bail!(message);
+            }
+            Reload::Pending { .. } => std::thread::sleep(RELOAD_POLL_INTERVAL),
+        }
+    }
+}
+
+/// The log from `offset`, or all of it if it has been rotated since.
+fn read_log_from(path: &Path, offset: u64) -> Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+    if file.metadata()?.len() >= offset {
+        file.seek(SeekFrom::Start(offset))?;
+    }
+    let mut bytes = vec![];
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A rule reload's progress, as logged by Suricata.
+#[derive(Debug, PartialEq)]
+enum Reload {
+    /// Not finished, with the errors logged since it started.
+    Pending { errors: Vec<String> },
+    /// Finished, with Suricata's summary of the rules loaded.
+    Complete { summary: Option<String> },
+}
+
+/// The progress of the first rule reload in Suricata's log.
+fn reload_progress(log: &str) -> Reload {
+    let mut started = false;
+    let mut summary = None;
+    let mut errors = vec![];
+    for line in log.lines() {
+        if line.contains("rule reload starting") {
+            started = true;
+            summary = None;
+            errors.clear();
+        } else if !started {
+            continue;
+        } else if line.contains("rule reload complete") {
+            return Reload::Complete { summary };
+        } else if line.contains("rules successfully loaded") {
+            // A reload logs the summary for the default tenant.
+            let message = log_message(line);
+            let message = message.strip_prefix("tenant id 0:").unwrap_or(message);
+            summary = Some(message.trim_start().to_string());
+        } else if line.contains(" Error: ") {
+            errors.push(log_message(line).to_string());
+        }
+    }
+    Reload::Pending { errors }
+}
+
+/// The message of a Suricata log line, without the process, thread,
+/// time, level, and module before it.
+fn log_message(line: &str) -> &str {
+    line.splitn(3, ": ").nth(2).unwrap_or(line)
 }
 
 /// A digest of every file under the rules directory (the rules
@@ -218,6 +325,42 @@ pub(super) fn list_enabled_rulesets(paths: &Paths) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_progress_reports_the_first_reload() {
+        let line = |level: &str, module: &str, message: &str| {
+            format!("[11880 - Suricata-Main] 2026-10-13 00:42:55 {level}: {module}: {message}\n")
+        };
+        let summary = "1 rule files processed. 52608 rules successfully loaded, 2 rules failed, 0 rules skipped";
+        let error = r#"error parsing signature "alert x" from file rules\suricata.rules at line 7"#;
+
+        let mut log = line(
+            "Notice",
+            "suricata",
+            "Rule reload requested by service control",
+        );
+        assert_eq!(reload_progress(&log), Reload::Pending { errors: vec![] });
+
+        log += &line("Notice", "detect", "rule reload starting");
+        log += &line("Error", "detect", error);
+        log += &line("Info", "detect", &format!("tenant id 0:  {summary}"));
+        assert_eq!(
+            reload_progress(&log),
+            Reload::Pending {
+                errors: vec![error.to_string()]
+            }
+        );
+
+        log += &line("Notice", "detect", "rule reload complete");
+        let complete = Reload::Complete {
+            summary: Some(summary.to_string()),
+        };
+        assert_eq!(reload_progress(&log), complete);
+
+        // The first reload after the request is the one reported.
+        log += &line("Notice", "detect", "rule reload starting");
+        assert_eq!(reload_progress(&log), complete);
+    }
 
     #[test]
     fn rules_digest_tracks_content_changes() {
