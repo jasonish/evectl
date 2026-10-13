@@ -10,6 +10,7 @@ use super::paths::Paths;
 use super::runtime::{
     Role, any_managed_process_running, log_processes_in_dir, stop_named_processes_in_dir,
 };
+use super::service;
 use super::stack::stop_stack;
 use super::suricata::uninstall_suricata;
 use crate::prelude::*;
@@ -29,14 +30,17 @@ fn log_uninstall_process_diagnostics(paths: &Paths) -> Result<()> {
 }
 
 fn ensure_managed_services_stopped_for_uninstall(paths: &Paths) -> Result<()> {
-    if !any_managed_process_running(paths)? {
+    let running = || -> Result<bool> {
+        Ok(any_managed_process_running(paths)? || service::is_running(paths)?)
+    };
+    if !running()? {
         return Ok(());
     }
 
     info!("Stopping managed Windows services before uninstall");
     stop_stack(paths).context("Failed to stop managed Windows stack before uninstall")?;
 
-    if any_managed_process_running(paths)? {
+    if running()? {
         bail!("Managed Windows services are still running after stop was requested");
     }
 
@@ -154,6 +158,11 @@ fn uninstall_components(paths: &Paths, errors: &mut Vec<String>) -> bool {
         errors.push(format!("EveBox uninstall failed: {}", err));
     }
 
+    // Suricata's own command removes its service, so before its files.
+    if let Err(err) = service::unregister(paths) {
+        errors.push(format!("Suricata service removal failed: {:#}", err));
+    }
+
     if let Err(err) = uninstall_suricata(paths) {
         errors.push(format!("Suricata uninstall failed: {}", err));
     }
@@ -206,7 +215,7 @@ pub(super) fn uninstall(paths: &Paths, remove_config: bool, all: bool, yes: bool
 
     println!("The following will be removed:");
     if all {
-        println!("  EveBox, Suricata, and evectl-managed Npcap installations");
+        println!("  EveBox, Suricata and its service, and evectl-managed Npcap installations");
         println!("  {}", evectl_dir.display());
     }
     for path in removals.iter().chain(shortcuts.iter()) {

@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-//! The Windows platform behind the shared menus, where each service
-//! runs as a managed background process.
+//! The Windows platform behind the shared menus, where Suricata runs
+//! as a Windows service and the others as managed background
+//! processes.
 
 use std::path::PathBuf;
 

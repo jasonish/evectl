@@ -5,11 +5,11 @@
 
 use super::paths::{Paths, load_evectl_config};
 use super::platform::WindowsPlatform;
-use super::runtime::{Role, stop_managed_process};
+use super::service::{self, Control};
 use super::stack::capture_restart_plan;
 use super::suricata::{
-    SURICATA_VERSION, find_suricata_executable, start_suricata_background,
-    suricata_installed_version, wait_for_suricata_pid_readiness,
+    SURICATA_VERSION, find_suricata_executable, start_suricata_service, stop_suricata,
+    suricata_installed_version,
 };
 use crate::prelude::*;
 use semver::Version;
@@ -96,10 +96,23 @@ pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()
     })?;
 
     if rules_digest(&rules_dir)? == before {
-        info!("Rules unchanged, Suricata does not need to be restarted");
+        info!("Rules unchanged, Suricata does not need to reload them");
         return Ok(());
     }
 
+    reload_rules(paths)
+}
+
+/// Have a running Suricata load the current rules: with the reload
+/// control when its service supports it, otherwise by restarting it.
+pub(super) fn reload_rules(paths: &Paths) -> Result<()> {
+    if service::is_running(paths)? {
+        if service::control(paths, Control::ReloadRules)? {
+            info!("Asked the Suricata service to reload its rules");
+            return Ok(());
+        }
+        info!("The installed Suricata can't reload rules as a service");
+    }
     restart_suricata_for_rules(paths)
 }
 
@@ -145,24 +158,23 @@ fn rules_digest(rules_dir: &Path) -> Result<Option<String>> {
     ))
 }
 
-/// Suricata on Windows can't reload rules in place, so restart it,
-/// if running, to load the updated rules.
+/// Restart Suricata, if running, to load the rules.
 fn restart_suricata_for_rules(paths: &Paths) -> Result<()> {
     let plan = capture_restart_plan(paths)?;
     if !plan.suricata_running {
+        info!("Suricata is not running; the rules load when it starts");
         return Ok(());
     }
     let guid = plan.suricata_guid.as_deref().ok_or_else(|| {
         anyhow!("Failed to determine the interface GUID used by the running Suricata process")
     })?;
 
-    info!("Restarting Suricata to load the updated rules");
+    info!("Restarting Suricata to load the rules");
     let result = (|| {
-        stop_managed_process(paths, Role::Suricata)?;
-        let suricata = start_suricata_background(paths, &load_evectl_config(paths)?, guid)?;
-        wait_for_suricata_pid_readiness(paths, suricata.pid, Path::new(&suricata.exe_path))
+        stop_suricata(paths)?;
+        start_suricata_service(paths, &load_evectl_config(paths)?, guid).map(|_| ())
     })();
-    result.map_err(|err| anyhow!("Rules updated, but restarting Suricata failed: {}", err))
+    result.map_err(|err| anyhow!("Restarting Suricata to load the rules failed: {}", err))
 }
 
 /// The version used to select rules: the running executable's, else

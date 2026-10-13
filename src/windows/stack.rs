@@ -16,7 +16,8 @@ use super::runtime::{
 };
 use super::suricata::{
     build_suricata_command, ensure_suricata_start_allowed, find_suricata_executable,
-    start_suricata_background, wait_for_suricata_pid_readiness,
+    running_suricata_command, start_suricata_service, stop_suricata, suricata_running,
+    wait_for_suricata_pid_readiness,
 };
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
@@ -139,7 +140,7 @@ pub(super) fn windows_status(paths: &Paths, config: &Config) -> Result<WindowsSt
     Ok(WindowsStatus {
         suricata_enabled: config.suricata.enabled,
         suricata_installed: find_suricata_executable(paths).is_some(),
-        suricata_running: managed_process_is_running(paths, Role::Suricata)?,
+        suricata_running: suricata_running(paths)?,
         evebox_installed: find_evebox_exe(&paths.evebox_install_dir())?.is_some(),
         evebox_server_enabled: config.evebox_server.enabled,
         evebox_server_running: managed_process_is_running(paths, Role::EveBoxServer)?,
@@ -188,8 +189,8 @@ fn evebox_server_url_for(
     format!("{scheme}://{host}:{EVEBOX_PORT}")
 }
 
-fn suricata_guid_from_metadata(metadata: &RuntimeMetadata) -> Option<String> {
-    metadata.argv.windows(2).find_map(|window| {
+fn suricata_guid_from_command(command: &[String]) -> Option<String> {
+    command.windows(2).find_map(|window| {
         if window[0] == "-i" {
             normalize_interface_guid(&window[1])
         } else {
@@ -199,10 +200,10 @@ fn suricata_guid_from_metadata(metadata: &RuntimeMetadata) -> Option<String> {
 }
 
 pub(super) fn capture_restart_plan(paths: &Paths) -> Result<RestartPlan> {
-    let suricata_running = managed_runtime_metadata(paths, Role::Suricata)?;
+    let suricata_running = running_suricata_command(paths)?;
     let suricata_guid = suricata_running
-        .as_ref()
-        .and_then(suricata_guid_from_metadata)
+        .as_deref()
+        .and_then(suricata_guid_from_command)
         .or_else(|| configured_interface_guid(paths).ok().flatten());
 
     let evebox_server_running = managed_runtime_metadata(paths, Role::EveBoxServer)?.is_some();
@@ -230,8 +231,7 @@ pub(super) fn restart_managed_components(
                 )
             })?;
 
-            let suricata = start_suricata_background(paths, config, guid)?;
-            wait_for_suricata_pid_readiness(paths, suricata.pid, Path::new(&suricata.exe_path))?;
+            start_suricata_service(paths, config, guid)?;
         }
 
         if plan.evebox_server_running {
@@ -618,9 +618,7 @@ pub(super) fn start_stack(paths: &Paths, debug: bool, guid: Option<String>) -> R
 
         if status.suricata_enabled {
             let guid = resolve_interface_guid(paths, guid, true)?;
-            let suricata = start_suricata_background(paths, &config, &guid)?;
-            wait_for_suricata_pid_readiness(paths, suricata.pid, Path::new(&suricata.exe_path))?;
-            started.push(suricata);
+            started.push(start_suricata_service(paths, &config, &guid)?);
         }
 
         if status.evebox_server_enabled {
@@ -688,7 +686,7 @@ pub(super) fn stop_stack(paths: &Paths) -> Result<()> {
         errors.push(format!("Failed to stop EveBox: {err}"));
     }
 
-    if let Err(err) = stop_managed_process(paths, Role::Suricata) {
+    if let Err(err) = stop_suricata(paths) {
         errors.push(format!("Failed to stop Suricata: {err}"));
     }
 

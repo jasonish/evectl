@@ -141,7 +141,7 @@ fn read_runtime_metadata(path: &Path) -> Result<Option<RuntimeMetadata>> {
     Ok(Some(metadata))
 }
 
-fn normalize_path_for_compare(path: &Path) -> String {
+pub(super) fn normalize_path_for_compare(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
         .to_ascii_lowercase()
@@ -245,6 +245,41 @@ pub(super) fn powershell(script: &str, failure: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Run a PowerShell script elevated, after Windows asks for
+/// administrator approval, returning its exit code.
+pub(super) fn powershell_elevated(script: &str) -> Result<i32> {
+    // The elevated process doesn't inherit this environment, so the
+    // script is handed to it encoded on its command line instead.
+    const LAUNCHER: &str = r#"
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($env:EVECTL_ELEVATED_SCRIPT))
+try {
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
+} catch {
+    for ($e = $_.Exception; $e; $e = $e.InnerException) {
+        if ($e -is [System.ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 1223) { exit 1223 }
+    }
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit -1
+}
+exit $process.ExitCode
+"#;
+
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", LAUNCHER])
+        .env("EVECTL_ELEVATED_SCRIPT", script)
+        .output()
+        .context("Failed to run PowerShell")?;
+    match output.status.code() {
+        Some(1223) => bail!("Administrator approval was declined"),
+        Some(-1) => bail!(
+            "Failed to start an elevated PowerShell: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Some(code) => Ok(code),
+        None => bail!("PowerShell terminated unexpectedly"),
+    }
+}
+
 pub(super) fn list_named_processes(process_name: &str) -> Result<Vec<NamedProcessInfo>> {
     let script = format!(
         "$procs = @(Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, Path); ConvertTo-Json -InputObject @($procs) -Compress",
@@ -289,7 +324,7 @@ pub(super) fn process_matches_exe(pid: u32, exe_path: &Path) -> Result<bool> {
     Ok(normalize_path_for_compare(&running_path) == normalize_path_for_compare(exe_path))
 }
 
-fn path_is_same_or_descendant(path: &Path, dir: &Path) -> bool {
+pub(super) fn path_is_same_or_descendant(path: &Path, dir: &Path) -> bool {
     let path = normalize_path_for_compare(path);
     let dir = normalize_path_for_compare(dir);
 

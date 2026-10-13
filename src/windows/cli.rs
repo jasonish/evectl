@@ -120,6 +120,10 @@ pub(crate) enum RulesCommands {
         quiet: bool,
     },
 
+    /// Have the running Suricata reload its rules, restarting it if its
+    /// service can't reload them
+    Reload,
+
     /// Refresh Suricata ruleset index
     UpdateSources,
 
@@ -151,7 +155,8 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
     use super::menu::{config_set_evebox_channel, log_status, menu_main, project_info};
     use super::paths::{Paths, load_evectl_config};
     use super::rules::{
-        disable_ruleset, enable_ruleset, list_enabled_rulesets, update_rules, update_sources,
+        disable_ruleset, enable_ruleset, list_enabled_rulesets, reload_rules, update_rules,
+        update_sources,
     };
     use super::stack::windows_status;
     use super::stack::{restart_stack, run_housekeeper, start_stack, stop_stack};
@@ -187,6 +192,7 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
         },
         Some(Commands::Rules { command }) => match command {
             RulesCommands::Update { force, quiet } => update_rules(&paths, force, quiet),
+            RulesCommands::Reload => reload_rules(&paths),
             RulesCommands::UpdateSources => update_sources(&paths),
             RulesCommands::EnableRuleset { name } => enable_ruleset(&paths, name.as_deref()),
             RulesCommands::DisableRuleset { name } => disable_ruleset(&paths, &name),

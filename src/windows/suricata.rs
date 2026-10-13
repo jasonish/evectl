@@ -7,10 +7,11 @@ use super::component::Component;
 use super::install::download_file;
 use super::paths::{Paths, ensure_dir};
 use super::runtime::{
-    Role, RuntimeMetadata, is_pid_running, launch_managed, list_named_processes,
-    managed_process_is_running, powershell, powershell_output, process_matches_exe,
-    stop_managed_process,
+    Role, RuntimeMetadata, build_runtime_metadata, format_command_line, is_pid_running,
+    list_named_processes, managed_process_is_running, managed_runtime_metadata, powershell,
+    powershell_output, process_matches_exe, stop_managed_process,
 };
+use super::service;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -385,7 +386,7 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
                 SURICATA_PACKAGE_VERSION
             );
 
-            if let Err(err) = stop_managed_process(paths, Role::Suricata) {
+            if let Err(err) = stop_suricata(paths) {
                 warn!("Failed to stop running Suricata processes: {}", err);
             }
 
@@ -637,8 +638,8 @@ pub(super) fn configure_suricata_command(
 }
 
 pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
-    if managed_process_is_running(paths, Role::Suricata)? {
-        bail!("A managed Suricata process is already running. Use 'evectl stop' first.");
+    if suricata_running(paths)? {
+        bail!("A managed Suricata is already running. Use 'evectl stop' first.");
     }
 
     let process_count = list_named_processes("suricata")?.len();
@@ -652,15 +653,69 @@ pub(super) fn ensure_suricata_start_allowed(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn start_suricata_background(
+/// True when the Suricata service is running, or a Suricata that an
+/// older EveCtl started as a detached process.
+pub(super) fn suricata_running(paths: &Paths) -> Result<bool> {
+    Ok(service::is_running(paths)? || managed_process_is_running(paths, Role::Suricata)?)
+}
+
+/// The command line of the running Suricata, as in `suricata_running`.
+pub(super) fn running_suricata_command(paths: &Paths) -> Result<Option<Vec<String>>> {
+    if let Some(command) = service::running_command(paths)? {
+        return Ok(Some(command));
+    }
+    Ok(managed_runtime_metadata(paths, Role::Suricata)?.map(|metadata| metadata.argv))
+}
+
+/// Stop the Suricata service, and any Suricata that an older EveCtl
+/// started as a detached process.
+pub(super) fn stop_suricata(paths: &Paths) -> Result<()> {
+    let service = service::stop(paths);
+    let detached = stop_managed_process(paths, Role::Suricata);
+    service.and(detached)
+}
+
+/// Start Suricata as a service, first registering it, or updating its
+/// registration when the command built from the configuration differs.
+pub(super) fn start_suricata_service(
     paths: &Paths,
     config: &Config,
     guid: &str,
 ) -> Result<RuntimeMetadata> {
     ensure_suricata_start_allowed(paths)?;
 
-    let mut command = build_suricata_command(paths, config, guid)?;
-    launch_managed(paths, Role::Suricata, &mut command, None)
+    let command = build_suricata_command(paths, config, guid)?;
+    service::register(paths, &command)?;
+    info!(
+        "Starting the Suricata service: {}",
+        format_command_line(&command)
+    );
+    let pid = service::start(paths)?;
+    wait_for_suricata_service_readiness(paths)?;
+    build_runtime_metadata(Role::Suricata, &command, pid, None, None)
+}
+
+/// Wait for the Suricata service to start writing events. Suricata
+/// reports itself running before it initializes, so a failed startup
+/// shows as the service stopping.
+fn wait_for_suricata_service_readiness(paths: &Paths) -> Result<()> {
+    let eve_json = paths.suricata_eve_json();
+    let started = std::time::Instant::now();
+
+    loop {
+        if !service::is_running(paths)? {
+            bail!(
+                "Suricata stopped during startup, see {}",
+                paths.suricata_log_dir().join("suricata.log").display()
+            );
+        }
+
+        if eve_json.exists() || started.elapsed() >= SURICATA_READY_TIMEOUT {
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 pub(super) fn wait_for_suricata_pid_readiness(

@@ -37,6 +37,8 @@ mod rules;
 #[cfg(windows)]
 mod runtime;
 #[cfg(windows)]
+mod service;
+#[cfg(windows)]
 mod stack;
 #[cfg(windows)]
 mod suricata;
