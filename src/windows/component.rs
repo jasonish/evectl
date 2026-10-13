@@ -7,11 +7,12 @@ use super::paths::Paths;
 use crate::prelude::*;
 use std::cmp::Ordering;
 
-/// A component EveCtl installs at a bundled version.
+/// A component EveCtl installs at an available version, bundled with
+/// EveCtl or found when updating.
 pub(super) trait Component {
     fn name(&self) -> &'static str;
 
-    fn bundled_version(&self) -> &'static str;
+    fn available_version(&self) -> &str;
 
     /// Whether an installation is present at all.
     fn installed(&self, paths: &Paths) -> bool;
@@ -49,7 +50,7 @@ pub(super) fn upgrade_needed(component: &dyn Component, paths: &Paths) -> Result
             .then_some(Upgrade::Reinstall));
     };
     Ok(
-        match compare_versions(&installed, component.bundled_version()) {
+        match compare_versions(&installed, component.available_version()) {
             Some(Ordering::Less) => Some(Upgrade::Outdated(installed)),
             _ => None,
         },
@@ -58,14 +59,14 @@ pub(super) fn upgrade_needed(component: &dyn Component, paths: &Paths) -> Result
 
 pub(super) fn upgrade(component: &dyn Component, paths: &Paths, reason: &Upgrade) -> Result<()> {
     let name = component.name();
-    let bundled = component.bundled_version();
+    let available = component.available_version();
     match reason {
-        Upgrade::Install => info!("{name} was not detected. Installing version {bundled}..."),
+        Upgrade::Install => info!("{name} was not detected. Installing version {available}..."),
         Upgrade::Reinstall => info!(
-            "{name} is installed, but the version could not be determined. Reinstalling bundled version {bundled}."
+            "{name} is installed, but the version could not be determined. Reinstalling version {available}."
         ),
         Upgrade::Outdated(installed) => {
-            info!("{name} {installed} is older than bundled {bundled}. Upgrading {name}...")
+            info!("{name} {installed} is older than {available}. Upgrading {name}...")
         }
     }
     component.install(paths, true)
@@ -134,7 +135,7 @@ mod tests {
             "Fake"
         }
 
-        fn bundled_version(&self) -> &'static str {
+        fn available_version(&self) -> &str {
             "1.10"
         }
 

@@ -116,7 +116,7 @@ impl Component for Npcap {
         "Npcap"
     }
 
-    fn bundled_version(&self) -> &'static str {
+    fn available_version(&self) -> &str {
         NPCAP_VERSION
     }
 

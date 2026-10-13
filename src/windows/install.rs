@@ -28,7 +28,7 @@ pub(super) const EVEBOX_SHORTCUT_NAME: &str = "EveBox.url";
 #[derive(Debug, Default)]
 struct UpgradePlan {
     npcap: Option<Upgrade>,
-    suricata: Option<Upgrade>,
+    suricata: Option<(Suricata, Upgrade)>,
     evebox: bool,
 }
 
@@ -204,7 +204,8 @@ fn build_upgrade_plan(paths: &Paths, config: &crate::config::Config) -> Result<U
             None
         },
         suricata: if use_suricata {
-            upgrade_needed(&Suricata, paths)?
+            let suricata = Suricata::resolve();
+            upgrade_needed(&suricata, paths)?.map(|reason| (suricata, reason))
         } else {
             None
         },
@@ -239,8 +240,8 @@ fn upgrade_components(paths: &Paths) -> Result<()> {
         if let Some(reason) = &plan.npcap {
             upgrade(&Npcap, paths, reason)?;
         }
-        if let Some(reason) = &plan.suricata {
-            upgrade(&Suricata, paths, reason)?;
+        if let Some((suricata, reason)) = &plan.suricata {
+            upgrade(suricata, paths, reason)?;
         }
         if plan.evebox {
             install_or_upgrade_evebox(paths, true, config.windows.evebox_channel)?;

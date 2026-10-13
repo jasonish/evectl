@@ -12,13 +12,14 @@ use super::runtime::{
     process_matches_exe, stop_managed_process,
 };
 use super::service;
-use super::suricata_package::{PINNED_VERSION, Package};
+use super::suricata_package::Package;
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// The bundled Suricata release.
+/// The bundled Suricata release. Newer builds of the same major and
+/// minor version are picked up from the releases page.
 pub(super) const SURICATA_VERSION: &str = "8.0.8";
 const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
     r"C:\Program Files\Suricata\suricata.exe",
@@ -276,7 +277,20 @@ fn is_suricata_installed(paths: &Paths) -> bool {
     false
 }
 
-pub(super) struct Suricata;
+/// Suricata at the build to install.
+#[derive(Debug)]
+pub(super) struct Suricata {
+    package: Package,
+}
+
+impl Suricata {
+    /// Suricata at the newest available build.
+    pub(super) fn resolve() -> Self {
+        Self {
+            package: Package::resolve(),
+        }
+    }
+}
 
 impl Component for Suricata {
     fn name(&self) -> &'static str {
@@ -286,8 +300,8 @@ impl Component for Suricata {
     /// The build revision is included, so that the same Suricata
     /// release rebuilt (or an install from the OISF MSI, marked with
     /// only the release) is replaced.
-    fn bundled_version(&self) -> &'static str {
-        PINNED_VERSION
+    fn available_version(&self) -> &str {
+        &self.package.version
     }
 
     fn installed(&self, paths: &Paths) -> bool {
@@ -299,13 +313,13 @@ impl Component for Suricata {
     }
 
     /// An evectl-managed installation without a version marker predates
-    /// the marker; replace it with the bundled version.
+    /// the marker; replace it with the available version.
     fn reinstall_unknown_version(&self) -> bool {
         true
     }
 
     fn install(&self, paths: &Paths, upgrade: bool) -> Result<()> {
-        install_or_upgrade_suricata(paths, upgrade)
+        install_suricata(paths, &self.package, upgrade)
     }
 }
 
@@ -329,14 +343,14 @@ pub(super) fn suricata_installed_version(paths: &Paths) -> Result<Option<String>
     Ok(None)
 }
 
-/// Install EveCtl's Suricata build, unless an
+/// Install Suricata at the newest available build, unless an
 /// evectl-managed installation exists and this isn't an upgrade.
 pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Result<()> {
     if is_suricata_managed_installed(paths) && !upgrade {
         info!("Suricata is already installed in the evectl-managed directory.");
         return Ok(());
     }
-    install_suricata(paths, &Package::pinned(), upgrade)
+    install_suricata(paths, &Package::resolve(), upgrade)
 }
 
 fn install_suricata(paths: &Paths, package: &Package, upgrade: bool) -> Result<()> {
