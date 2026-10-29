@@ -4,22 +4,22 @@
 //! Suricata installation, configuration, and launch.
 
 use super::component::Component;
-use super::install::download_file;
+use super::install::extract_zip;
 use super::paths::{Paths, ensure_dir};
 use super::runtime::{
     Role, RuntimeMetadata, build_runtime_metadata, format_command_line, is_pid_running,
     list_named_processes, managed_process_is_running, managed_runtime_metadata, powershell,
-    powershell_output, process_matches_exe, stop_managed_process,
+    process_matches_exe, stop_managed_process,
 };
 use super::service;
+use super::suricata_package::{PINNED_VERSION, Package};
 use crate::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// The bundled Suricata release and its Windows package revision.
-pub(super) const SURICATA_VERSION: &str = "8.0.7";
-const SURICATA_PACKAGE_VERSION: &str = "8.0.7-1";
+/// The bundled Suricata release.
+pub(super) const SURICATA_VERSION: &str = "8.0.8";
 const SURICATA_SYSTEM_EXE_PATHS: [&str; 2] = [
     r"C:\Program Files\Suricata\suricata.exe",
     r"C:\Program Files (x86)\Suricata\suricata.exe",
@@ -186,6 +186,20 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Point the default install location in a Suricata config at
+/// `install_dir`. The build's config doubles its backslashes, which
+/// are kept doubled.
+fn patch_suricata_config_paths(config: &str, install_dir: &Path) -> String {
+    let install_dir = install_dir.display().to_string().replace('/', "\\");
+    config
+        .replace(
+            r"C:\\Program Files\\Suricata",
+            &install_dir.replace('\\', r"\\"),
+        )
+        .replace(r"C:\Program Files\Suricata", &install_dir)
+        .replace(r"C:\Program Files (x86)\Suricata", &install_dir)
+}
+
 fn patch_suricata_config_for_local_install(install_dir: &Path) -> Result<()> {
     let config_path = install_dir.join("suricata.yaml");
     if !config_path.exists() {
@@ -195,10 +209,7 @@ fn patch_suricata_config_for_local_install(install_dir: &Path) -> Result<()> {
     let original = std::fs::read_to_string(&config_path)
         .context(format!("Failed to read {}", config_path.display()))?;
 
-    let install_dir_str = install_dir.display().to_string().replace('/', "\\");
-    let patched = original
-        .replace(r"C:\Program Files\Suricata", &install_dir_str)
-        .replace(r"C:\Program Files (x86)\Suricata", &install_dir_str);
+    let patched = patch_suricata_config_paths(&original, install_dir);
 
     if patched != original {
         std::fs::write(&config_path, patched)
@@ -212,63 +223,15 @@ fn patch_suricata_config_for_local_install(install_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract_msi_package_to_dir(path: &Path, name: &str, destination: &Path) -> Result<()> {
-    info!(
-        "Extracting {} from {:?} into {}",
-        name,
-        path,
-        destination.display()
-    );
-
-    let staging_dir = tempfile::tempdir().context("Failed to create MSI extraction directory")?;
-    let log_path =
-        std::env::temp_dir().join(format!("evectl-{}-extract.log", name.to_ascii_lowercase()));
-
-    let msi_path = path.to_string_lossy().replace('\'', "''");
-    let target_dir = staging_dir.path().to_string_lossy().replace('\'', "''");
-    let log_path_str = log_path.to_string_lossy().replace('\'', "''");
-
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-$msiPath = '{}'
-$targetDir = '{}'
-$logPath = '{}'
-New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-$argumentList = @('/a', $msiPath, '/qn', '/norestart', ('TARGETDIR=' + $targetDir), '/L*v', $logPath)
-$process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentList -Wait -PassThru
-exit $process.ExitCode
-"#,
-        msi_path, target_dir, log_path_str
-    );
-
-    let output = powershell_output(&script).context(format!("Failed to extract {} MSI", name))?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    match output.status.code() {
-        Some(0) => {
-            info!("{} extraction completed successfully", name);
-        }
-        Some(3010) | Some(1641) => {
-            warn!(
-                "{} extraction completed, but a system reboot was requested by Windows Installer",
-                name
-            );
-        }
-        Some(1223) => bail!("{} extraction was cancelled at the UAC prompt", name),
-        Some(code) => bail!(
-            "{} extraction failed with code {}. MSI log: {:?}. {}",
-            name,
-            code,
-            log_path,
-            stderr.trim()
-        ),
-        None => bail!("{} extraction terminated unexpectedly", name),
-    }
+/// Extract the Suricata package into `destination`, replacing it. The
+/// package holds the installation under a single top-level directory.
+fn extract_suricata_package(zip_path: &Path, destination: &Path) -> Result<()> {
+    let staging_dir =
+        tempfile::tempdir().context("Failed to create Suricata extraction directory")?;
+    extract_zip(zip_path, staging_dir.path(), "Suricata")?;
 
     let extracted_exe = find_file_recursive(staging_dir.path(), "suricata.exe")?
-        .ok_or_else(|| anyhow!("Failed to locate suricata.exe in extracted MSI contents"))?;
+        .ok_or_else(|| anyhow!("The Suricata package does not contain suricata.exe"))?;
 
     let extracted_root = extracted_exe.parent().ok_or_else(|| {
         anyhow!(
@@ -320,8 +283,11 @@ impl Component for Suricata {
         "Suricata"
     }
 
+    /// The build revision is included, so that the same Suricata
+    /// release rebuilt (or an install from the OISF MSI, marked with
+    /// only the release) is replaced.
     fn bundled_version(&self) -> &'static str {
-        SURICATA_VERSION
+        PINNED_VERSION
     }
 
     fn installed(&self, paths: &Paths) -> bool {
@@ -363,14 +329,19 @@ pub(super) fn suricata_installed_version(paths: &Paths) -> Result<Option<String>
     Ok(None)
 }
 
+/// Install EveCtl's Suricata build, unless an
+/// evectl-managed installation exists and this isn't an upgrade.
 pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Result<()> {
-    let managed_installed = is_suricata_managed_installed(paths);
-    let any_installed = is_suricata_installed(paths);
-
-    if managed_installed && !upgrade {
+    if is_suricata_managed_installed(paths) && !upgrade {
         info!("Suricata is already installed in the evectl-managed directory.");
         return Ok(());
     }
+    install_suricata(paths, &Package::pinned(), upgrade)
+}
+
+fn install_suricata(paths: &Paths, package: &Package, upgrade: bool) -> Result<()> {
+    let managed_installed = is_suricata_managed_installed(paths);
+    let any_installed = is_suricata_installed(paths);
 
     if any_installed && !managed_installed && !upgrade {
         info!(
@@ -381,56 +352,38 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
 
     if upgrade {
         if managed_installed {
-            info!(
-                "Upgrading Suricata to version {}...",
-                SURICATA_PACKAGE_VERSION
-            );
-
-            if let Err(err) = stop_suricata(paths) {
-                warn!("Failed to stop running Suricata processes: {}", err);
-            }
-
-            uninstall_suricata(paths)?;
+            info!("Upgrading Suricata to version {}...", package.version);
         } else if any_installed {
             info!(
                 "A non-evectl Suricata installation was detected. Installing evectl-managed version {} instead...",
-                SURICATA_PACKAGE_VERSION
+                package.version
             );
         } else {
             info!(
                 "Suricata was not detected. Installing version {} instead...",
-                SURICATA_PACKAGE_VERSION
+                package.version
             );
         }
     }
 
-    let url = format!(
-        "https://www.openinfosecfoundation.org/download/windows/Suricata-{}-64bit.msi",
-        SURICATA_PACKAGE_VERSION
-    );
-    let filename = format!("Suricata-{}-64bit.msi", SURICATA_PACKAGE_VERSION);
+    // Downloaded first, so a failed download leaves the current
+    // installation running.
+    let zip_path = package.download(paths)?;
 
-    let cache_dir = paths.downloads_dir();
-    std::fs::create_dir_all(&cache_dir).context(format!(
-        "Failed to create installer cache directory {}",
-        cache_dir.display()
-    ))?;
+    if upgrade && managed_installed {
+        if let Err(err) = stop_suricata(paths) {
+            warn!("Failed to stop running Suricata processes: {}", err);
+        }
 
-    let msi_path = cache_dir.join(&filename);
-
-    if msi_path.exists() {
-        info!("Suricata installer already exists at {:?}", msi_path);
-        info!("Skipping download, using existing file");
-    } else {
-        download_file(&url, &msi_path, "Suricata")?;
+        uninstall_suricata(paths)?;
     }
 
     let install_dir = paths.suricata_install_dir();
-    extract_msi_package_to_dir(&msi_path, "Suricata", &install_dir)?;
+    extract_suricata_package(&zip_path, &install_dir)?;
     patch_suricata_config_for_local_install(&install_dir)?;
 
     let marker_path = version_marker_path(paths);
-    std::fs::write(&marker_path, SURICATA_VERSION).context(format!(
+    std::fs::write(&marker_path, &package.version).context(format!(
         "Failed to write Suricata version marker {}",
         marker_path.display()
     ))?;
@@ -445,7 +398,7 @@ pub(super) fn install_or_upgrade_suricata(paths: &Paths, upgrade: bool) -> Resul
 
     info!(
         "Suricata {} extracted to {}",
-        SURICATA_PACKAGE_VERSION,
+        package.version,
         install_dir.display()
     );
 
@@ -789,5 +742,67 @@ mod tests {
         assert!(args.contains(&"outputs.1.pcap-log.enabled=true".to_string()));
         assert!(args.contains(&"outputs.1.pcap-log.dir=C:/evectl/suricata/log/pcap".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("not port 22"));
+    }
+
+    #[test]
+    fn config_paths_move_to_the_install_dir_keeping_their_escaping() {
+        let install_dir = Path::new(r"C:\Users\me\AppData\Local\evectl\suricata\install");
+        let config = concat!(
+            r"default-log-dir: C:\\Program Files\\Suricata\\log",
+            "\n",
+            r"magic-file: C:\\Program Files\\Suricata\\magic.mgc",
+            "\n",
+            r"classification-file: C:\Program Files\Suricata\classification.config",
+            "\n",
+            r"reference-config-file: C:\Program Files (x86)\Suricata\reference.config",
+            "\n",
+        );
+        assert_eq!(
+            patch_suricata_config_paths(config, install_dir),
+            concat!(
+                r"default-log-dir: C:\\Users\\me\\AppData\\Local\\evectl\\suricata\\install\\log",
+                "\n",
+                r"magic-file: C:\\Users\\me\\AppData\\Local\\evectl\\suricata\\install\\magic.mgc",
+                "\n",
+                r"classification-file: C:\Users\me\AppData\Local\evectl\suricata\install\classification.config",
+                "\n",
+                r"reference-config-file: C:\Users\me\AppData\Local\evectl\suricata\install\reference.config",
+                "\n",
+            )
+        );
+    }
+
+    #[test]
+    fn package_contents_replace_the_install_dir() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("suricata.zip");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        for (name, contents) in [
+            ("suricata-8.0.7-1-windows-x86_64/suricata.exe", "binary"),
+            ("suricata-8.0.7-1-windows-x86_64/rules/files.rules", "rules"),
+        ] {
+            archive
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(contents.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+
+        let install_dir = dir.path().join("install");
+        std::fs::create_dir(&install_dir).unwrap();
+        std::fs::write(install_dir.join("old.dll"), "old").unwrap();
+
+        extract_suricata_package(&zip_path, &install_dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("suricata.exe")).unwrap(),
+            "binary"
+        );
+        assert_eq!(
+            std::fs::read_to_string(install_dir.join("rules").join("files.rules")).unwrap(),
+            "rules"
+        );
+        assert!(!install_dir.join("old.dll").exists());
     }
 }

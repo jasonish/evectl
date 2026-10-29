@@ -6,6 +6,9 @@
 
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
+mod checksum;
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod cli;
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -42,6 +45,8 @@ mod service;
 mod stack;
 #[cfg(windows)]
 mod suricata;
+#[cfg(windows)]
+mod suricata_package;
 #[cfg(windows)]
 mod uninstall;
 #[cfg(windows)]

@@ -329,18 +329,25 @@ fn install_evebox_archive(
 }
 
 fn extract_evebox_archive(zip_path: &Path, destination: &Path) -> Result<PathBuf> {
-    info!("Extracting EveBox to {}", destination.display());
-    let zip_file =
-        std::fs::File::open(zip_path).context("Failed to open downloaded EveBox zip file")?;
-    let mut archive =
-        zip::ZipArchive::new(zip_file).context("Failed to read EveBox zip archive")?;
+    extract_zip(zip_path, destination, "EveBox")?;
+    find_evebox_exe(destination)?
+        .context("Downloaded EveBox zip archive does not contain evebox.exe")
+}
+
+/// Extract a downloaded zip archive of `name` into `destination`.
+pub(super) fn extract_zip(zip_path: &Path, destination: &Path, name: &str) -> Result<()> {
+    info!("Extracting {name} to {}", destination.display());
+    let zip_file = std::fs::File::open(zip_path)
+        .with_context(|| format!("Failed to open downloaded {name} zip file"))?;
+    let mut archive = zip::ZipArchive::new(zip_file)
+        .with_context(|| format!("Failed to read {name} zip archive"))?;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file
+        let entry = file
             .enclosed_name()
-            .context("Invalid path in EveBox zip archive")?;
-        let outpath = destination.join(name);
+            .with_context(|| format!("Invalid path in {name} zip archive"))?;
+        let outpath = destination.join(entry);
 
         if file.is_dir() {
             std::fs::create_dir_all(&outpath)?;
@@ -353,8 +360,7 @@ fn extract_evebox_archive(zip_path: &Path, destination: &Path) -> Result<PathBuf
         }
     }
 
-    find_evebox_exe(destination)?
-        .context("Downloaded EveBox zip archive does not contain evebox.exe")
+    Ok(())
 }
 
 #[cfg(test)]

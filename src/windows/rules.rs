@@ -18,8 +18,6 @@ use std::process::Command;
 use suricatax_rules::cli as suricatax_cli;
 use suricatax_rules::paths::PathProvider;
 
-const WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS: [&str; 1] = ["file.magic"];
-
 pub(super) struct EvectlWindowsPaths {
     sources_dir: PathBuf,
     cache_dir: PathBuf,
@@ -58,23 +56,12 @@ fn with_path_provider<T>(
 
 pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()> {
     let suricata_version = detect_suricata_version_for_rules_update(paths);
-    let disable_substrings = WINDOWS_UNSUPPORTED_RULE_SUBSTRINGS
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
 
     if let Some(version) = &suricata_version {
         info!("Selecting rules for Suricata version {}", version);
     } else {
         warn!(
             "Could not determine Suricata version for rules update; using suricatax-rules default"
-        );
-    }
-
-    if !disable_substrings.is_empty() {
-        info!(
-            "Disabling rules containing unsupported Suricata for Windows keywords: {}",
-            disable_substrings.join(", ")
         );
     }
 
@@ -91,7 +78,7 @@ pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()
             quiet,
             suricata_version.as_deref(),
             &[],
-            &disable_substrings,
+            &[],
         )
     })?;
 
