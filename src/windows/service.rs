@@ -43,8 +43,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const USER_ACCESS: u32 =
     SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | SERVICE_USER_DEFINED_CONTROL;
 
-/// Exit codes of the elevated registration scripts.
-const SURICATA_FAILED: i32 = 2;
+/// Exit codes of the elevated service scripts.
+const COMMAND_FAILED: i32 = 2;
 const PERMISSIONS_FAILED: i32 = 3;
 
 /// Why registration needs administrator approval, shown before Windows
@@ -266,9 +266,10 @@ fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// The elevated script that runs a Suricata service command, then
-/// grants `sddl` on the service if given, recording the output in
-/// `log`.
+/// The elevated script that runs a service command, then grants
+/// `sddl` on the service if given, recording the output in `log`. A
+/// failing command's exit code is recorded too, as a program that
+/// can't start, for a missing DLL say, fails without any output.
 fn service_script(command: &[String], sddl: Option<&str>, log: &Path) -> String {
     let invocation = command
         .iter()
@@ -280,7 +281,7 @@ fn service_script(command: &[String], sddl: Option<&str>, log: &Path) -> String 
 $output = & {invocation} 2>&1
 $code = $LASTEXITCODE
 $output | ForEach-Object {{ "$_" }} | Out-File -LiteralPath $log -Encoding utf8
-if ($code -ne 0) {{ exit {SURICATA_FAILED} }}
+if ($code -ne 0) {{ 'exit code {{0}} (0x{{0:X8}})' -f $code | Out-File -LiteralPath $log -Encoding utf8 -Append; exit {COMMAND_FAILED} }}
 "#,
         log = ps_quote(&log.to_string_lossy()),
     );
@@ -289,7 +290,7 @@ if ($code -ne 0) {{ exit {SURICATA_FAILED} }}
             r#"$output = & sc.exe sdset {name} {sddl} 2>&1
 $code = $LASTEXITCODE
 $output | ForEach-Object {{ "$_" }} | Out-File -LiteralPath $log -Encoding utf8 -Append
-if ($code -ne 0) {{ exit {PERMISSIONS_FAILED} }}
+if ($code -ne 0) {{ 'exit code {{0}} (0x{{0:X8}})' -f $code | Out-File -LiteralPath $log -Encoding utf8 -Append; exit {PERMISSIONS_FAILED} }}
 "#,
             name = ps_quote(SERVICE_NAME),
             sddl = ps_quote(sddl),
@@ -315,7 +316,7 @@ fn run_service_script(
     let output = output.trim_start_matches('\u{feff}').trim();
     match code {
         0 => Ok(()),
-        SURICATA_FAILED => bail!("{name} failed:\n{output}"),
+        COMMAND_FAILED => bail!("{name} failed:\n{output}"),
         PERMISSIONS_FAILED => bail!("Failed to grant control of the Suricata service:\n{output}"),
         code => bail!("The elevated service script failed with exit code {code}"),
     }
@@ -393,7 +394,9 @@ pub(super) fn register(paths: &Paths, command: &Command) -> Result<()> {
 }
 
 /// Remove EveCtl's Suricata service registration, which must be
-/// stopped. Uses Suricata's own command while its executable remains.
+/// stopped. Suricata has its own command for this, but it needs
+/// Npcap's DLLs to even start, and an uninstall may find Npcap
+/// already gone, so the service manager's tool does it instead.
 pub(super) fn unregister(paths: &Paths) -> Result<()> {
     let Some(service) = open(SERVICE_QUERY_CONFIG)? else {
         return Ok(());
@@ -402,20 +405,12 @@ pub(super) fn unregister(paths: &Paths) -> Result<()> {
     if !is_managed_command(paths, &registered) {
         return Ok(());
     }
-    let (name, command) = match registered.first() {
-        Some(exe) if Path::new(exe).exists() => (
-            "suricata --service-remove",
-            vec![exe.clone(), "--service-remove".to_string()],
-        ),
-        _ => (
-            "sc.exe delete",
-            ["sc.exe", "delete", SERVICE_NAME]
-                .map(String::from)
-                .to_vec(),
-        ),
-    };
+    let command = ["sc.exe", "delete", SERVICE_NAME]
+        .map(String::from)
+        .to_vec();
     info!("Removing the Suricata service, Windows will ask for administrator approval");
-    run_service_script(paths, name, &command, None).context("Failed to remove the Suricata service")
+    run_service_script(paths, "sc.exe delete", &command, None)
+        .context("Failed to remove the Suricata service")
 }
 
 /// Start EveCtl's Suricata service, returning its process ID once it
@@ -600,7 +595,9 @@ mod tests {
         assert!(script.contains(
             r"$output = & 'C:\Users\O''Brien\suricata.exe' '--service-install' '-l' 'a b' 2>&1"
         ));
-        assert!(script.contains(&format!("exit {SURICATA_FAILED}")));
+        assert!(script.contains(&format!(
+            "'exit code {{0}} (0x{{0:X8}})' -f $code | Out-File -LiteralPath $log -Encoding utf8 -Append; exit {COMMAND_FAILED}"
+        )));
         assert!(script.contains("& sc.exe sdset 'Suricata' 'D:(A;;RP;;;SY)' 2>&1"));
         assert!(script.contains(&format!("exit {PERMISSIONS_FAILED}")));
         assert!(script.ends_with("exit 0\n"));

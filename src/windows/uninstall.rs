@@ -158,7 +158,7 @@ fn uninstall_components(paths: &Paths, errors: &mut Vec<String>) -> bool {
         errors.push(format!("EveBox uninstall failed: {}", err));
     }
 
-    // Suricata's own command removes its service, so before its files.
+    // The service registration goes before the files it points at.
     if let Err(err) = service::unregister(paths) {
         errors.push(format!("Suricata service removal failed: {:#}", err));
     }
