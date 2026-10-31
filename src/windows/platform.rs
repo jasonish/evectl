@@ -218,14 +218,6 @@ impl crate::menu::wizard::Backend for WindowsPlatform<'_> {
         self
     }
 
-    fn platform_questions(&mut self, config: &mut Config) -> Result<bool> {
-        let Some(channel) = prompt_for_evebox_channel(config.windows.evebox_channel) else {
-            return Ok(false);
-        };
-        config.windows.evebox_channel = channel;
-        Ok(true)
-    }
-
     fn install(&mut self, config: &Config) -> Result<()> {
         install_configured_components(self.paths, config)
     }

@@ -12,11 +12,6 @@ use crate::prelude::*;
 pub(crate) trait Backend {
     /// The platform, brought up to date with `config`.
     fn platform(&mut self, config: &Config) -> &dyn Platform;
-    /// Platform questions asked after the shared ones. Returns false if
-    /// the user backed out.
-    fn platform_questions(&mut self, _config: &mut Config) -> Result<bool> {
-        Ok(true)
-    }
     /// Download or install the components for the enabled services.
     fn install(&mut self, config: &Config) -> Result<()>;
     /// The first rule update, before Suricata has ever started.
@@ -126,10 +121,6 @@ pub(crate) fn menu(config: &mut Config, backend: &mut dyn Backend) -> Result<()>
             config.elasticsearch.enabled = true;
             config.elasticsearch.engine = engine;
         }
-    }
-
-    if !backend.platform_questions(config)? {
-        return Ok(());
     }
 
     if !crate::prompt::ask("Would you like to proceed with this configuration?", true)? {
