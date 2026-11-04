@@ -14,6 +14,7 @@ use crate::{prompt, term};
 enum Options {
     Enable,
     Disable,
+    AddCustom,
     Update,
     UpdateSources,
     ListEnabled,
@@ -25,6 +26,9 @@ fn menu_options(backend: &dyn Backend) -> Selections<Options> {
     let mut selections = Selections::with_index();
     selections.push(Options::Enable, "Enable a Ruleset");
     selections.push(Options::Disable, "Disable a Ruleset");
+    if backend.supports_custom_rulesets() {
+        selections.push(Options::AddCustom, "Add a Custom Ruleset (URL)");
+    }
     selections.push(Options::Update, "Update Rules");
     selections.push(Options::UpdateSources, "Update Rule Sources");
     selections.push(Options::ListEnabled, "List Enabled Rulesets");
@@ -58,6 +62,7 @@ fn run_action(backend: &dyn Backend, action: Options) -> Result<bool> {
     match action {
         Options::Enable => enable_ruleset(backend).map(|()| false),
         Options::Disable => select_ruleset(backend, false),
+        Options::AddCustom => add_custom_ruleset(backend),
         Options::Update => backend.update_rules().map(|()| true),
         Options::UpdateSources => backend.update_sources().map(|()| true),
         Options::ListEnabled => list_enabled_rulesets(backend).map(|()| true),
@@ -140,6 +145,79 @@ fn change_ruleset(
     } else {
         backend.disable_ruleset(id)?;
     }
+    if confirm_update() {
+        backend.update_rules()?;
+    }
+    Ok(())
+}
+
+/// Reject names suricata-update already knows: an enabled source, or an
+/// index source whose configuration the custom URL would take over.
+fn check_new_ruleset_name(
+    name: &str,
+    indexed: &[String],
+    enabled: &[String],
+) -> std::result::Result<(), String> {
+    crate::rules::check_custom_ruleset_name(name)?;
+    if enabled.iter().any(|id| id == name) {
+        return Err(format!("A ruleset named {name} is already enabled"));
+    }
+    if indexed.iter().any(|id| id == name) {
+        return Err(format!(
+            "{name} is in the ruleset index; use Enable a Ruleset instead"
+        ));
+    }
+    Ok(())
+}
+
+fn add_custom_ruleset(backend: &dyn Backend) -> Result<bool> {
+    let ids = |rulesets: Vec<Ruleset>| rulesets.into_iter().map(|r| r.id).collect::<Vec<_>>();
+    // The index is only used to catch name clashes; it may not be
+    // downloaded yet.
+    let indexed = backend.available_rulesets().map(ids).unwrap_or_default();
+    let enabled = ids(backend.enabled_rulesets()?);
+    let Some(name) = prompt::skippable(
+        inquire::Text::new("Ruleset name:")
+            .with_help_message("A short name for the ruleset, for example: local/my-rules")
+            .with_validator(prompt::validator(move |name| {
+                check_new_ruleset_name(name.trim(), &indexed, &enabled)
+            }))
+            .prompt(),
+    )?
+    else {
+        return Ok(false);
+    };
+    let Some(url) = prompt::skippable(
+        inquire::Text::new("Ruleset URL:")
+            .with_help_message(
+                "A .rules file or tar.gz archive; %(__version__)s is replaced \
+                 with the Suricata version",
+            )
+            .with_validator(prompt::validator(|url| {
+                crate::rules::check_custom_ruleset_url(url.trim())
+            }))
+            .prompt(),
+    )?
+    else {
+        return Ok(false);
+    };
+    add_custom(backend, name.trim(), url.trim(), || {
+        prompt::confirm_with_help(
+            "Would you like to update your rules now?",
+            "A rule update is required to make the new ruleset active",
+        )
+    })?;
+    Ok(true)
+}
+
+fn add_custom(
+    backend: &dyn Backend,
+    name: &str,
+    url: &str,
+    confirm_update: impl FnOnce() -> bool,
+) -> Result<()> {
+    backend.add_custom_ruleset(name, url)?;
+    println!("Added ruleset {name}");
     if confirm_update() {
         backend.update_rules()?;
     }
@@ -232,6 +310,50 @@ mod tests {
             assert_eq!(options, expected);
             assert!(backend.calls().is_empty());
         }
+    }
+
+    #[test]
+    fn custom_ruleset_option_is_gated_by_backend_support() {
+        for custom_rulesets in [false, true] {
+            let backend = FakePlatform {
+                custom_rulesets,
+                ..Default::default()
+            };
+            let options = menu_options(&backend).tags();
+            assert_eq!(options.contains(&Options::AddCustom), custom_rulesets);
+            if custom_rulesets {
+                assert_eq!(options[2], Options::AddCustom);
+            }
+        }
+    }
+
+    #[test]
+    fn new_ruleset_names_must_not_clash() {
+        let indexed = vec!["et/open".to_string()];
+        let enabled = vec!["local/mine".to_string()];
+        assert!(check_new_ruleset_name("local/new", &indexed, &enabled).is_ok());
+        assert!(check_new_ruleset_name("et/open", &indexed, &enabled).is_err());
+        assert!(check_new_ruleset_name("local/mine", &indexed, &enabled).is_err());
+        assert!(check_new_ruleset_name("-x", &indexed, &enabled).is_err());
+    }
+
+    #[test]
+    fn adding_a_custom_ruleset_offers_an_update() {
+        for update in [true, false] {
+            let backend = FakePlatform::default();
+            add_custom(&backend, "local/r", "https://x/r.rules", || update).unwrap();
+            let mut expected = vec!["add:local/r=https://x/r.rules".to_string()];
+            if update {
+                expected.push("update:".into());
+            }
+            assert_eq!(backend.calls(), expected);
+        }
+        let backend = FakePlatform {
+            fail: Some("add"),
+            ..Default::default()
+        };
+        assert!(add_custom(&backend, "local/r", "https://x/r.rules", || panic!()).is_err());
+        assert_eq!(backend.calls(), ["add:local/r=https://x/r.rules"]);
     }
 
     #[test]

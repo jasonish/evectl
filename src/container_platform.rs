@@ -245,6 +245,14 @@ impl rules::Backend for ContainerBackend<'_> {
         rules::update_sources(&self.runtime)
     }
 
+    fn supports_custom_rulesets(&self) -> bool {
+        true
+    }
+
+    fn add_custom_ruleset(&self, name: &str, url: &str) -> Result<()> {
+        rules::add_custom_ruleset(&self.runtime, name, url)
+    }
+
     fn update_rules(&self) -> Result<()> {
         rules::update_rules(&self.runtime, &[])
     }

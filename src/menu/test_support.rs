@@ -30,6 +30,7 @@ pub(crate) struct FakePlatform {
     pub(crate) available: Vec<Ruleset>,
     pub(crate) enabled: Vec<Ruleset>,
     pub(crate) overrides: bool,
+    pub(crate) custom_rulesets: bool,
     /// Platform-only Configure options as (id, label).
     pub(crate) options: Vec<(&'static str, &'static str)>,
     pub(crate) acknowledge_channel: bool,
@@ -52,6 +53,7 @@ impl Default for FakePlatform {
             available: vec![],
             enabled: vec![],
             overrides: false,
+            custom_rulesets: false,
             options: vec![],
             acknowledge_channel: false,
             fail: None,
@@ -182,6 +184,12 @@ impl crate::rules::Backend for FakePlatform {
     }
     fn override_path(&self, file: OverrideFile) -> Option<PathBuf> {
         self.overrides.then(|| PathBuf::from(file.filename()))
+    }
+    fn supports_custom_rulesets(&self) -> bool {
+        self.custom_rulesets
+    }
+    fn add_custom_ruleset(&self, name: &str, url: &str) -> Result<()> {
+        self.record("add", &format!("{name}={url}"))
     }
 }
 

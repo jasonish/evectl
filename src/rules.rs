@@ -56,6 +56,85 @@ pub(crate) trait Backend {
     fn write_override_template(&self, _file: OverrideFile) -> Result<()> {
         bail!("Rule override files are not supported by this backend")
     }
+
+    /// Whether rulesets can be added from a user-supplied URL.
+    fn supports_custom_rulesets(&self) -> bool {
+        false
+    }
+
+    /// Add and enable a ruleset downloaded from `url`.
+    fn add_custom_ruleset(&self, _name: &str, _url: &str) -> Result<()> {
+        bail!("Custom rulesets are not supported by this backend")
+    }
+}
+
+/// Validate the name of a custom ruleset. The name is passed to
+/// suricata-update as an argument and used as a file name, so keep it
+/// simple and never let it look like an option.
+pub(crate) fn check_custom_ruleset_name(name: &str) -> std::result::Result<(), String> {
+    if name.is_empty() {
+        return Err("A name is required".into());
+    }
+    if name.starts_with(['-', '.', '/']) {
+        return Err("The name must not start with '-', '.' or '/'".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+    {
+        return Err("Use only letters, digits, '-', '_', '.' and '/'".into());
+    }
+    Ok(())
+}
+
+/// Validate the URL of a custom ruleset. suricata-update's
+/// %(__version__)s substitution is allowed as it survives URL parsing.
+pub(crate) fn check_custom_ruleset_url(url: &str) -> std::result::Result<(), String> {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => Ok(()),
+        Ok(_) => Err("The URL must start with http:// or https://".into()),
+        Err(err) => Err(format!("Invalid URL: {err}")),
+    }
+}
+
+/// The file suricata-update keeps an enabled source's configuration in,
+/// relative to its sources directory.
+fn source_filename(name: &str) -> String {
+    format!("{}.yaml", name.replace('/', "-"))
+}
+
+/// Add a custom ruleset with `suricata-update add-source`, which also
+/// enables it. A disabled source of the same name is replaced, as
+/// suricata-update would otherwise refuse the name.
+pub(crate) fn add_custom_ruleset(context: &Context, name: &str, url: &str) -> Result<()> {
+    check_custom_ruleset_name(name).map_err(|err| anyhow!(err))?;
+    check_custom_ruleset_url(url).map_err(|err| anyhow!(err))?;
+
+    // /var/lib/suricata/update/sources inside the container.
+    let sources_dir = crate::suricata::lib_dir(context)
+        .join("update")
+        .join("sources");
+    let filename = source_filename(name);
+    if sources_dir.join(&filename).exists() {
+        bail!("A ruleset named {name} is already enabled");
+    }
+
+    let container = SuricataContainer::new(context.clone());
+    if sources_dir.join(format!("{filename}.disabled")).exists() {
+        info!("Replacing the disabled ruleset {name}");
+        container
+            .run()
+            .rm()
+            .args(&["suricata-update", "remove-source", name])
+            .build()
+            .status_ok()?;
+    }
+    container
+        .run()
+        .rm()
+        .args(&["suricata-update", "add-source", name, url])
+        .build()
+        .status_ok()
 }
 
 pub(crate) fn load_rule_index(context: &Context) -> Result<RuleIndex> {
@@ -170,7 +249,38 @@ fn build_update_args<'a>(extra_args: &[&'a str], suricata_running: bool) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::build_update_args;
+    use super::{
+        build_update_args, check_custom_ruleset_name, check_custom_ruleset_url, source_filename,
+    };
+
+    #[test]
+    fn custom_ruleset_names() {
+        for name in ["local", "local/my-rules", "my_rules.v2", "A1"] {
+            assert!(check_custom_ruleset_name(name).is_ok(), "{name}");
+        }
+        for name in ["", "-x", "--help", ".hidden", "/abs", "a b", "a\\b", "a:b"] {
+            assert!(check_custom_ruleset_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn custom_ruleset_urls() {
+        for url in [
+            "https://example.com/rules.tar.gz",
+            "http://example.com:8080/rules.rules",
+            "https://example.com/suricata-%(__version__)s/rules.tar.gz",
+        ] {
+            assert!(check_custom_ruleset_url(url).is_ok(), "{url}");
+        }
+        for url in ["", "example.com/rules", "ftp://example.com/r", "file:///r"] {
+            assert!(check_custom_ruleset_url(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn custom_ruleset_filename_matches_suricata_update() {
+        assert_eq!(source_filename("local/my-rules"), "local-my-rules.yaml");
+    }
 
     #[test]
     fn update_args_reload_when_suricata_is_running() {
