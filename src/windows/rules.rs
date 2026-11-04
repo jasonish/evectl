@@ -314,6 +314,12 @@ pub(super) fn enable_ruleset(paths: &Paths, name: Option<&str>) -> Result<()> {
     }
 }
 
+pub(super) fn add_custom_ruleset(paths: &Paths, name: &str, url: &str) -> Result<()> {
+    with_path_provider(paths, |paths| {
+        suricatax_cli::add_custom_ruleset(paths, name, url)
+    })
+}
+
 pub(super) fn disable_ruleset(paths: &Paths, name: &str) -> Result<()> {
     with_path_provider(paths, |paths| suricatax_cli::disable_ruleset(paths, name))
 }

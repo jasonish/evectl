@@ -15,7 +15,8 @@ use super::interfaces::windows_interfaces;
 use super::menu::{log_status, other_menu, prompt_for_evebox_channel};
 use super::paths::Paths;
 use super::rules::{
-    disable_ruleset, enable_ruleset, suricatax_paths, update_rules, update_sources,
+    add_custom_ruleset, disable_ruleset, enable_ruleset, suricatax_paths, update_rules,
+    update_sources,
 };
 use super::runtime::{Role, list_named_processes, managed_process_is_running};
 use super::stack::{WindowsStatus, restart_stack, start_stack, stop_stack, windows_status};
@@ -168,6 +169,14 @@ impl crate::rules::Backend for WindowsPlatform<'_> {
 
     fn update_rules(&self) -> Result<()> {
         update_rules(self.paths, false, false)
+    }
+
+    fn supports_custom_rulesets(&self) -> bool {
+        true
+    }
+
+    fn add_custom_ruleset(&self, name: &str, url: &str) -> Result<()> {
+        add_custom_ruleset(self.paths, name, url)
     }
 }
 

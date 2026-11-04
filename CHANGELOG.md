@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add a custom ruleset from a URL in the rules menu, on Linux and Windows.
+  The URL may contain `%(__version__)s`, which is replaced with the
+  Suricata version
+
 ## [0.4.0] - 2026-10-05
 
 ### Added
