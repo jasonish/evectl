@@ -154,6 +154,7 @@ pub(crate) fn get_enabled_ruleset(context: &Context) -> Result<HashSet<String>> 
     let container = SuricataContainer::new(context.clone());
     let output = container
         .run()
+        .rm()
         .args(&["suricata-update", "list-sources", "--enabled"])
         .build()
         .status_output()?;
@@ -171,6 +172,7 @@ pub(crate) fn enable_ruleset(context: &Context, ruleset: &str) -> Result<()> {
     let container = SuricataContainer::new(context.clone());
     container
         .run()
+        .rm()
         .args(&["suricata-update", "enable-source", ruleset])
         .build()
         .status_ok()?;
@@ -181,6 +183,7 @@ pub(crate) fn disable_ruleset(context: &Context, ruleset: &str) -> Result<()> {
     let container = SuricataContainer::new(context.clone());
     container
         .run()
+        .rm()
         .args(&["suricata-update", "disable-source", ruleset])
         .build()
         .status_ok()?;
