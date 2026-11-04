@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: (C) 2026 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
-//! Shared rules menus; the backend owns the updater and service reloads.
+//! Shared rules menus and the `rules` command; the backend owns the
+//! updater and service reloads.
 
 use colored::Colorize;
 
@@ -9,6 +10,62 @@ use crate::prelude::*;
 use crate::prompt::Selections;
 use crate::rules::{Backend, OverrideFile, Ruleset};
 use crate::{prompt, term};
+
+/// The `rules` command: the rules menu's operations, shared by all
+/// platforms. Values not given on the command line are prompted for.
+#[derive(clap::Subcommand, Debug, Clone, Eq, PartialEq)]
+pub(crate) enum Command {
+    /// Update the Suricata rules
+    Update,
+
+    /// Refresh the ruleset index
+    UpdateSources,
+
+    /// Enable a ruleset from the index, choosing one if --name is omitted
+    EnableRuleset {
+        /// Ruleset to enable, for example: et/open
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Disable a ruleset, choosing one if --name is omitted
+    DisableRuleset {
+        /// Ruleset to disable
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Add and enable a ruleset from a URL, prompting for missing values
+    AddRuleset {
+        /// Name for the ruleset, for example: local/my-rules
+        #[arg(long)]
+        name: Option<String>,
+
+        /// URL of a .rules file or tar.gz archive; %(__version__)s is
+        /// replaced with the Suricata version
+        #[arg(long)]
+        url: Option<String>,
+    },
+
+    /// List the enabled rulesets
+    ListEnabledRulesets,
+}
+
+/// Run a `rules` command. Changes made with every value given on the
+/// command line don't prompt, so they can be scripted; run `rules update`
+/// to apply them.
+pub(crate) fn run_command(backend: &dyn Backend, command: Command) -> Result<()> {
+    match command {
+        Command::Update => backend.update_rules(),
+        Command::UpdateSources => backend.update_sources(),
+        Command::EnableRuleset { name: Some(name) } => backend.enable_ruleset(&name),
+        Command::EnableRuleset { name: None } => select_ruleset(backend, true).map(|_| ()),
+        Command::DisableRuleset { name: Some(name) } => backend.disable_ruleset(&name),
+        Command::DisableRuleset { name: None } => select_ruleset(backend, false).map(|_| ()),
+        Command::AddRuleset { name, url } => add_custom_ruleset(backend, name, url).map(|_| ()),
+        Command::ListEnabledRulesets => list_enabled_rulesets(backend),
+    }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Options {
@@ -60,9 +117,9 @@ pub(crate) fn menu(backend: &dyn Backend) -> Result<()> {
 /// Return whether the caller should pause to let the user read output.
 fn run_action(backend: &dyn Backend, action: Options) -> Result<bool> {
     match action {
-        Options::Enable => enable_ruleset(backend).map(|()| false),
+        Options::Enable => select_ruleset(backend, true),
         Options::Disable => select_ruleset(backend, false),
-        Options::AddCustom => add_custom_ruleset(backend),
+        Options::AddCustom => add_custom_ruleset(backend, None, None),
         Options::Update => backend.update_rules().map(|()| true),
         Options::UpdateSources => backend.update_sources().map(|()| true),
         Options::ListEnabled => list_enabled_rulesets(backend).map(|()| true),
@@ -170,42 +227,67 @@ fn check_new_ruleset_name(
     Ok(())
 }
 
-fn add_custom_ruleset(backend: &dyn Backend) -> Result<bool> {
+/// Add a custom ruleset, prompting for the name and URL when not given.
+/// A rule update is only offered when something was prompted for.
+fn add_custom_ruleset(
+    backend: &dyn Backend,
+    name: Option<String>,
+    url: Option<String>,
+) -> Result<bool> {
+    let interactive = name.is_none() || url.is_none();
+    // Reject bad values given on the command line before any backend work.
+    if let Some(name) = &name {
+        crate::rules::check_custom_ruleset_name(name.trim()).map_err(|err| anyhow!(err))?;
+    }
+    if let Some(url) = &url {
+        crate::rules::check_custom_ruleset_url(url.trim()).map_err(|err| anyhow!(err))?;
+    }
     let ids = |rulesets: Vec<Ruleset>| rulesets.into_iter().map(|r| r.id).collect::<Vec<_>>();
     // The index is only used to catch name clashes; it may not be
     // downloaded yet.
     let indexed = backend.available_rulesets().map(ids).unwrap_or_default();
     let enabled = ids(backend.enabled_rulesets()?);
-    let Some(name) = prompt::skippable(
-        inquire::Text::new("Ruleset name:")
-            .with_help_message("A short name for the ruleset, for example: local/my-rules")
-            .with_validator(prompt::validator(move |name| {
-                check_new_ruleset_name(name.trim(), &indexed, &enabled)
-            }))
-            .prompt(),
-    )?
-    else {
-        return Ok(false);
+    let name = match name {
+        Some(name) => {
+            let name = name.trim().to_string();
+            check_new_ruleset_name(&name, &indexed, &enabled).map_err(|err| anyhow!(err))?;
+            name
+        }
+        None => match prompt::skippable(
+            inquire::Text::new("Ruleset name:")
+                .with_help_message("A short name for the ruleset, for example: local/my-rules")
+                .with_validator(prompt::validator(move |name| {
+                    check_new_ruleset_name(name.trim(), &indexed, &enabled)
+                }))
+                .prompt(),
+        )? {
+            Some(name) => name.trim().to_string(),
+            None => return Ok(false),
+        },
     };
-    let Some(url) = prompt::skippable(
-        inquire::Text::new("Ruleset URL:")
-            .with_help_message(
-                "A .rules file or tar.gz archive; %(__version__)s is replaced \
-                 with the Suricata version",
+    let url = match url {
+        Some(url) => url.trim().to_string(),
+        None => match prompt::skippable(
+            inquire::Text::new("Ruleset URL:")
+                .with_help_message(
+                    "A .rules file or tar.gz archive; %(__version__)s is replaced \
+                     with the Suricata version",
+                )
+                .with_validator(prompt::validator(|url| {
+                    crate::rules::check_custom_ruleset_url(url.trim())
+                }))
+                .prompt(),
+        )? {
+            Some(url) => url.trim().to_string(),
+            None => return Ok(false),
+        },
+    };
+    add_custom(backend, &name, &url, || {
+        interactive
+            && prompt::confirm_with_help(
+                "Would you like to update your rules now?",
+                "A rule update is required to make the new ruleset active",
             )
-            .with_validator(prompt::validator(|url| {
-                crate::rules::check_custom_ruleset_url(url.trim())
-            }))
-            .prompt(),
-    )?
-    else {
-        return Ok(false);
-    };
-    add_custom(backend, name.trim(), url.trim(), || {
-        prompt::confirm_with_help(
-            "Would you like to update your rules now?",
-            "A rule update is required to make the new ruleset active",
-        )
     })?;
     Ok(true)
 }
@@ -224,15 +306,7 @@ fn add_custom(
     Ok(())
 }
 
-/// Also used by the Windows CLI when no ruleset name is supplied.
-pub(crate) fn enable_ruleset(backend: &dyn Backend) -> Result<()> {
-    if select_ruleset(backend, true)? {
-        prompt::enter();
-    }
-    Ok(())
-}
-
-pub(crate) fn list_enabled_rulesets(backend: &dyn Backend) -> Result<()> {
+fn list_enabled_rulesets(backend: &dyn Backend) -> Result<()> {
     let rulesets = ruleset_choices(backend, false)?;
     if rulesets.is_empty() {
         println!("No Suricata rulesets enabled");
@@ -309,6 +383,124 @@ mod tests {
             expected.push(Options::Return);
             assert_eq!(options, expected);
             assert!(backend.calls().is_empty());
+        }
+    }
+
+    #[derive(clap::Parser, Debug)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
+    }
+
+    fn parse(args: &[&str]) -> std::result::Result<Command, clap::Error> {
+        use clap::Parser;
+        Cli::try_parse_from(std::iter::once("rules").chain(args.iter().copied()))
+            .map(|cli| cli.command)
+    }
+
+    #[test]
+    fn rules_command_parses_options() {
+        assert_eq!(parse(&["update"]).unwrap(), Command::Update);
+        assert_eq!(parse(&["update-sources"]).unwrap(), Command::UpdateSources);
+        assert_eq!(
+            parse(&["list-enabled-rulesets"]).unwrap(),
+            Command::ListEnabledRulesets
+        );
+        assert_eq!(
+            parse(&["enable-ruleset", "--name", "et/open"]).unwrap(),
+            Command::EnableRuleset {
+                name: Some("et/open".into())
+            }
+        );
+        assert_eq!(
+            parse(&["disable-ruleset"]).unwrap(),
+            Command::DisableRuleset { name: None }
+        );
+        assert_eq!(
+            parse(&["add-ruleset", "--name", "local/r", "--url", "https://x/r"]).unwrap(),
+            Command::AddRuleset {
+                name: Some("local/r".into()),
+                url: Some("https://x/r".into())
+            }
+        );
+        assert_eq!(
+            parse(&["add-ruleset", "--url", "https://x/r"]).unwrap(),
+            Command::AddRuleset {
+                name: None,
+                url: Some("https://x/r".into())
+            }
+        );
+        // Names are options, not positionals.
+        assert!(parse(&["enable-ruleset", "et/open"]).is_err());
+        assert!(parse(&["reload"]).is_err());
+    }
+
+    #[test]
+    fn rules_commands_with_all_values_do_not_prompt() {
+        for (command, expected) in [
+            (Command::Update, "update:"),
+            (Command::UpdateSources, "sources:"),
+            (
+                Command::EnableRuleset {
+                    name: Some("et/open".into()),
+                },
+                "enable:et/open",
+            ),
+            (
+                Command::DisableRuleset {
+                    name: Some("et/open".into()),
+                },
+                "disable:et/open",
+            ),
+            (Command::ListEnabledRulesets, "enabled:"),
+        ] {
+            let backend = FakePlatform::default();
+            run_command(&backend, command).unwrap();
+            assert_eq!(backend.calls(), [expected]);
+        }
+
+        // Adding checks for clashes, then adds without offering an update.
+        let backend = FakePlatform::default();
+        let command = Command::AddRuleset {
+            name: Some(" local/r ".into()),
+            url: Some("https://x/r.rules".into()),
+        };
+        run_command(&backend, command).unwrap();
+        assert_eq!(
+            backend.calls(),
+            ["available:", "enabled:", "add:local/r=https://x/r.rules"]
+        );
+    }
+
+    #[test]
+    fn add_ruleset_rejects_bad_values_without_adding() {
+        // Syntax errors are caught without calling the backend.
+        for (name, url) in [("-x", "https://x/r.rules"), ("local/r", "ftp://x/r.rules")] {
+            let backend = FakePlatform::default();
+            let command = Command::AddRuleset {
+                name: Some(name.into()),
+                url: Some(url.into()),
+            };
+            assert!(run_command(&backend, command).is_err(), "{name} {url}");
+            assert!(backend.calls().is_empty());
+        }
+        for (name, url) in [
+            ("-x", "https://x/r.rules"),
+            ("et/open", "https://x/r.rules"),
+            ("local/mine", "https://x/r.rules"),
+            ("local/r", "ftp://x/r.rules"),
+        ] {
+            let backend = FakePlatform {
+                available: vec![source("et/open", true)],
+                enabled: vec![source("local/mine", false)],
+                ..Default::default()
+            };
+            let command = Command::AddRuleset {
+                name: Some(name.into()),
+                url: Some(url.into()),
+            };
+            assert!(run_command(&backend, command).is_err(), "{name} {url}");
+            assert!(!backend.calls().iter().any(|call| call.starts_with("add:")));
         }
     }
 

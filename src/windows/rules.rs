@@ -4,7 +4,6 @@
 //! Suricata rule management through suricatax-rules.
 
 use super::paths::{Paths, load_evectl_config};
-use super::platform::WindowsPlatform;
 use super::service::{self, Control};
 use super::stack::capture_restart_plan;
 use super::suricata::{
@@ -59,7 +58,7 @@ fn with_path_provider<T>(
     f(&provider)
 }
 
-pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()> {
+pub(super) fn update_rules(paths: &Paths) -> Result<()> {
     let suricata_version = detect_suricata_version_for_rules_update(paths);
 
     if let Some(version) = &suricata_version {
@@ -79,8 +78,8 @@ pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()
     with_path_provider(paths, |paths| {
         suricatax_cli::update_rules_with_options(
             paths,
-            force,
-            quiet,
+            false,
+            false,
             suricata_version.as_deref(),
             &[],
             &[],
@@ -97,7 +96,7 @@ pub(super) fn update_rules(paths: &Paths, force: bool, quiet: bool) -> Result<()
 
 /// Have a running Suricata load the current rules: with the reload
 /// control when its service supports it, otherwise by restarting it.
-pub(super) fn reload_rules(paths: &Paths) -> Result<()> {
+fn reload_rules(paths: &Paths) -> Result<()> {
     if reload_service_rules(paths)? {
         return Ok(());
     }
@@ -307,11 +306,8 @@ pub(super) fn update_sources(paths: &Paths) -> Result<()> {
     with_path_provider(paths, suricatax_cli::update_sources)
 }
 
-pub(super) fn enable_ruleset(paths: &Paths, name: Option<&str>) -> Result<()> {
-    match name {
-        Some(name) => with_path_provider(paths, |paths| suricatax_cli::enable_ruleset(paths, name)),
-        None => crate::menu::rules::enable_ruleset(&WindowsPlatform { paths }),
-    }
+pub(super) fn enable_ruleset(paths: &Paths, name: &str) -> Result<()> {
+    with_path_provider(paths, |paths| suricatax_cli::enable_ruleset(paths, name))
 }
 
 pub(super) fn add_custom_ruleset(paths: &Paths, name: &str, url: &str) -> Result<()> {
@@ -322,10 +318,6 @@ pub(super) fn add_custom_ruleset(paths: &Paths, name: &str, url: &str) -> Result
 
 pub(super) fn disable_ruleset(paths: &Paths, name: &str) -> Result<()> {
     with_path_provider(paths, |paths| suricatax_cli::disable_ruleset(paths, name))
-}
-
-pub(super) fn list_enabled_rulesets(paths: &Paths) -> Result<()> {
-    crate::menu::rules::list_enabled_rulesets(&WindowsPlatform { paths })
 }
 
 #[cfg(test)]

@@ -79,6 +79,12 @@ pub(crate) enum Commands {
     /// Update Suricata rules (if Suricata enabled)
     UpdateRules,
 
+    /// Manage Suricata rules and rulesets
+    Rules {
+        #[command(subcommand)]
+        command: crate::menu::rules::Command,
+    },
+
     /// Update containers and EveCtl itself.
     Update {
         /// Restart all enabled services after a successful update (interrupts monitoring)
@@ -320,6 +326,18 @@ pub(crate) fn run(
                 1
             } else {
                 0
+            }
+        }
+        Commands::Rules { command } => {
+            let backend = container_platform::ContainerBackend::new(&context);
+            match menu::rules::run_command(&backend, command) {
+                Ok(()) => 0,
+                Err(err) => {
+                    if !prompt::cancelled(&err) {
+                        error!("Rules command failed: {err:#}");
+                    }
+                    1
+                }
             }
         }
         Commands::Update {

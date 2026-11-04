@@ -156,7 +156,7 @@ impl crate::rules::Backend for WindowsPlatform<'_> {
     }
 
     fn enable_ruleset(&self, id: &str) -> Result<()> {
-        enable_ruleset(self.paths, Some(id))
+        enable_ruleset(self.paths, id)
     }
 
     fn disable_ruleset(&self, id: &str) -> Result<()> {
@@ -168,7 +168,7 @@ impl crate::rules::Backend for WindowsPlatform<'_> {
     }
 
     fn update_rules(&self) -> Result<()> {
-        update_rules(self.paths, false, false)
+        update_rules(self.paths)
     }
 
     fn supports_custom_rulesets(&self) -> bool {
@@ -232,7 +232,7 @@ impl crate::menu::wizard::Backend for WindowsPlatform<'_> {
     }
 
     fn update_rules(&mut self, _config: &Config) -> Result<()> {
-        update_rules(self.paths, false, false)
+        update_rules(self.paths)
     }
 }
 

@@ -89,7 +89,7 @@ pub(crate) enum Commands {
     /// Manage Suricata rules and rulesets
     Rules {
         #[command(subcommand)]
-        command: RulesCommands,
+        command: crate::menu::rules::Command,
     },
 }
 
@@ -107,42 +107,6 @@ pub(crate) enum ConfigCommands {
     },
 }
 
-#[derive(Subcommand, Debug, Clone)]
-pub(crate) enum RulesCommands {
-    /// Update Suricata rules using built-in Windows-compatible updater
-    Update {
-        /// Force download even if cache is recent
-        #[arg(short = 'f', long)]
-        force: bool,
-
-        /// Reduce output to warnings/errors
-        #[arg(short = 'q', long)]
-        quiet: bool,
-    },
-
-    /// Have the running Suricata reload its rules, restarting it if its
-    /// service can't reload them
-    Reload,
-
-    /// Refresh Suricata ruleset index
-    UpdateSources,
-
-    /// Enable a Suricata ruleset (for example: et/open). If omitted, an interactive selector is shown.
-    EnableRuleset {
-        #[arg(value_name = "RULESET")]
-        name: Option<String>,
-    },
-
-    /// Disable a Suricata ruleset
-    DisableRuleset {
-        #[arg(value_name = "RULESET")]
-        name: String,
-    },
-
-    /// List currently enabled Suricata rulesets
-    ListEnabledRulesets,
-}
-
 impl Args {
     pub(crate) fn from_command(command: Option<Commands>) -> Self {
         Self { command }
@@ -154,10 +118,8 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
     use super::interfaces::{config_set_interface, list_interfaces};
     use super::menu::{config_set_evebox_channel, log_status, menu_main, project_info};
     use super::paths::{Paths, load_evectl_config};
-    use super::rules::{
-        disable_ruleset, enable_ruleset, list_enabled_rulesets, reload_rules, update_rules,
-        update_sources,
-    };
+    use super::platform::WindowsPlatform;
+    use super::rules::update_rules;
     use super::stack::windows_status;
     use super::stack::{restart_stack, run_housekeeper, start_stack, stop_stack};
     use super::uninstall::uninstall;
@@ -173,7 +135,7 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
             log_status(windows_status(&paths, &config)?, &config);
             Ok(())
         }
-        Some(Commands::UpdateRules) => update_rules(&paths, false, false),
+        Some(Commands::UpdateRules) => update_rules(&paths),
         Some(Commands::Update) => upgrade_windows_components(&paths).map(|_| ()),
         Some(Commands::Version) => {
             println!("{}", env!("EVECTL_VERSION"));
@@ -190,14 +152,9 @@ pub(crate) fn main(args: Args) -> anyhow::Result<()> {
                 config_set_evebox_channel(&paths, channel)
             }
         },
-        Some(Commands::Rules { command }) => match command {
-            RulesCommands::Update { force, quiet } => update_rules(&paths, force, quiet),
-            RulesCommands::Reload => reload_rules(&paths),
-            RulesCommands::UpdateSources => update_sources(&paths),
-            RulesCommands::EnableRuleset { name } => enable_ruleset(&paths, name.as_deref()),
-            RulesCommands::DisableRuleset { name } => disable_ruleset(&paths, &name),
-            RulesCommands::ListEnabledRulesets => list_enabled_rulesets(&paths),
-        },
+        Some(Commands::Rules { command }) => {
+            crate::menu::rules::run_command(&WindowsPlatform { paths: &paths }, command)
+        }
         None => menu_main(&paths),
     }
 }
