@@ -275,7 +275,12 @@ mod tests {
         );
         assert_eq!(args[0], "run");
         assert!(args.contains(&"--rm".to_string()));
-        assert!(args.contains(&"-it".to_string()));
+        // -it is only passed when there is a terminal to attach.
+        use std::io::IsTerminal;
+        assert_eq!(
+            args.contains(&"-it".to_string()),
+            std::io::stdin().is_terminal()
+        );
         assert_eq!(
             args.iter().filter(|a| a.starts_with("--volume=")).count(),
             1

@@ -5,6 +5,7 @@ use crate::prelude::*;
 use crate::suricata;
 
 use serde::Deserialize;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 
@@ -571,7 +572,9 @@ impl RunCommandBuilder {
     pub(crate) fn build(&self) -> Command {
         let mut command = self.manager.command();
         command.arg("run");
-        if self.it {
+        // Docker refuses -it without a terminal, as when run from a
+        // script or timer.
+        if self.it && std::io::stdin().is_terminal() {
             command.arg("-it");
         }
         if self.rm {
