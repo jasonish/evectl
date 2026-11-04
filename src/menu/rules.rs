@@ -18,9 +18,6 @@ pub(crate) enum Command {
     /// Update the Suricata rules
     Update,
 
-    /// Refresh the ruleset index
-    UpdateSources,
-
     /// Enable a ruleset from the index, choosing one if --name is omitted
     EnableRuleset {
         /// Ruleset to enable, for example: et/open
@@ -57,7 +54,6 @@ pub(crate) enum Command {
 pub(crate) fn run_command(backend: &dyn Backend, command: Command) -> Result<()> {
     match command {
         Command::Update => backend.update_rules(),
-        Command::UpdateSources => backend.update_sources(),
         Command::EnableRuleset { name: Some(name) } => backend.enable_ruleset(&name),
         Command::EnableRuleset { name: None } => select_ruleset(backend, true).map(|_| ()),
         Command::DisableRuleset { name: Some(name) } => backend.disable_ruleset(&name),
@@ -73,7 +69,6 @@ enum Options {
     Disable,
     AddCustom,
     Update,
-    UpdateSources,
     ListEnabled,
     Edit(OverrideFile),
     Return,
@@ -87,7 +82,6 @@ fn menu_options(backend: &dyn Backend) -> Selections<Options> {
         selections.push(Options::AddCustom, "Add a Custom Ruleset (URL)");
     }
     selections.push(Options::Update, "Update Rules");
-    selections.push(Options::UpdateSources, "Update Rule Sources");
     selections.push(Options::ListEnabled, "List Enabled Rulesets");
     for file in OverrideFile::ALL {
         if backend.override_path(file).is_some() {
@@ -121,7 +115,6 @@ fn run_action(backend: &dyn Backend, action: Options) -> Result<bool> {
         Options::Disable => select_ruleset(backend, false),
         Options::AddCustom => add_custom_ruleset(backend, None, None),
         Options::Update => backend.update_rules().map(|()| true),
-        Options::UpdateSources => backend.update_sources().map(|()| true),
         Options::ListEnabled => list_enabled_rulesets(backend).map(|()| true),
         Options::Edit(file) => edit_override(backend, file).map(|()| false),
         Options::Return => Ok(false),
@@ -374,7 +367,6 @@ mod tests {
                 Options::Enable,
                 Options::Disable,
                 Options::Update,
-                Options::UpdateSources,
                 Options::ListEnabled,
             ];
             if overrides {
@@ -401,7 +393,7 @@ mod tests {
     #[test]
     fn rules_command_parses_options() {
         assert_eq!(parse(&["update"]).unwrap(), Command::Update);
-        assert_eq!(parse(&["update-sources"]).unwrap(), Command::UpdateSources);
+        assert!(parse(&["update-sources"]).is_err());
         assert_eq!(
             parse(&["list-enabled-rulesets"]).unwrap(),
             Command::ListEnabledRulesets
@@ -439,7 +431,6 @@ mod tests {
     fn rules_commands_with_all_values_do_not_prompt() {
         for (command, expected) in [
             (Command::Update, "update:"),
-            (Command::UpdateSources, "sources:"),
             (
                 Command::EnableRuleset {
                     name: Some("et/open".into()),
@@ -637,7 +628,6 @@ mod tests {
     fn actions_dispatch_to_backend_and_propagate_errors() {
         for (action, operation) in [
             (Options::Update, "update"),
-            (Options::UpdateSources, "sources"),
             (Options::ListEnabled, "enabled"),
         ] {
             let mut backend = FakePlatform::default();

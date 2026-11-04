@@ -8,9 +8,9 @@
   The URL may contain `%(__version__)s`, which is replaced with the
   Suricata version
 - A `rules` command on Linux and Windows with the rules menu's operations
-  for scripts: `update`, `update-sources`, `enable-ruleset`,
-  `disable-ruleset`, `add-ruleset` and `list-enabled-rulesets`. Values not
-  given as options are prompted for
+  for scripts: `update`, `enable-ruleset`, `disable-ruleset`,
+  `add-ruleset` and `list-enabled-rulesets`. Values not given as options
+  are prompted for
 
 ### Changed
 

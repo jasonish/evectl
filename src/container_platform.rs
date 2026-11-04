@@ -200,7 +200,7 @@ impl crate::evebox::configuration::Backend for ContainerBackend<'_> {
 
 impl rules::Backend for ContainerBackend<'_> {
     fn available_rulesets(&self) -> Result<Vec<Ruleset>> {
-        Ok(rules::load_rule_index(&self.runtime)?
+        Ok(rules::get_or_download_rule_index(&self.runtime)?
             .sources
             .into_iter()
             .map(|(id, source)| Ruleset {
@@ -239,10 +239,6 @@ impl rules::Backend for ContainerBackend<'_> {
 
     fn disable_ruleset(&self, id: &str) -> Result<()> {
         rules::disable_ruleset(&self.runtime, id)
-    }
-
-    fn update_sources(&self) -> Result<()> {
-        rules::update_sources(&self.runtime)
     }
 
     fn supports_custom_rulesets(&self) -> bool {

@@ -45,8 +45,8 @@ pub(crate) trait Backend {
     fn enabled_rulesets(&self) -> Result<Vec<Ruleset>>;
     fn enable_ruleset(&self, id: &str) -> Result<()>;
     fn disable_ruleset(&self, id: &str) -> Result<()>;
-    fn update_sources(&self) -> Result<()>;
-    /// Includes the backend's existing reload/restart behavior.
+    /// Refreshes the ruleset index first, and includes the backend's
+    /// existing reload/restart behavior.
     fn update_rules(&self) -> Result<()>;
 
     fn override_path(&self, _file: OverrideFile) -> Option<PathBuf> {
@@ -147,6 +147,20 @@ pub(crate) fn load_rule_index(context: &Context) -> Result<RuleIndex> {
         .status_output()?;
     let index: RuleIndex = yaml_serde::from_slice(&output)?;
     Ok(index)
+}
+
+/// Load the ruleset index, downloading it first if it isn't cached yet,
+/// such as before the first rule update.
+pub(crate) fn get_or_download_rule_index(context: &Context) -> Result<RuleIndex> {
+    let cached = crate::suricata::lib_dir(context)
+        .join("update")
+        .join("cache")
+        .join("index.yaml");
+    if !cached.exists() {
+        info!("Downloading the ruleset index...");
+        update_sources(context)?;
+    }
+    load_rule_index(context)
 }
 
 pub(crate) fn get_enabled_ruleset(context: &Context) -> Result<HashSet<String>> {

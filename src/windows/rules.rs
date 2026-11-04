@@ -302,10 +302,6 @@ fn release_version(version: &Version) -> String {
     format!("{}.{}.{}", version.major, version.minor, version.patch)
 }
 
-pub(super) fn update_sources(paths: &Paths) -> Result<()> {
-    with_path_provider(paths, suricatax_cli::update_sources)
-}
-
 pub(super) fn enable_ruleset(paths: &Paths, name: &str) -> Result<()> {
     with_path_provider(paths, |paths| suricatax_cli::enable_ruleset(paths, name))
 }

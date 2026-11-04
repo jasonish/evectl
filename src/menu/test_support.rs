@@ -179,9 +179,6 @@ impl crate::rules::Backend for FakePlatform {
     fn update_rules(&self) -> Result<()> {
         self.record("update", "")
     }
-    fn update_sources(&self) -> Result<()> {
-        self.record("sources", "")
-    }
     fn override_path(&self, file: OverrideFile) -> Option<PathBuf> {
         self.overrides.then(|| PathBuf::from(file.filename()))
     }
