@@ -17,22 +17,14 @@ pub(crate) struct Context {
     pub config: Config,
 
     pub manager: ContainerManager,
-
-    // Stash some image names for easy access.
-    pub suricata_image: String,
-    pub evebox_image: String,
 }
 
 impl Context {
     pub(crate) fn new(config: Config, root: PathBuf, manager: ContainerManager) -> Self {
-        let suricata_image = image_name(&config, Container::Suricata);
-        let evebox_image = image_name(&config, Container::EveBox);
         Self {
             root,
             config,
             manager,
-            suricata_image,
-            evebox_image,
         }
     }
 

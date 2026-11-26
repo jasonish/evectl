@@ -18,6 +18,11 @@
   ruleset with `--name`, and `rules update` no longer has `--force` or
   `--quiet`
 
+### Fixed
+
+- Server-only installations no longer prompt for the Suricata image or
+  download it during container updates
+
 ## [0.4.0] - 2026-10-05
 
 ### Added

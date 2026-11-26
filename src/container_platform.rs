@@ -343,23 +343,9 @@ impl menu::wizard::Backend for ContainerBackend<'_> {
 
     fn install(&mut self, config: &Config) -> Result<()> {
         let context = self.sync(config);
-        if config.suricata.enabled {
-            info!("Pulling Suricata image...");
-            context
-                .manager
-                .pull(&context.image_name(Container::Suricata))?;
-        }
-
-        info!("Pulling EveBox image...");
-        context
-            .manager
-            .pull(&context.image_name(Container::EveBox))?;
-
-        if config.elasticsearch_enabled() {
-            info!("Pulling {} image...", config.elasticsearch.engine.name());
-            context
-                .manager
-                .pull(crate::elastic::docker_image(context))?;
+        for (label, image) in services::required_images(context) {
+            info!("Pulling {label} image...");
+            context.manager.pull(&image)?;
         }
         Ok(())
     }

@@ -9,9 +9,8 @@ use std::process;
 
 use semver::Version;
 
-use crate::container::Container;
 use crate::prelude::*;
-use crate::{elastic, housekeeper, restart_notice, selfupdate, services, suricata};
+use crate::{housekeeper, restart_notice, selfupdate, services, suricata};
 
 /// Runtime flags to preserve across self-update and manual service restart.
 #[derive(Debug, Eq, PartialEq)]
@@ -224,18 +223,8 @@ fn suricata_update_pending(context: &Context) -> Option<(Version, Version)> {
 /// The caller handles the single restart decision after all updates.
 fn update_containers(context: &Context) -> bool {
     let mut ok = true;
-    for image in [
-        context.image_name(Container::Suricata),
-        context.image_name(Container::EveBox),
-    ] {
+    for (_, image) in services::required_images(context) {
         if let Err(err) = context.manager.pull(&image) {
-            error!("Failed to pull {image}: {err}");
-            ok = false;
-        }
-    }
-    if context.config.elasticsearch_enabled() {
-        let image = elastic::docker_image(context);
-        if let Err(err) = context.manager.pull(image) {
             error!("Failed to pull {image}: {err}");
             ok = false;
         }

@@ -434,6 +434,28 @@ pub(crate) fn start(context: &Context) -> bool {
     ok
 }
 
+/// Images needed by enabled services. The server and agent share the EveBox
+/// image, and the housekeeper uses the local Suricata service's image.
+pub(crate) fn required_images(context: &Context) -> Vec<(&'static str, String)> {
+    use crate::container::Container;
+
+    let config = &context.config;
+    let mut images = Vec::new();
+    if config.suricata.enabled {
+        images.push(("Suricata", context.image_name(Container::Suricata)));
+    }
+    if config.evebox_server.enabled || config.evebox_agent.enabled {
+        images.push(("EveBox", context.image_name(Container::EveBox)));
+    }
+    if config.elasticsearch_enabled() {
+        images.push((
+            config.elasticsearch.engine.name(),
+            elastic::docker_image(context).into(),
+        ));
+    }
+    images
+}
+
 /// The labels and container names of the enabled services.
 pub(crate) fn enabled_containers(context: &Context) -> Vec<(&'static str, String)> {
     Service::ALL
@@ -481,6 +503,41 @@ mod tests {
     use super::*;
     use crate::container::{RESTART_POLICY_ARG, command_args};
     use crate::context::testing::docker_context;
+
+    #[test]
+    fn required_images_follow_enabled_services() {
+        let (_root, mut context) = docker_context(Config::default());
+        context.config.evebox_server.image = Some("evebox:test".into());
+        context.config.suricata.image = Some("suricata:test".into());
+
+        assert!(required_images(&context).is_empty());
+        context.config.evebox_server.enabled = true;
+        let evebox = || ("EveBox", String::from("evebox:test"));
+        assert_eq!(required_images(&context), [evebox()]);
+
+        context.config.elasticsearch.enabled = true;
+        assert_eq!(
+            required_images(&context),
+            [
+                evebox(),
+                (
+                    context.config.elasticsearch.engine.name(),
+                    elastic::docker_image(&context).into()
+                ),
+            ]
+        );
+        context.config.evebox_server.use_external_elasticsearch = true;
+        assert_eq!(required_images(&context), [evebox()]);
+
+        context.config.evebox_agent.enabled = true;
+        assert_eq!(required_images(&context), [evebox()]);
+        context.config.evebox_server.enabled = false;
+        context.config.suricata.enabled = true;
+        assert_eq!(
+            required_images(&context),
+            [("Suricata", "suricata:test".into()), evebox()]
+        );
+    }
 
     #[test]
     fn service_orders_cover_every_service_once() {

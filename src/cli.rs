@@ -271,13 +271,11 @@ pub(crate) fn run(
 
     let prompt_for_update = should_prompt_for_missing_images(&args.command) && {
         let mut not_found = false;
-        if !manager.has_image(&context.suricata_image) {
-            info!("Suricata image {} not found", &context.suricata_image);
-            not_found = true;
-        }
-        if !manager.has_image(&context.evebox_image) {
-            info!("EveBox image {} not found", &context.evebox_image);
-            not_found = true
+        for (label, image) in services::required_images(&context) {
+            if !manager.has_image(&image) {
+                info!("{label} image {image} not found");
+                not_found = true;
+            }
         }
         not_found
     };
