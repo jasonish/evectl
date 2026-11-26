@@ -164,6 +164,32 @@ evectl -D /var/lib/evectl-sensor1
 This option is not available on Windows, where the location is
 fixed.
 
+## Forward logs from an existing Suricata (Linux)
+
+Choose **Custom** in the setup wizard, leave Suricata disabled, and enable
+the agent under **Configure → Configure EveBox Agent**. Set the destination
+server URL and **External EVE Input**. Enter an absolute filename such as
+`/var/log/suricata/eve.json`, or a filename glob for threaded output as in
+the example below. Restart services to apply the change.
+
+```toml
+[evebox-agent]
+enabled = true
+server = "https://evebox.example:5636"
+external-input = "/var/log/suricata/eve.*.json"
+```
+
+The parent directory must already exist; only the filename can be a glob.
+The agent watches for matching files (such as `eve.1.json` and `eve.12.json`)
+through a read-only directory mount, even if no files match yet.
+Log rotation and deletion remain the responsibility of the existing Suricata
+installation. Grant the container read access, including under SELinux;
+EveCtl does not relabel external logs. Bookmarks stay in the EveCtl instance.
+
+With EveCtl's Suricata enabled, this setting is hidden and ignored: the
+agent uses the managed socket or files instead. Disabling Suricata again
+restores the saved path. Leave the setting unset for the usual instance input.
+
 ## Full packet capture (Windows)
 
 Enable capture from "Configure" → "Configure Full Packet Capture".

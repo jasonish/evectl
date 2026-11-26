@@ -367,6 +367,11 @@ pub(crate) struct EveBoxAgentConfig {
     #[serde(default, skip_serializing_if = "is_default")]
     pub disable_certificate_validation: bool,
 
+    /// Linux agent input from a separately managed Suricata. Kept, but
+    /// ignored, while the local Suricata service is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_input: Option<PathBuf>,
+
     /// Agent key issued by the EveBox server (`evebox config agents
     /// add <name>`), used to authenticate the file and packet
     /// retrieval channel. The key's name is the agent's identity.
@@ -383,6 +388,14 @@ impl Config {
         self.evebox_server.enabled
             && !self.evebox_server.use_external_elasticsearch
             && self.elasticsearch.enabled
+    }
+
+    pub(crate) fn agent_external_input(&self) -> Option<&Path> {
+        if self.suricata.enabled {
+            None
+        } else {
+            self.evebox_agent.external_input.as_deref()
+        }
     }
 
     /// True if the local Suricata writes EVE to a Unix socket rather

@@ -10,6 +10,8 @@ enum Options {
     Toggle,
     Server,
     Key,
+    #[cfg(not(windows))]
+    ExternalInput,
     Exit,
 }
 
@@ -25,6 +27,18 @@ fn menu_options(config: &Config) -> Selections<Options> {
         format!("EveBox Server URL [{}]", config.evebox_agent.server),
     );
     selections.push(Options::Key, key_label(config));
+    #[cfg(not(windows))]
+    if !config.suricata.enabled {
+        selections.push(
+            Options::ExternalInput,
+            format!(
+                "External EVE Input [{}]",
+                config
+                    .agent_external_input()
+                    .map_or_else(|| "not set".into(), |path| path.display().to_string())
+            ),
+        );
+    }
     selections.push(Options::Exit, "Return");
     selections
 }
@@ -61,8 +75,37 @@ fn run_action(config: &mut Config, action: Options) -> Result<()> {
         Options::Key => {
             set_key(config);
         }
+        #[cfg(not(windows))]
+        Options::ExternalInput => set_external_input(config)?,
         Options::Exit => {}
     }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_external_input(config: &mut Config) -> Result<()> {
+    if config.suricata.enabled {
+        return Ok(());
+    }
+    let current = config.agent_external_input().and_then(|p| p.to_str());
+    let Some(value) =
+        crate::prompt::edit_optional_with(current, "Return to the instance log directory?", || {
+            inquire::Text::new("External EVE filename or glob:")
+                .with_initial_value(current.unwrap_or(""))
+                .with_help_message(
+                    "Example: /var/log/suricata/eve.*.json. Blank to use the instance input.",
+                )
+                .prompt()
+                .ok()
+        })
+    else {
+        return Ok(());
+    };
+    let path = value.map(std::path::PathBuf::from);
+    if let Some(path) = &path {
+        crate::evebox::agent::external_log_input(path)?;
+    }
+    config.evebox_agent.external_input = path;
     Ok(())
 }
 
@@ -233,5 +276,30 @@ pub(crate) fn test_url(
         Ok(body)
     } else {
         bail!("{status}: body={body}")
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_input_edit_is_only_available_without_managed_suricata() {
+        let mut config = Config::default();
+        config.evebox_agent.external_input = Some("/var/log/suricata/eve.*.json".into());
+        assert!(
+            menu_options(&config)
+                .tags()
+                .contains(&Options::ExternalInput)
+        );
+        config.suricata.enabled = true;
+        assert!(
+            !menu_options(&config)
+                .tags()
+                .contains(&Options::ExternalInput)
+        );
+        let saved = config.clone();
+        run_action(&mut config, Options::ExternalInput).unwrap();
+        assert_eq!(config, saved);
     }
 }

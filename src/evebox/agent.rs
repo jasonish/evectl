@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: (C) 2025 Jason Ish <jason@codemonkey.net>
 // SPDX-License-Identifier: MIT
 
+use std::path::Path;
 use std::process::Command;
 
 use crate::configs;
@@ -30,26 +31,46 @@ pub(crate) fn build_command(context: &Context, detached: bool) -> Result<Command
         command.arg("--user=0:998");
     }
 
-    let libdir = context.data_dir().join("evebox").join("agent");
-    let logdir = suricata::log_dir(context);
-    std::fs::create_dir_all(&libdir)?;
-    std::fs::create_dir_all(&logdir)?;
-
-    let mut volumes = vec![
-        context.manager.bind_mount(&logdir, "/var/log/suricata"),
-        context.manager.bind_mount(&libdir, "/var/lib/evebox"),
-    ];
-
+    let mut libdir = context.data_dir().join("evebox").join("agent");
     let configdir = context.config_dir().join("evebox").join("agent");
-    if use_socket {
-        let rundir = suricata::run_dir(context);
-        std::fs::create_dir_all(&rundir)?;
-        volumes.push(context.manager.bind_mount(&rundir, "/var/run/suricata"));
+    let input_config = configdir.join("evectl-input.yaml");
+    let mut volumes = Vec::new();
+    if let Some(path) = context.config.agent_external_input() {
+        use sha2::{Digest, Sha256};
 
-        configs::write_evebox_agent_socket_config(&configdir.join("evectl-input.yaml"))?;
+        let (source, filename) = external_log_input(path)?;
+        let root = context.root.canonicalize()?;
+        if Path::new(&source).starts_with(&root) || root.starts_with(&source) {
+            bail!("External EVE log directory must not overlap the EveCtl instance directory");
+        }
+        // --mount fails on a missing source and, unlike our instance volume
+        // helper, never relabels the host directory on SELinux systems.
+        command.arg(format!(
+            "--mount=type=bind,src={source},dst=/external-logs,readonly"
+        ));
+        // EveBox keys bookmarks by container path. Isolate sources even
+        // though each is mounted at the same path inside the container.
+        let source_id: String = Sha256::digest(source.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        libdir = libdir.join(format!("external-{source_id}"));
+        configs::write_evebox_agent_external_file_config(&input_config, filename)?;
     } else {
-        configs::write_evebox_agent_file_config(&configdir.join("evectl-input.yaml"))?;
+        let logdir = suricata::log_dir(context);
+        std::fs::create_dir_all(&logdir)?;
+        volumes.push(context.manager.bind_mount(&logdir, "/var/log/suricata"));
+        if use_socket {
+            let rundir = suricata::run_dir(context);
+            std::fs::create_dir_all(&rundir)?;
+            volumes.push(context.manager.bind_mount(&rundir, "/var/run/suricata"));
+            configs::write_evebox_agent_socket_config(&input_config)?;
+        } else {
+            configs::write_evebox_agent_file_config(&input_config)?;
+        }
     }
+    std::fs::create_dir_all(&libdir)?;
+    volumes.push(context.manager.bind_mount(&libdir, "/var/lib/evebox"));
     volumes.push(context.manager.bind_mount(&configdir, "/config"));
 
     for volume in volumes {
@@ -100,12 +121,134 @@ pub(crate) fn build_command(context: &Context, detached: bool) -> Result<Command
     Ok(command)
 }
 
+/// Split an external input into an existing bind source and an unexpanded
+/// filename pattern. The matching files do not need to exist at setup.
+pub(crate) fn external_log_input(path: &Path) -> Result<(String, &str)> {
+    if !path.is_absolute() {
+        bail!("External EVE input must be an absolute filename or glob");
+    }
+    let raw = path.to_str().context("External EVE input is not UTF-8")?;
+    let (parent, filename) = raw
+        .rsplit_once('/')
+        .context("Expected an absolute EVE input")?;
+    if filename.is_empty() || matches!(filename, "." | "..") || path.is_dir() {
+        bail!("Specify an EVE filename or glob, not a directory");
+    }
+    if parent.contains(['*', '?', '[']) || filename.contains("**") {
+        bail!("Globs are only supported in the filename; recursive globs are not supported");
+    }
+    glob::Pattern::new(filename).context("Invalid EVE filename glob")?;
+    let path = path.parent().context("Missing EVE input directory")?;
+    let path = path.canonicalize().with_context(|| {
+        format!(
+            "Cannot access external EVE log directory {}",
+            path.display()
+        )
+    })?;
+    if !path.is_dir() {
+        bail!(
+            "External EVE log source is not a directory: {}",
+            path.display()
+        );
+    }
+    let source = path
+        .to_str()
+        .context("External EVE log directory is not UTF-8")?;
+    if source.contains([',', '"', '\r', '\n']) {
+        bail!(
+            "External EVE log directory contains a character unsupported in container mount options"
+        );
+    }
+    Ok((source.to_owned(), filename))
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
     use crate::config::EveOutput;
     use crate::container::command_args;
     use crate::context::testing::docker_context;
+
+    #[test]
+    fn external_input_passes_a_literal_or_filename_glob_without_expanding_it() {
+        let logs = tempfile::tempdir().unwrap();
+        let (_root, mut context) = docker_context(Config::default());
+        for filename in [
+            "eve.json",
+            "eve.*.json",
+            "eve.[0-9]*.json",
+            "a \"quoted\" # filename.json",
+        ] {
+            context.config.evebox_agent.external_input = Some(logs.path().join(filename));
+            build_command(&context, true).unwrap();
+            let yaml =
+                std::fs::read(context.config_dir().join("evebox/agent/evectl-input.yaml")).unwrap();
+            let config: serde_json::Value = yaml_serde::from_slice(&yaml).unwrap();
+            assert_eq!(
+                config["input"]["paths"],
+                serde_json::json!([format!("/external-logs/{filename}")])
+            );
+        }
+        for invalid in [
+            logs.path().to_owned(),
+            logs.path().join("eve.[1.json"),
+            logs.path().join("*/eve.json"),
+            "relative/eve.json".into(),
+        ] {
+            assert!(
+                external_log_input(&invalid).is_err(),
+                "{}",
+                invalid.display()
+            );
+        }
+    }
+
+    #[test]
+    fn external_input_is_read_only_and_managed_suricata_takes_precedence() {
+        let logs = tempfile::tempdir().unwrap();
+        let (_root, mut context) = docker_context(Config::default());
+        context.config.evebox_agent.external_input = Some(logs.path().join("eve.*.json"));
+        let args = command_args(&build_command(&context, true).unwrap());
+        let source = logs.path().canonicalize().unwrap();
+        assert!(args.contains(&format!(
+            "--mount=type=bind,src={},dst=/external-logs,readonly",
+            source.display()
+        )));
+        assert!(!suricata::log_dir(&context).exists());
+        let config_file = context.config_dir().join("evebox/agent/evectl-input.yaml");
+        let external = std::fs::read_to_string(&config_file).unwrap();
+        assert!(external.contains("/external-logs/eve.*.json"));
+        assert!(external.contains("delete-spool-files: false"));
+        assert!(external.contains("data-directory: /var/lib/evebox"));
+
+        // An unavailable external source must not even be validated while
+        // Suricata is enabled, for either of its output formats.
+        logs.close().unwrap();
+        context.config.suricata.enabled = true;
+        for (output, expected) in [
+            (EveOutput::File, "delete-spool-files: true"),
+            (EveOutput::UnixStream, "/var/run/suricata/eve.sock"),
+        ] {
+            context.config.suricata.eve_output = output;
+            let args = command_args(&build_command(&context, false).unwrap());
+            assert!(!args.iter().any(|a| a.contains("/external-logs")));
+            assert!(
+                std::fs::read_to_string(&config_file)
+                    .unwrap()
+                    .contains(expected)
+            );
+        }
+        context.config.suricata.enabled = false;
+        assert!(build_command(&context, true).is_err());
+        assert!(!source.exists());
+        context.config.evebox_agent.external_input = None;
+        build_command(&context, true).unwrap();
+        assert!(
+            std::fs::read_to_string(config_file)
+                .unwrap()
+                .contains("delete-spool-files: true")
+        );
+    }
 
     #[test]
     fn fpc_adds_pcap_flags_and_key_to_evebox_agent() {

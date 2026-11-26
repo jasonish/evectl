@@ -49,6 +49,9 @@ webpki-root-certs = "1.0.12"
 # Only used for logging in local time.
 time = { version = "0.3.55", features = ["macros"] }
 
+[target.'cfg(not(windows))'.dependencies]
+glob = "0.3.4"
+
 [target.'cfg(windows)'.dependencies]
 indicatif = "0.18.6"
 suricatax-rules = "0.6.1"

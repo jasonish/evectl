@@ -4,6 +4,8 @@
 
 ### Added
 
+- Linux: the EveBox Agent can forward external EVE files when EveCtl is not
+  managing Suricata, including threaded logs selected by a filename glob
 - Add a custom ruleset from a URL in the rules menu, on Linux and Windows.
   The URL may contain `%(__version__)s`, which is replaced with the
   Suricata version
