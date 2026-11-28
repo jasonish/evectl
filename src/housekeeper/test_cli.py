@@ -203,13 +203,14 @@ class CliTests(unittest.TestCase):
         (default / RESTART_MARKER).touch()
         (self.bin / "evectl.toml").touch()  # Shadows the default when run from bin.
         # A self-update continuation passes -D even for the default instance.
-        for cwd, args, expected in (
-            (self.root, [], f"{BINARY} restart"),
-            (self.root, ["-D", str(default)], f"{BINARY} restart"),
-            (self.bin, ["-D", str(default)], f"{BINARY} --data-directory {default} restart"),
+        (self.bin / "evectl").symlink_to(BINARY)
+        for executable, cwd, args, expected in (
+            ("evectl", self.root, [], "evectl restart"),
+            ("./bin/evectl", self.root, ["-D", str(default)], "./bin/evectl restart"),
+            (str(BINARY), self.bin, ["-D", str(default)], f"{BINARY} --data-directory {default} restart"),
         ):
-            with self.subTest(cwd=cwd, args=args):
-                result = subprocess.run([str(BINARY), *args, "update", "--containers-only"],
+            with self.subTest(executable=executable, cwd=cwd, args=args):
+                result = subprocess.run([executable, *args, "update", "--containers-only"],
                                         cwd=cwd, env=self.env, capture_output=True,
                                         text=True, timeout=15, check=True)
                 self.assertIn("Restart all enabled services with: " + expected + "\n",

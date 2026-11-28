@@ -4,6 +4,7 @@
 //! Update EveCtl itself, then the container images. A self-update launches
 //! the new binary to finish updating before offering to restart services.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -102,6 +103,11 @@ pub(crate) fn update(
     return_to_menu: bool,
     restart: bool,
 ) -> bool {
+    let invoked_as = std::env::args_os()
+        .next()
+        .filter(|arg| !arg.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("evectl"));
     let self_update_ok = if containers_only {
         true
     } else {
@@ -114,6 +120,7 @@ pub(crate) fn update(
                 warn!("EveCtl was updated, but services have not been restarted.");
                 std::process::exit(continue_update_with_new_binary(
                     &current_exe,
+                    &invoked_as,
                     update_continuation_args,
                     return_to_menu,
                     restart,
@@ -127,10 +134,9 @@ pub(crate) fn update(
         }
     };
     let containers_ok = update_containers(context);
-    let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("evectl"));
     finish_update(
         &context.root,
-        &update_continuation_args.restart_command(&executable),
+        &update_continuation_args.restart_command(&invoked_as),
         UpdateCompletion {
             successful: self_update_ok && containers_ok,
             interactive: return_to_menu,
@@ -247,13 +253,19 @@ fn update_containers(context: &Context) -> bool {
 
 fn continue_update_with_new_binary(
     current_exe: &Path,
+    invoked_as: &Path,
     update_continuation_args: &UpdateContinuationArgs,
     return_to_menu: bool,
     restart: bool,
 ) -> i32 {
     let args = update_continuation_args.to_args(return_to_menu, restart);
     info!("Continuing update with {}", current_exe.display());
-    let status = process::Command::new(current_exe).args(&args).status();
+    // Launch the exact binary we replaced, but keep the user's command name
+    // in argv[0] for the restart hint printed by the continuation.
+    let status = process::Command::new(current_exe)
+        .arg0(invoked_as)
+        .args(&args)
+        .status();
     match status {
         Ok(status) if status.success() => 0,
         Ok(status) => status.code().unwrap_or(1),
