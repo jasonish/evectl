@@ -195,6 +195,26 @@ class CliTests(unittest.TestCase):
         result = self.cli("status")
         self.assertIn("Restart is recommended", result.stdout + result.stderr)
 
+    def test_restart_hint_for_default_instance(self):
+        self.install_runtime()
+        self.env["XDG_CONFIG_HOME"] = str(self.root)
+        default = self.root / "evectl"
+        self.instance.rename(default)
+        (default / RESTART_MARKER).touch()
+        (self.bin / "evectl.toml").touch()  # Shadows the default when run from bin.
+        # A self-update continuation passes -D even for the default instance.
+        for cwd, args, expected in (
+            (self.root, [], f"{BINARY} restart"),
+            (self.root, ["-D", str(default)], f"{BINARY} restart"),
+            (self.bin, ["-D", str(default)], f"{BINARY} --data-directory {default} restart"),
+        ):
+            with self.subTest(cwd=cwd, args=args):
+                result = subprocess.run([str(BINARY), *args, "update", "--containers-only"],
+                                        cwd=cwd, env=self.env, capture_output=True,
+                                        text=True, timeout=15, check=True)
+                self.assertIn("Restart all enabled services with: " + expected + "\n",
+                              result.stdout + result.stderr)
+
     def test_suricata_version_change_saves_restart_reminder(self):
         self.install_runtime()
         self.write_config(suricata=True)

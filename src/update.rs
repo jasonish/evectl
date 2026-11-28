@@ -17,7 +17,7 @@ use crate::{housekeeper, restart_notice, selfupdate, services, suricata};
 pub(crate) struct UpdateContinuationArgs {
     pub(crate) podman: bool,
     pub(crate) no_root: bool,
-    pub(crate) data_directory: Option<PathBuf>,
+    pub(crate) data_directory: PathBuf,
     pub(crate) verbose: u8,
 }
 
@@ -30,14 +30,12 @@ impl UpdateContinuationArgs {
         Self {
             podman: manager.is_podman(),
             no_root: args.no_root,
-            // Pin the resolved instance, even when selected from the cwd
-            // or XDG_CONFIG_HOME, across self-update and manual restart.
-            data_directory: Some(root.to_path_buf()),
+            data_directory: root.to_path_buf(),
             verbose: args.verbose,
         }
     }
 
-    fn runtime_args(&self) -> Vec<String> {
+    fn runtime_args(&self, data_directory: Option<&Path>) -> Vec<String> {
         let mut args = vec![];
         if self.podman {
             args.push("--podman".to_string());
@@ -45,7 +43,7 @@ impl UpdateContinuationArgs {
         if self.no_root {
             args.push("--no-root".to_string());
         }
-        if let Some(directory) = &self.data_directory {
+        if let Some(directory) = data_directory {
             args.push("--data-directory".to_string());
             args.push(directory.to_string_lossy().to_string());
         }
@@ -56,7 +54,7 @@ impl UpdateContinuationArgs {
     }
 
     fn to_args(&self, return_to_menu: bool, restart: bool) -> Vec<String> {
-        let mut args = self.runtime_args();
+        let mut args = self.runtime_args(Some(&self.data_directory));
         args.push("update".to_string());
         args.push("--containers-only".to_string());
         if return_to_menu {
@@ -69,8 +67,13 @@ impl UpdateContinuationArgs {
     }
 
     fn restart_command(&self, executable: &Path) -> String {
+        // A local evectl.toml can shadow the platform default. Only omit
+        // the directory if a bare restart would still select that default.
+        let use_default = crate::context::is_default_root(&self.data_directory)
+            && crate::cli::resolve_root(None)
+                .is_ok_and(|root| crate::context::is_default_root(&root));
         std::iter::once(executable.to_string_lossy().into_owned())
-            .chain(self.runtime_args())
+            .chain(self.runtime_args((!use_default).then_some(&self.data_directory)))
             .chain(std::iter::once("restart".to_string()))
             .map(|arg| shell_quote(&arg))
             .collect::<Vec<_>>()
@@ -287,7 +290,7 @@ mod tests {
             UpdateContinuationArgs {
                 podman: true,
                 no_root: true,
-                data_directory: Some(root.to_path_buf()),
+                data_directory: root.to_path_buf(),
                 verbose: 2,
             }
         );
@@ -327,7 +330,7 @@ mod tests {
         let args = Args::try_parse_from(["evectl", "update"]).unwrap();
         let root = Path::new("/var/lib/sensor1");
         let continuation = UpdateContinuationArgs::new(ContainerManager::Docker, &args, root);
-        assert_eq!(continuation.data_directory, Some(root.to_path_buf()));
+        assert_eq!(continuation.data_directory, root);
         assert_eq!(
             continuation.to_args(false, false),
             [
@@ -344,7 +347,7 @@ mod tests {
         let args = UpdateContinuationArgs {
             podman: true,
             no_root: true,
-            data_directory: Some(PathBuf::from("/srv/Jason's sensors/sensor1")),
+            data_directory: PathBuf::from("/srv/Jason's sensors/sensor1"),
             verbose: 1,
         };
         assert_eq!(
